@@ -1,5 +1,9 @@
 # Proteomics Analysis Toolkit
 
+[![PyPI version](https://img.shields.io/pypi/v/proteomics-toolkit)](https://pypi.org/project/proteomics-toolkit/)
+[![Python](https://img.shields.io/pypi/pyversions/proteomics-toolkit)](https://pypi.org/project/proteomics-toolkit/)
+[![License](https://img.shields.io/pypi/l/proteomics-toolkit)](https://github.com/uw-maccosslab/proteomics-toolkit/blob/main/LICENSE)
+
 A Python toolkit for analyzing mass spectrometry-based proteomics data, supporting both Skyline CSV and PRISM parquet workflows.
 
 ## Features
@@ -18,11 +22,14 @@ A Python toolkit for analyzing mass spectrometry-based proteomics data, supporti
 ## Installation
 
 ```bash
-# Install from GitHub
-pip install git+https://github.com/uw-maccosslab/proteomics-toolkit.git
+# Install from PyPI
+pip install proteomics-toolkit
 
 # With XGBoost support (for classification module)
-pip install "proteomics-toolkit[xgboost] @ git+https://github.com/uw-maccosslab/proteomics-toolkit.git"
+pip install proteomics-toolkit[xgboost]
+
+# Install from GitHub (latest development version)
+pip install git+https://github.com/uw-maccosslab/proteomics-toolkit.git
 
 # For development (editable install from local clone)
 git clone https://github.com/uw-maccosslab/proteomics-toolkit.git

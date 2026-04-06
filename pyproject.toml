@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proteomics-toolkit"
-version = "1.0.0"
+version = "26.1.0"
 description = "Proteomics analysis toolkit for mass spectrometry data"
 readme = "README.md"
 license = "Apache-2.0"
@@ -12,6 +12,23 @@ requires-python = ">=3.10"
 authors = [
     { name = "Michael MacCoss Lab, University of Washington" },
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+keywords = ["proteomics", "mass-spectrometry", "DIA", "bioinformatics"]
+
+[project.urls]
+Homepage = "https://github.com/uw-maccosslab/proteomics-toolkit"
+Repository = "https://github.com/uw-maccosslab/proteomics-toolkit"
+Issues = "https://github.com/uw-maccosslab/proteomics-toolkit/issues"
+
 dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",

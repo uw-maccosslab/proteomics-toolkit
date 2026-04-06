@@ -102,7 +102,7 @@ from . import validation         # Data validation and error checking
 from . import export             # Results export and configuration management
 from . import classification     # Binary classification and fold-change PCA
 
-__version__ = "1.0.0"
+__version__ = "26.1.0"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================
