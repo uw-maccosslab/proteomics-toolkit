@@ -23,12 +23,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 keywords = ["proteomics", "mass-spectrometry", "DIA", "bioinformatics"]
-
-[project.urls]
-Homepage = "https://github.com/uw-maccosslab/proteomics-toolkit"
-Repository = "https://github.com/uw-maccosslab/proteomics-toolkit"
-Issues = "https://github.com/uw-maccosslab/proteomics-toolkit/issues"
-
 dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
@@ -41,12 +35,35 @@ dependencies = [
     "requests>=2.25",
 ]
 
+[project.urls]
+Homepage = "https://github.com/uw-maccosslab/proteomics-toolkit"
+Repository = "https://github.com/uw-maccosslab/proteomics-toolkit"
+Issues = "https://github.com/uw-maccosslab/proteomics-toolkit/issues"
+
 [project.optional-dependencies]
 xgboost = ["xgboost>=1.7"]
 all = ["xgboost>=1.7"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
 
 [tool.setuptools]
 packages = ["proteomics_toolkit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "network: marks tests that require network access",
+]
 
 [tool.ruff]
 target-version = "py310"
