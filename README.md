@@ -308,5 +308,5 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 
 ## See Also
 
-- [PROTEOMICS_TOOLKIT_GUIDE.md](../PROTEOMICS_TOOLKIT_GUIDE.md) — Detailed recipe book with usage patterns
+- [Usage Guide](docs/guide.md) -- Detailed recipe book with usage patterns
 - [CLAUDE.md](../CLAUDE.md) — Project conventions and data prep patterns
