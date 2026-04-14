@@ -47,6 +47,23 @@ For example: `RELEASE_NOTES_v26.1.0.md`. Each release note should include sectio
 an overview, new features/changes, bug fixes, and testing status. See existing files in
 that directory for the format.
 
+### Working release notes
+
+During development, new features, bug fixes, and changes are documented in
+`release-notes/RELEASE_NOTES_next.md`. This is a living document that accumulates
+entries between releases.
+
+**Release workflow:**
+
+1. During development, add entries to `RELEASE_NOTES_next.md` as work is completed.
+2. When ready to release, rename `RELEASE_NOTES_next.md` to
+   `RELEASE_NOTES_v<VERSION>.md` and update the heading/overview to reflect the
+   final version number.
+3. Update the version in `pyproject.toml` and `proteomics_toolkit/__init__.py`.
+4. Commit, push, and create a GitHub release to trigger PyPI publishing.
+5. After the release, create a fresh `RELEASE_NOTES_next.md` from the template
+   to begin tracking the next release.
+
 ## Code Style
 
 - Python: PEP 8, `ruff` for linting (`ruff check .`)

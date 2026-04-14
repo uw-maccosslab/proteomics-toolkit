@@ -3,8 +3,7 @@
 ## Overview
 
 Initial release of `proteomics-toolkit`, a Python library for analyzing mass
-spectrometry-based proteomics data. The toolkit was extracted from the
-`collab-uw-zeng` project and provides a modular, configuration-driven workflow
+spectrometry-based proteomics data. The toolkit provides a modular, configuration-driven workflow
 from data import through statistical analysis, visualization, and export.
 
 ## Features
