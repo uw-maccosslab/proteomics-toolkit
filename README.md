@@ -1,5 +1,6 @@
 # Proteomics Analysis Toolkit
 
+[![CI](https://github.com/uw-maccosslab/proteomics-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/uw-maccosslab/proteomics-toolkit/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/proteomics-toolkit)](https://pypi.org/project/proteomics-toolkit/)
 [![Python](https://img.shields.io/pypi/pyversions/proteomics-toolkit)](https://pypi.org/project/proteomics-toolkit/)
 [![License](https://img.shields.io/pypi/l/proteomics-toolkit)](https://github.com/uw-maccosslab/proteomics-toolkit/blob/main/LICENSE)
