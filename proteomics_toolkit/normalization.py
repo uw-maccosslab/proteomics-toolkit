@@ -4,10 +4,11 @@ Data Normalization Module for Proteomics Analysis Toolkit
 Functions for normalizing proteomics data using various methods.
 """
 
-import pandas as pd
+from typing import Any, Dict, List, Optional
+
 import numpy as np
+import pandas as pd
 from scipy import optimize
-from typing import Dict, Optional, Any, List
 
 
 def _extract_standard_annotation_columns(data: pd.DataFrame) -> pd.DataFrame:
@@ -47,9 +48,7 @@ def _extract_standard_annotation_columns(data: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _create_standardized_column_order(
-    annotation_data: pd.DataFrame, sample_data: pd.DataFrame
-) -> List[str]:
+def _create_standardized_column_order(annotation_data: pd.DataFrame, sample_data: pd.DataFrame) -> List[str]:
     """
     Create standardized column order with exactly 5 annotation columns first, then sample columns.
 
@@ -82,9 +81,7 @@ def _create_standardized_column_order(
     actual_cols = list(annotation_data.columns)
     if actual_cols != expected_annotation_cols:
         raise ValueError(
-            f"Annotation data must have standardized columns.\n"
-            f"Expected: {expected_annotation_cols}\n"
-            f"Got: {actual_cols}"
+            f"Annotation data must have standardized columns.\nExpected: {expected_annotation_cols}\nGot: {actual_cols}"
         )
 
     # Combine standardized annotation columns + sample columns
@@ -170,9 +167,7 @@ def is_normalization_log_transformed(normalization_method: str) -> bool:
         return False
 
 
-def _separate_sample_and_annotation_data(
-    data: pd.DataFrame, sample_columns: Optional[list] = None
-) -> tuple:
+def _separate_sample_and_annotation_data(data: pd.DataFrame, sample_columns: Optional[list] = None) -> tuple:
     """
     Separate sample and annotation data from standardized data structure.
 
@@ -228,11 +223,7 @@ def _separate_sample_and_annotation_data(
 
     if sample_columns is None:
         # Use all columns after the first 5 as samples
-        sample_data = (
-            data.iloc[:, 5:].copy()
-            if len(data.columns) > 5
-            else pd.DataFrame(index=data.index)
-        )
+        sample_data = data.iloc[:, 5:].copy() if len(data.columns) > 5 else pd.DataFrame(index=data.index)
     else:
         # Use specified sample columns (must be in columns 5+)
         sample_data = data[sample_columns].copy()
@@ -240,9 +231,7 @@ def _separate_sample_and_annotation_data(
     return sample_data, annotation_data
 
 
-def median_normalize(
-    data: pd.DataFrame, sample_columns: Optional[list] = None
-) -> pd.DataFrame:
+def median_normalize(data: pd.DataFrame, sample_columns: Optional[list] = None) -> pd.DataFrame:
     """
     Median normalization - divide by sample median, multiply by global median.
     This keeps data on the original scale.
@@ -264,9 +253,7 @@ def median_normalize(
     print("Applying median normalization...")
 
     # Separate sample and annotation data using standardized structure
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
     if sample_data.empty:
         print("Warning: No numeric sample columns found for normalization")
@@ -284,16 +271,12 @@ def median_normalize(
     # Normalize: divide by sample median, multiply by global median
     for col in sample_data.columns:
         if sample_medians[col] > 0:  # Avoid division by zero
-            normalized_sample_data[col] = (
-                sample_data[col] / sample_medians[col]
-            ) * global_median
+            normalized_sample_data[col] = (sample_data[col] / sample_medians[col]) * global_median
 
     # Reconstruct the complete DataFrame with standardized column order
     if not annotation_data.empty:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         # Combine annotation columns with normalized sample data
         result = pd.concat([annotation_data, normalized_sample_data], axis=1)
@@ -335,13 +318,9 @@ def vsn_normalize(
     print("Starting VSN normalization...")
 
     # Separate annotation and sample columns
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
-    def vsn_transformation_scipy(
-        data_series: pd.Series, optimize_params: bool = False
-    ) -> pd.Series:
+    def vsn_transformation_scipy(data_series: pd.Series, optimize_params: bool = False) -> pd.Series:
         """Apply VSN transformation to a single sample"""
         data_values = np.asarray(data_series.values)  # Convert to numpy array
 
@@ -370,9 +349,7 @@ def vsn_normalize(
                 window_size = max(100, len(data_clean) // 20)
                 variances = []
 
-                for i in range(
-                    0, len(sorted_transformed) - window_size, window_size // 4
-                ):
+                for i in range(0, len(sorted_transformed) - window_size, window_size // 4):
                     window_data = sorted_transformed[i : i + window_size]
                     if len(window_data) > 10:
                         variances.append(np.var(window_data))
@@ -441,18 +418,14 @@ def vsn_normalize(
         if (i + 1) % 5 == 0 or i == 0:  # Progress indicator
             print(f"Processing sample {i + 1}/{len(sample_data.columns)}: {col}")
 
-        normalized_sample_data[col] = vsn_transformation_scipy(
-            sample_data[col], optimize_params=optimize_params
-        )
+        normalized_sample_data[col] = vsn_transformation_scipy(sample_data[col], optimize_params=optimize_params)
 
     print("VSN transformation completed!")
 
     # Combine annotation data with normalized sample data using standardized column order
     if annotation_data is not None:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         result = pd.concat(
             [
@@ -472,9 +445,7 @@ def vsn_normalize(
     return result
 
 
-def quantile_normalize(
-    data: pd.DataFrame, sample_columns: Optional[list] = None
-) -> pd.DataFrame:
+def quantile_normalize(data: pd.DataFrame, sample_columns: Optional[list] = None) -> pd.DataFrame:
     """
     Quantile normalization - makes the distribution of each sample identical.
 
@@ -492,9 +463,7 @@ def quantile_normalize(
     print("Starting quantile normalization...")
 
     # Separate annotation and sample columns
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
     print("Applying quantile normalization...")
 
@@ -516,18 +485,14 @@ def quantile_normalize(
         normalized_matrix[sorted_indices[:, i], i] = quantile_means
 
     # Convert back to DataFrame
-    normalized_sample_data = pd.DataFrame(
-        normalized_matrix, index=sample_data.index, columns=sample_data.columns
-    )
+    normalized_sample_data = pd.DataFrame(normalized_matrix, index=sample_data.index, columns=sample_data.columns)
 
     print(f"Quantile normalization completed for {len(sample_data.columns)} samples")
 
     # Combine annotation data with normalized sample data using standardized column order
     if annotation_data is not None:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         result = pd.concat(
             [
@@ -547,9 +512,7 @@ def quantile_normalize(
     return result
 
 
-def log_transform(
-    data: pd.DataFrame, base: str = "log2", pseudocount: Optional[float] = None
-) -> pd.DataFrame:
+def log_transform(data: pd.DataFrame, base: str = "log2", pseudocount: Optional[float] = None) -> pd.DataFrame:
     """
     Apply log transformation to data.
 
@@ -591,9 +554,7 @@ def log_transform(
     return pd.DataFrame(transformed_data, index=data.index, columns=data.columns)
 
 
-def mad_normalize(
-    data: pd.DataFrame, sample_columns: Optional[list] = None
-) -> pd.DataFrame:
+def mad_normalize(data: pd.DataFrame, sample_columns: Optional[list] = None) -> pd.DataFrame:
     """
     Median Absolute Deviation (MAD) normalization.
 
@@ -614,9 +575,7 @@ def mad_normalize(
     print("Starting MAD normalization...")
 
     # Separate annotation and sample columns
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
     print("Applying MAD (Median Absolute Deviation) normalization...")
 
@@ -645,9 +604,7 @@ def mad_normalize(
     # Combine annotation data with normalized sample data using standardized column order
     if annotation_data is not None:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         result = pd.concat(
             [
@@ -667,9 +624,7 @@ def mad_normalize(
     return result
 
 
-def z_score_normalize(
-    data: pd.DataFrame, sample_columns: Optional[list] = None
-) -> pd.DataFrame:
+def z_score_normalize(data: pd.DataFrame, sample_columns: Optional[list] = None) -> pd.DataFrame:
     """
     Z-score normalization (standardization).
 
@@ -690,9 +645,7 @@ def z_score_normalize(
     print("Starting Z-score normalization...")
 
     # Separate annotation and sample columns
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
     print("Applying Z-score normalization...")
 
@@ -715,9 +668,7 @@ def z_score_normalize(
     # Combine annotation data with normalized sample data using standardized column order
     if annotation_data is not None:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         result = pd.concat(
             [
@@ -737,9 +688,7 @@ def z_score_normalize(
     return result
 
 
-def rlr_normalize(
-    data: pd.DataFrame, sample_columns: Optional[list] = None
-) -> pd.DataFrame:
+def rlr_normalize(data: pd.DataFrame, sample_columns: Optional[list] = None) -> pd.DataFrame:
     """
     Robust Linear Regression (RLR) normalization.
 
@@ -760,9 +709,7 @@ def rlr_normalize(
     print("Starting RLR normalization...")
 
     # Separate annotation and sample columns
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
     print("Applying RLR (Robust Linear Regression) normalization...")
 
@@ -788,18 +735,10 @@ def rlr_normalize(
             # Simple robust regression (using median-based approach)
             # Calculate slope using Theil-Sen estimator approximation
             differences = []
-            for i in range(
-                0, len(x_values) - 1, max(1, len(x_values) // 100)
-            ):  # Sample points to avoid O(n²)
-                for j in range(
-                    i + 1, min(i + 50, len(x_values))
-                ):  # Limited pairwise comparisons
-                    if (
-                        abs(x_values[j] - x_values[i]) > 1e-6
-                    ):  # Avoid division by near-zero
-                        slope = (y_values[j] - y_values[i]) / (
-                            x_values[j] - x_values[i]
-                        )
+            for i in range(0, len(x_values) - 1, max(1, len(x_values) // 100)):  # Sample points to avoid O(n²)
+                for j in range(i + 1, min(i + 50, len(x_values))):  # Limited pairwise comparisons
+                    if abs(x_values[j] - x_values[i]) > 1e-6:  # Avoid division by near-zero
+                        slope = (y_values[j] - y_values[i]) / (x_values[j] - x_values[i])
                         differences.append(slope)
 
             if differences:
@@ -809,18 +748,14 @@ def rlr_normalize(
                 # Apply correction: divide by slope to normalize
                 if robust_slope != 0:
                     correction_factor = float(2 ** (robust_intercept / robust_slope))
-                    normalized_sample_data[col] = (
-                        normalized_sample_data[col] / correction_factor
-                    )
+                    normalized_sample_data[col] = normalized_sample_data[col] / correction_factor
 
     print(f"RLR normalization completed for {len(sample_data.columns)} samples")
 
     # Combine annotation data with normalized sample data using standardized column order
     if annotation_data is not None:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         result = pd.concat(
             [
@@ -840,9 +775,7 @@ def rlr_normalize(
     return result
 
 
-def loess_normalize(
-    data: pd.DataFrame, span: float = 0.75, sample_columns: Optional[list] = None
-) -> pd.DataFrame:
+def loess_normalize(data: pd.DataFrame, span: float = 0.75, sample_columns: Optional[list] = None) -> pd.DataFrame:
     """
     LOESS (LOcally WEighted Scatterplot Smoothing) normalization.
 
@@ -865,9 +798,7 @@ def loess_normalize(
     print("Starting LOESS normalization...")
 
     # Separate annotation and sample columns
-    sample_data, annotation_data = _separate_sample_and_annotation_data(
-        data, sample_columns
-    )
+    sample_data, annotation_data = _separate_sample_and_annotation_data(data, sample_columns)
 
     print(f"Applying LOESS normalization (span={span})...")
 
@@ -920,18 +851,14 @@ def loess_normalize(
 
             for idx, corr in zip(valid_indices, correction):
                 original_idx = sample_data.index[idx]
-                normalized_sample_data.loc[original_idx, col] = sample_data.loc[
-                    original_idx, col
-                ] / (2**corr)
+                normalized_sample_data.loc[original_idx, col] = sample_data.loc[original_idx, col] / (2**corr)
 
     print(f"LOESS normalization completed for {len(sample_data.columns)} samples")
 
     # Combine annotation data with normalized sample data using standardized column order
     if annotation_data is not None:
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, normalized_sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, normalized_sample_data)
 
         result = pd.concat(
             [
@@ -951,9 +878,7 @@ def loess_normalize(
     return result
 
 
-def calculate_normalization_stats(
-    data: pd.DataFrame, normalized_data: pd.DataFrame, method: str
-) -> Dict[str, float]:
+def calculate_normalization_stats(data: pd.DataFrame, normalized_data: pd.DataFrame, method: str) -> Dict[str, float]:
     """
     Calculate statistics to assess normalization effectiveness.
 
@@ -973,40 +898,26 @@ def calculate_normalization_stats(
 
     # Log transform both datasets for comparison (if not VSN)
     if method.lower() != "vsn":
-        log2_original = pd.DataFrame(
-            np.log2(data.replace(0, np.nan)), index=data.index, columns=data.columns
-        )
+        log2_original = pd.DataFrame(np.log2(data.replace(0, np.nan)), index=data.index, columns=data.columns)
         log2_normalized = pd.DataFrame(
             np.log2(normalized_data.replace(0, np.nan)),
             index=normalized_data.index,
             columns=normalized_data.columns,
         )
     else:
-        log2_original = pd.DataFrame(
-            np.log2(data.replace(0, np.nan)), index=data.index, columns=data.columns
-        )
+        log2_original = pd.DataFrame(np.log2(data.replace(0, np.nan)), index=data.index, columns=data.columns)
         log2_normalized = normalized_data  # VSN is already transformed
 
     # Calculate statistics
     stats = {
-        "original_median_range": (
-            log2_original.median(axis=0).max() - log2_original.median(axis=0).min()
-        ),
-        "normalized_median_range": (
-            log2_normalized.median(axis=0).max() - log2_normalized.median(axis=0).min()
-        ),
-        "original_cv_median": (
-            log2_original.std(axis=0) / log2_original.mean(axis=0)
-        ).median(),
-        "normalized_cv_median": (
-            log2_normalized.std(axis=0) / log2_normalized.mean(axis=0)
-        ).median(),
+        "original_median_range": (log2_original.median(axis=0).max() - log2_original.median(axis=0).min()),
+        "normalized_median_range": (log2_normalized.median(axis=0).max() - log2_normalized.median(axis=0).min()),
+        "original_cv_median": (log2_original.std(axis=0) / log2_original.mean(axis=0)).median(),
+        "normalized_cv_median": (log2_normalized.std(axis=0) / log2_normalized.mean(axis=0)).median(),
     }
 
     # Calculate reduction in median range
-    stats["median_range_reduction"] = 1 - (
-        stats["normalized_median_range"] / stats["original_median_range"]
-    )
+    stats["median_range_reduction"] = 1 - (stats["normalized_median_range"] / stats["original_median_range"])
 
     return stats
 
@@ -1071,13 +982,9 @@ def calculate_detailed_normalization_stats(
     overall_stats = {
         "method": method.upper(),
         "scale_type": scale_type,
-        "original_sample_median_range": original_sample_medians.max()
-        - original_sample_medians.min(),
-        "normalized_sample_median_range": normalized_sample_medians.max()
-        - normalized_sample_medians.min(),
-        "original_cv_median_all_samples": (
-            original_for_stats.std(axis=0) / original_for_stats.mean(axis=0)
-        ).median(),
+        "original_sample_median_range": original_sample_medians.max() - original_sample_medians.min(),
+        "normalized_sample_median_range": normalized_sample_medians.max() - normalized_sample_medians.min(),
+        "original_cv_median_all_samples": (original_for_stats.std(axis=0) / original_for_stats.mean(axis=0)).median(),
         "normalized_cv_median_all_samples": (
             normalized_for_stats.std(axis=0) / normalized_for_stats.mean(axis=0)
         ).median(),
@@ -1086,8 +993,7 @@ def calculate_detailed_normalization_stats(
     # Calculate range reduction
     if overall_stats["original_sample_median_range"] > 0:
         overall_stats["sample_median_range_reduction"] = 1 - (
-            overall_stats["normalized_sample_median_range"]
-            / overall_stats["original_sample_median_range"]
+            overall_stats["normalized_sample_median_range"] / overall_stats["original_sample_median_range"]
         )
     else:
         overall_stats["sample_median_range_reduction"] = 0.0
@@ -1100,8 +1006,7 @@ def calculate_detailed_normalization_stats(
             control_samples = [
                 sample
                 for sample, meta in sample_metadata.items()
-                if meta.get("Subject", "") == control_type
-                and sample in original_for_stats.columns
+                if meta.get("Subject", "") == control_type and sample in original_for_stats.columns
             ]
 
             if len(control_samples) >= 2:  # Need at least 2 samples to calculate CV
@@ -1109,12 +1014,12 @@ def calculate_detailed_normalization_stats(
                 norm_control_data = normalized_for_stats[control_samples]
 
                 # Calculate CV for each protein across control replicates
-                orig_cvs = (
-                    orig_control_data.std(axis=1) / orig_control_data.mean(axis=1)
-                ).replace([np.inf, -np.inf], np.nan)
-                norm_cvs = (
-                    norm_control_data.std(axis=1) / norm_control_data.mean(axis=1)
-                ).replace([np.inf, -np.inf], np.nan)
+                orig_cvs = (orig_control_data.std(axis=1) / orig_control_data.mean(axis=1)).replace(
+                    [np.inf, -np.inf], np.nan
+                )
+                norm_cvs = (norm_control_data.std(axis=1) / norm_control_data.mean(axis=1)).replace(
+                    [np.inf, -np.inf], np.nan
+                )
 
                 control_stats[control_type] = {
                     "n_samples": len(control_samples),
@@ -1164,9 +1069,7 @@ def analyze_negative_values(data, normalization_method, sample_columns=None):
     negative_count = negative_mask.sum().sum()
     total_values = sample_data.size
 
-    print(
-        f"\nNegative values found: {negative_count:,} out of {total_values:,} total values"
-    )
+    print(f"\nNegative values found: {negative_count:,} out of {total_values:,} total values")
     print(f"Percentage of negative values: {negative_count / total_values * 100:.3f}%")
 
     analysis_results = {
@@ -1203,9 +1106,7 @@ def analyze_negative_values(data, normalization_method, sample_columns=None):
         # Show proteins with negative values across many samples
         proteins_with_negatives = (negative_per_protein > 0).sum()
         print(f"\nProteins with at least one negative value: {proteins_with_negatives}")
-        print(
-            f"Percentage of proteins affected: {proteins_with_negatives / len(data) * 100:.1f}%"
-        )
+        print(f"Percentage of proteins affected: {proteins_with_negatives / len(data) * 100:.1f}%")
 
         analysis_results.update(
             {
@@ -1218,18 +1119,10 @@ def analyze_negative_values(data, normalization_method, sample_columns=None):
 
         # If VSN, explain this is normal
         if normalization_method.lower() == "vsn":
-            print(
-                "\nNOTE: Negative values after VSN normalization are NORMAL and expected"
-            )
-            print(
-                "   VSN uses sinh transformation which can produce negative values for low-abundance proteins"
-            )
-            print(
-                "   These negative values represent proteins with intensities below the baseline"
-            )
-            print(
-                "   They are biologically meaningful and mathematically valid in VSN space"
-            )
+            print("\nNOTE: Negative values after VSN normalization are NORMAL and expected")
+            print("   VSN uses sinh transformation which can produce negative values for low-abundance proteins")
+            print("   These negative values represent proteins with intensities below the baseline")
+            print("   They are biologically meaningful and mathematically valid in VSN space")
             print("   However, they may need handling for certain downstream analyses")
 
     else:
@@ -1310,9 +1203,7 @@ def handle_negative_values(
             sample_data = data
             annotation_columns = []
         else:
-            annotation_columns = [
-                col for col in data.columns if col not in sample_data.columns
-            ]
+            annotation_columns = [col for col in data.columns if col not in sample_data.columns]
 
     # Count negative values before handling
     negative_count = (sample_data < 0).sum().sum()
@@ -1330,13 +1221,9 @@ def handle_negative_values(
     elif method in ["min_positive", "small_positive"]:  # Accept both names
         # Replace negatives with fraction of minimum positive value
         min_positive = sample_data[sample_data > 0].min().min()
-        replacement_value = (
-            min_positive_value if min_positive_value is not None else min_positive / 10
-        )
+        replacement_value = min_positive_value if min_positive_value is not None else min_positive / 10
         sample_data = sample_data.where(sample_data >= 0, replacement_value)
-        print(
-            f"  Replaced negatives with {replacement_value:.6f} (1/10th of min positive: {min_positive:.6f})"
-        )
+        print(f"  Replaced negatives with {replacement_value:.6f} (1/10th of min positive: {min_positive:.6f})")
 
     elif method == "zero":
         sample_data = sample_data.where(sample_data >= 0, 0)
@@ -1368,9 +1255,7 @@ def handle_negative_values(
         annotation_data = data[annotation_columns]
 
         # Create standardized column order: annotation columns first, then sample columns
-        final_column_order = _create_standardized_column_order(
-            annotation_data, sample_data
-        )
+        final_column_order = _create_standardized_column_order(annotation_data, sample_data)
 
         result_data = pd.concat([data[annotation_columns], sample_data], axis=1)
 
@@ -1380,9 +1265,7 @@ def handle_negative_values(
         result_data = sample_data
 
     # Verification
-    final_negative_count = (
-        (result_data.select_dtypes(include=[np.number]) < 0).sum().sum()
-    )
+    final_negative_count = (result_data.select_dtypes(include=[np.number]) < 0).sum().sum()
     print(f"  Final negative count: {final_negative_count}")
 
     return result_data

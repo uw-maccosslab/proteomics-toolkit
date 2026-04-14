@@ -5,7 +5,6 @@ so they can be skipped in offline CI environments with: pytest -m "not network"
 """
 
 import pandas as pd
-import pytest
 
 from proteomics_toolkit.enrichment import (
     LIBRARY_COLORS,
@@ -14,7 +13,6 @@ from proteomics_toolkit.enrichment import (
     merge_enrichment_results,
     parse_enrichr_results,
 )
-
 
 # ---------------------------------------------------------------------------
 # EnrichmentConfig

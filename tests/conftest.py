@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Annotation column helpers
 # ---------------------------------------------------------------------------
@@ -122,10 +121,7 @@ def sample_metadata_dict():
     """Metadata as a dict-of-dicts, keyed by sample name."""
     groups = ["Control", "Control", "Control", "Treatment", "Treatment", "Treatment"]
     subjects = ["S1", "S2", "S3", "S1", "S2", "S3"]
-    return {
-        name: {"Group": g, "Subject": s}
-        for name, g, s in zip(SAMPLE_NAMES, groups, subjects)
-    }
+    return {name: {"Group": g, "Subject": s} for name, g, s in zip(SAMPLE_NAMES, groups, subjects)}
 
 
 @pytest.fixture

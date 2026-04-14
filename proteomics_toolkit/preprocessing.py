@@ -4,10 +4,11 @@ Data Preprocessing Module for Proteomics Analysis Toolkit
 Functions for data cleaning, quality assessment, and protein annotation parsing.
 """
 
-import pandas as pd
-from typing import Dict, List, Tuple, Optional, Any, Union
 import re
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
+import pandas as pd
 
 
 def _normalize_group_value(value: Any) -> Union[int, float, str]:
@@ -61,9 +62,7 @@ def _normalize_group_value(value: Any) -> Union[int, float, str]:
     return str(value)
 
 
-def parse_protein_identifiers(
-    data: pd.DataFrame, protein_col: str = "Protein"
-) -> pd.DataFrame:
+def parse_protein_identifiers(data: pd.DataFrame, protein_col: str = "Protein") -> pd.DataFrame:
     """
     Parse UniProt identifiers and add annotation columns.
 
@@ -121,12 +120,8 @@ def parse_protein_identifiers(
     has_database = (result_data["UniProt_Database"] != "").sum()
 
     print(f"Total proteins: {total_proteins}")
-    print(
-        f"Accessions extracted: {has_accession} ({has_accession / total_proteins * 100:.1f}%)"
-    )
-    print(
-        f"Database identified: {has_database} ({has_database / total_proteins * 100:.1f}%)"
-    )
+    print(f"Accessions extracted: {has_accession} ({has_accession / total_proteins * 100:.1f}%)")
+    print(f"Database identified: {has_database} ({has_database / total_proteins * 100:.1f}%)")
 
     if has_database > 0:
         db_counts = result_data["UniProt_Database"].value_counts()
@@ -163,9 +158,7 @@ def parse_gene_and_description(data: pd.DataFrame) -> pd.DataFrame:
             return ""
         desc_str = str(protein_description).strip()
         # Remove patterns like OS=..., OX=..., GN=..., PE=..., SV=...
-        clean_desc = re.sub(
-            r"\s+(?:OS|OX|GN|PE|SV)=[^=]*(?=\s+(?:OS|OX|GN|PE|SV)=|$)", "", desc_str
-        )
+        clean_desc = re.sub(r"\s+(?:OS|OX|GN|PE|SV)=[^=]*(?=\s+(?:OS|OX|GN|PE|SV)=|$)", "", desc_str)
         return clean_desc.strip()
 
     print("=== PARSING GENE NAMES AND DESCRIPTIONS ===\n")
@@ -190,29 +183,21 @@ def parse_gene_and_description(data: pd.DataFrame) -> pd.DataFrame:
 
     # Handle Gene column creation
     if gene_col_found:
-        print(
-            f"Found existing gene column: '{gene_col_found}' - using as primary Gene source"
-        )
+        print(f"Found existing gene column: '{gene_col_found}' - using as primary Gene source")
         result_data["Gene"] = result_data[gene_col_found].fillna("")
 
         # Supplement missing genes from description if available
         if desc_col_found:
             missing_genes = result_data["Gene"] == ""
             if missing_genes.sum() > 0:
-                print(
-                    f"Supplementing {missing_genes.sum()} missing genes from description parsing..."
-                )
-                parsed_genes = result_data[desc_col_found].apply(
-                    parse_gene_from_description
-                )
+                print(f"Supplementing {missing_genes.sum()} missing genes from description parsing...")
+                parsed_genes = result_data[desc_col_found].apply(parse_gene_from_description)
                 result_data.loc[missing_genes, "Gene"] = parsed_genes[missing_genes]
     else:
         print("No existing gene column found")
         if desc_col_found:
             print(f"Parsing gene names from description column: '{desc_col_found}'")
-            result_data["Gene"] = result_data[desc_col_found].apply(
-                parse_gene_from_description
-            )
+            result_data["Gene"] = result_data[desc_col_found].apply(parse_gene_from_description)
         else:
             print("No description column found either - creating empty Gene column")
             result_data["Gene"] = ""
@@ -220,9 +205,7 @@ def parse_gene_and_description(data: pd.DataFrame) -> pd.DataFrame:
     # Handle Description cleaning
     if desc_col_found:
         print(f"Cleaning descriptions from column: '{desc_col_found}'")
-        result_data["Description"] = result_data[desc_col_found].apply(
-            clean_description
-        )
+        result_data["Description"] = result_data[desc_col_found].apply(clean_description)
     else:
         print("No description column found - creating empty Description column")
         result_data["Description"] = ""
@@ -239,9 +222,7 @@ def parse_gene_and_description(data: pd.DataFrame) -> pd.DataFrame:
     return result_data
 
 
-def create_standard_data_structure(
-    data: pd.DataFrame, cleaned_sample_names: Dict[str, str] = None
-) -> pd.DataFrame:
+def create_standard_data_structure(data: pd.DataFrame, cleaned_sample_names: Dict[str, str] = None) -> pd.DataFrame:
     """
     Create standardized data structure with exactly 5 annotation columns followed by cleaned sample columns.
 
@@ -301,7 +282,8 @@ def create_standard_data_structure(
 
     print(f"Found {len(sample_columns)} sample columns")
     print(
-        f"Sample column range: {sample_columns[0] if sample_columns else 'None'} ... {sample_columns[-1] if sample_columns else 'None'}"
+        f"Sample column range: {sample_columns[0] if sample_columns else 'None'}"
+        f" ... {sample_columns[-1] if sample_columns else 'None'}"
     )
 
     # Create the result dataframe with proper column order
@@ -334,13 +316,15 @@ def create_standard_data_structure(
     print(f"Total columns: {len(final_columns)}")
     print(f"Annotation columns (1-5): {annotation_part}")
     print(
-        f"Sample columns ({len(sample_part)}): {sample_part[0] if sample_part else 'None'} ... {sample_part[-1] if sample_part else 'None'}"
+        f"Sample columns ({len(sample_part)}): {sample_part[0] if sample_part else 'None'}"
+        f" ... {sample_part[-1] if sample_part else 'None'}"
     )
 
     # Check that annotation columns are exactly what we expect
     if annotation_part != required_annotation_cols:
         raise ValueError(
-            f"Annotation columns don't match expected order. Got: {annotation_part}, Expected: {required_annotation_cols}"
+            f"Annotation columns don't match expected order. "
+            f"Got: {annotation_part}, Expected: {required_annotation_cols}"
         )
 
     print("✅ Data structure standardization complete!")
@@ -348,9 +332,7 @@ def create_standard_data_structure(
     return result_data
 
 
-def assess_data_completeness(
-    data: pd.DataFrame, sample_columns: List[str], sample_metadata: Dict[str, Dict]
-) -> None:
+def assess_data_completeness(data: pd.DataFrame, sample_columns: List[str], sample_metadata: Dict[str, Dict]) -> None:
     """
     Assess and visualize data completeness across samples.
 
@@ -376,12 +358,8 @@ def assess_data_completeness(
 
     print("Data completeness summary:")
     print(f"Total possible values: {total_values:,}")
-    print(
-        f"Non-null values: {non_null_values:,} ({non_null_values / total_values * 100:.1f}%)"
-    )
-    print(
-        f"Non-zero values: {non_zero_values:,} ({non_zero_values / total_values * 100:.1f}%)"
-    )
+    print(f"Non-null values: {non_null_values:,} ({non_null_values / total_values * 100:.1f}%)")
+    print(f"Non-zero values: {non_zero_values:,} ({non_zero_values / total_values * 100:.1f}%)")
 
     # Per-sample statistics
     print("\nPer-sample completeness:")
@@ -390,22 +368,14 @@ def assess_data_completeness(
         total = len(data)
 
         group = sample_metadata.get(sample, {}).get("Group", "Unknown")
-        print(
-            f"{sample}: {non_zero}/{total} non-zero ({non_zero / total * 100:.1f}%) - Group: {group}"
-        )
+        print(f"{sample}: {non_zero}/{total} non-zero ({non_zero / total * 100:.1f}%) - Group: {group}")
 
     # Per-protein statistics
     print("\nProtein detection summary:")
     proteins_per_sample = (sample_data != 0).sum(axis=1)
-    print(
-        f"Proteins detected in all samples: {(proteins_per_sample == len(sample_columns)).sum()}"
-    )
-    print(
-        f"Proteins detected in >75% samples: {(proteins_per_sample > 0.75 * len(sample_columns)).sum()}"
-    )
-    print(
-        f"Proteins detected in >50% samples: {(proteins_per_sample > 0.5 * len(sample_columns)).sum()}"
-    )
+    print(f"Proteins detected in all samples: {(proteins_per_sample == len(sample_columns)).sum()}")
+    print(f"Proteins detected in >75% samples: {(proteins_per_sample > 0.75 * len(sample_columns)).sum()}")
+    print(f"Proteins detected in >50% samples: {(proteins_per_sample > 0.5 * len(sample_columns)).sum()}")
 
 
 def filter_proteins_by_completeness(
@@ -440,9 +410,7 @@ def filter_proteins_by_completeness(
     filtered_data = data[keep_proteins].copy()
 
     print(f"Original proteins: {len(data)}")
-    print(
-        f"Proteins with ≥{min_detection_rate * 100:.0f}% detection rate: {len(filtered_data)}"
-    )
+    print(f"Proteins with ≥{min_detection_rate * 100:.0f}% detection rate: {len(filtered_data)}")
     print(f"Removed: {len(data) - len(filtered_data)} proteins")
 
     return filtered_data
@@ -487,10 +455,7 @@ def calculate_group_colors(
         if pd.isna(group):
             continue
         group_lower = str(group).lower()
-        if any(
-            keyword in group_lower
-            for keyword in ["pool", "control", "qc", "standard", "blank", "reference"]
-        ):
+        if any(keyword in group_lower for keyword in ["pool", "control", "qc", "standard", "blank", "reference"]):
             control_groups.append(group)
         else:
             study_groups.append(group)
@@ -502,9 +467,7 @@ def calculate_group_colors(
     group_counts = group_counts.reindex(ordered_groups, fill_value=0)
 
     # Check if we have meaningful groups
-    meaningful_groups = len(unique_groups) > 1 or (
-        len(unique_groups) == 1 and "Unknown" not in unique_groups
-    )
+    meaningful_groups = len(unique_groups) > 1 or (len(unique_groups) == 1 and "Unknown" not in unique_groups)
 
     if meaningful_groups:
         # Use different color palettes for study vs control samples
@@ -681,11 +644,7 @@ def classify_samples(
             study_samples.append(sample_name)
             if group_column in sample_info:
                 study_group = sample_info[group_column]
-                if (
-                    pd.notna(study_group)
-                    and study_group != ""
-                    and study_group is not None
-                ):
+                if pd.notna(study_group) and study_group != "" and study_group is not None:
                     # Normalize the group value to handle various data types consistently
                     study_group_normalized = _normalize_group_value(study_group)
 
@@ -720,9 +679,7 @@ def classify_samples(
         # Normalize the target group to match our normalization
         normalized_target = _normalize_group_value(target_group)
         if normalized_target in group_distribution:
-            ordered_groups.append(
-                (normalized_target, group_distribution[normalized_target])
-            )
+            ordered_groups.append((normalized_target, group_distribution[normalized_target]))
 
     # Then add control groups in the order specified by control_labels
     for control_label in control_labels:
@@ -752,13 +709,8 @@ def classify_samples(
             study_group = sample_info[group_column]
             if pd.notna(study_group):
                 # Convert to string, handling float-to-int conversion for cleaner labels
-                if (
-                    isinstance(study_group, (int, float))
-                    and float(study_group).is_integer()
-                ):
-                    study_group_str = str(
-                        int(float(study_group))
-                    )  # Convert 80.0 -> '80'
+                if isinstance(study_group, (int, float)) and float(study_group).is_integer():
+                    study_group_str = str(int(float(study_group)))  # Convert 80.0 -> '80'
                 else:
                     study_group_str = str(study_group)
 
@@ -785,16 +737,12 @@ def classify_samples(
         # Normalize the target group to match our normalization
         normalized_target = _normalize_group_value(target_group)
         if normalized_target in group_distribution:
-            ordered_group_distribution[normalized_target] = group_distribution[
-                normalized_target
-            ]
+            ordered_group_distribution[normalized_target] = group_distribution[normalized_target]
 
     # Then add control groups in configuration order
     for control_label in control_labels:
         if control_label in group_distribution:
-            ordered_group_distribution[control_label] = group_distribution[
-                control_label
-            ]
+            ordered_group_distribution[control_label] = group_distribution[control_label]
 
     # Finally add any remaining groups not in configuration (shouldn't happen normally)
     for group_name, count in group_distribution.items():
@@ -961,12 +909,8 @@ def apply_systematic_color_scheme(
                 systematic_group_colors[group] = high_contrast_colors[i]
             else:
                 # Fallback to cycling through colors if we have more groups than colors
-                systematic_group_colors[group] = high_contrast_colors[
-                    i % len(high_contrast_colors)
-                ]
-                systematic_group_colors[group] = updated_group_colors.get(
-                    group, "#1f77b4"
-                )
+                systematic_group_colors[group] = high_contrast_colors[i % len(high_contrast_colors)]
+                systematic_group_colors[group] = updated_group_colors.get(group, "#1f77b4")
 
         # Update the group colors dictionary
         updated_group_colors = systematic_group_colors
@@ -978,17 +922,13 @@ def apply_systematic_color_scheme(
         color_scheme_type = "automatic"
 
     for group, count in updated_group_counts.items():
-        color = updated_group_colors.get(
-            str(group), "#1f77b4"
-        )  # Convert to string and provide fallback
+        color = updated_group_colors.get(str(group), "#1f77b4")  # Convert to string and provide fallback
         # Determine if this is a control group
         is_control_group = str(group) in control_labels
         group_type = " (Control)" if is_control_group else " (Study)"
         print(f"  {group}: {count} samples (color: {color}){group_type}")
 
-    print(
-        f"\n{color_scheme_type.title()} colors applied for optimal visual distinction"
-    )
+    print(f"\n{color_scheme_type.title()} colors applied for optimal visual distinction")
     print("All sample groups will be clearly distinguishable in plots")
 
     return updated_group_colors, updated_group_counts

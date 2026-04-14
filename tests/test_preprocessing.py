@@ -15,7 +15,6 @@ from proteomics_toolkit.preprocessing import (
     parse_protein_identifiers,
 )
 
-
 # ---------------------------------------------------------------------------
 # _normalize_group_value
 # ---------------------------------------------------------------------------

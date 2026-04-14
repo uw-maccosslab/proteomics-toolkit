@@ -1,6 +1,5 @@
 """Tests for the validation module."""
 
-import pandas as pd
 import pytest
 
 from proteomics_toolkit.validation import (
@@ -8,7 +7,6 @@ from proteomics_toolkit.validation import (
     SampleMatchingError,
     validate_metadata_data_consistency,
 )
-
 
 # ---------------------------------------------------------------------------
 # Custom exceptions

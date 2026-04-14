@@ -4,10 +4,11 @@ Data Import Module for Proteomics Analysis Toolkit
 Functions for loading and parsing Skyline quantitation files and metadata.
 """
 
-import pandas as pd
-import re
 import os
-from typing import Tuple, Dict, Any, Optional, List
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
 
 
 def load_skyline_data(
@@ -155,9 +156,7 @@ def clean_description(protein_description: str) -> str:
     desc_str = str(protein_description).strip()
 
     # Remove patterns like OS=..., OX=..., GN=..., PE=..., SV=...
-    clean_desc = re.sub(
-        r"\s+(?:OS|OX|GN|PE|SV)=[^=]*(?=\s+(?:OS|OX|GN|PE|SV)=|$)", "", desc_str
-    )
+    clean_desc = re.sub(r"\s+(?:OS|OX|GN|PE|SV)=[^=]*(?=\s+(?:OS|OX|GN|PE|SV)=|$)", "", desc_str)
     return clean_desc.strip()
 
 
@@ -228,16 +227,16 @@ BATCH_SUFFIX_DELIMITER = "__@__"
 def detect_batch_suffix(column_names: List[str]) -> Optional[str]:
     """
     Detect if columns have a common batch suffix from skyline-prism parquet files.
-    
+
     Skyline-PRISM parquet files use the format: <sample_name>__@__<batch_name>
     If all sample columns share the same batch suffix, it indicates a single-batch
     experiment and the suffix can be stripped when matching to metadata.
-    
+
     Parameters:
     -----------
     column_names : List[str]
         List of column names to check for batch suffix
-        
+
     Returns:
     --------
     Optional[str]
@@ -246,13 +245,13 @@ def detect_batch_suffix(column_names: List[str]) -> Optional[str]:
     """
     if not column_names:
         return None
-    
+
     # Find columns that contain the batch delimiter
     columns_with_delimiter = [col for col in column_names if BATCH_SUFFIX_DELIMITER in col]
-    
+
     if not columns_with_delimiter:
         return None
-    
+
     # Extract batch suffixes
     batch_suffixes = set()
     for col in columns_with_delimiter:
@@ -260,7 +259,7 @@ def detect_batch_suffix(column_names: List[str]) -> Optional[str]:
             # Get everything after the delimiter (including the delimiter)
             suffix_start = col.index(BATCH_SUFFIX_DELIMITER)
             batch_suffixes.add(col[suffix_start:])
-    
+
     # If all columns with delimiter share the same suffix, return it
     if len(batch_suffixes) == 1:
         suffix = batch_suffixes.pop()
@@ -269,31 +268,29 @@ def detect_batch_suffix(column_names: List[str]) -> Optional[str]:
     elif len(batch_suffixes) > 1:
         print(f"Note: Multiple batch suffixes detected ({len(batch_suffixes)} batches)")
         return None
-    
+
     return None
 
 
 def strip_batch_suffix(
-    column_names: List[str],
-    batch_suffix: Optional[str] = None,
-    auto_detect: bool = True
+    column_names: List[str], batch_suffix: Optional[str] = None, auto_detect: bool = True
 ) -> Dict[str, str]:
     """
     Strip batch suffix from column names to get short sample names.
-    
+
     This is useful for matching sample names from skyline-prism parquet files
     to metadata where sample names don't include the batch suffix.
-    
+
     Parameters:
     -----------
     column_names : List[str]
         List of column names (potentially with batch suffixes)
     batch_suffix : Optional[str]
-        The batch suffix to strip. If None and auto_detect is True, 
+        The batch suffix to strip. If None and auto_detect is True,
         will attempt to auto-detect
     auto_detect : bool
         Whether to auto-detect the batch suffix if not provided
-        
+
     Returns:
     --------
     Dict[str, str]
@@ -302,11 +299,11 @@ def strip_batch_suffix(
     # Auto-detect batch suffix if needed
     if batch_suffix is None and auto_detect:
         batch_suffix = detect_batch_suffix(column_names)
-    
+
     name_mapping = {}
     for col in column_names:
         if batch_suffix and col.endswith(batch_suffix):
-            short_name = col[:-len(batch_suffix)]
+            short_name = col[: -len(batch_suffix)]
             name_mapping[col] = short_name
         elif BATCH_SUFFIX_DELIMITER in col:
             # Strip any batch suffix even if not the common one
@@ -315,21 +312,19 @@ def strip_batch_suffix(
         else:
             # No batch suffix, use original name
             name_mapping[col] = col
-    
+
     return name_mapping
 
 
 def create_sample_column_mapping(
-    data_columns: List[str],
-    metadata_sample_names: List[str],
-    sample_column: str = "sample"
+    data_columns: List[str], metadata_sample_names: List[str], sample_column: str = "sample"
 ) -> Dict[str, str]:
     """
     Create a mapping from metadata sample names to actual data column names.
-    
+
     This handles the skyline-prism batch suffix convention where data columns
     have format <sample_name>__@__<batch_name> but metadata has just <sample_name>.
-    
+
     Parameters:
     -----------
     data_columns : List[str]
@@ -338,7 +333,7 @@ def create_sample_column_mapping(
         Sample names from the metadata file
     sample_column : str
         Name of the sample column in metadata (for error messages)
-        
+
     Returns:
     --------
     Dict[str, str]
@@ -346,18 +341,18 @@ def create_sample_column_mapping(
     """
     # First try direct matching
     direct_matches = {name: name for name in metadata_sample_names if name in data_columns}
-    
+
     if len(direct_matches) == len(metadata_sample_names):
         print(f"All {len(direct_matches)} samples matched directly")
         return direct_matches
-    
+
     # Try matching with batch suffix stripped
     short_to_full = strip_batch_suffix(data_columns)
     full_to_short = {v: k for k, v in short_to_full.items()}
-    
+
     mapping = {}
     unmatched = []
-    
+
     for sample_name in metadata_sample_names:
         if sample_name in data_columns:
             # Direct match
@@ -367,13 +362,16 @@ def create_sample_column_mapping(
             mapping[sample_name] = full_to_short[sample_name]
         else:
             unmatched.append(sample_name)
-    
+
     if mapping:
         print(f"Matched {len(mapping)} samples (using batch suffix mapping)")
-    
+
     if unmatched:
-        print(f"Warning: {len(unmatched)} samples could not be matched: {unmatched[:5]}{'...' if len(unmatched) > 5 else ''}")
-    
+        print(
+            f"Warning: {len(unmatched)} samples could not be matched: "
+            f"{unmatched[:5]}{'...' if len(unmatched) > 5 else ''}"
+        )
+
     return mapping
 
 
@@ -432,19 +430,23 @@ def load_prism_data(
     if protein_cols is None:
         # Known PRISM protein annotation column names
         known_annotation_cols = {
-            "protein_group", "leading_protein", "leading_name",
-            "leading_uniprot_id", "leading_gene_name", "leading_description",
-            "n_peptides", "n_unique_peptides", "low_confidence",
+            "protein_group",
+            "leading_protein",
+            "leading_name",
+            "leading_uniprot_id",
+            "leading_gene_name",
+            "leading_description",
+            "n_peptides",
+            "n_unique_peptides",
+            "low_confidence",
         }
         sample_columns = [
-            col for col in protein_data.columns
-            if col not in known_annotation_cols
-            and protein_data[col].dtype == "float64"
+            col
+            for col in protein_data.columns
+            if col not in known_annotation_cols and protein_data[col].dtype == "float64"
         ]
     else:
-        sample_columns = [
-            col for col in protein_data.columns if col not in protein_cols
-        ]
+        sample_columns = [col for col in protein_data.columns if col not in protein_cols]
 
     # Detect and report batch suffix
     batch_suffix = detect_batch_suffix(sample_columns)
@@ -556,7 +558,7 @@ def clean_sample_names(
 
 
 def match_samples_to_metadata(
-    cleaned_sample_names: Dict[str, str], 
+    cleaned_sample_names: Dict[str, str],
     metadata: pd.DataFrame,
     include_unmatched: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
@@ -597,10 +599,7 @@ def match_samples_to_metadata(
         if metadata_match.empty:
             # Try partial matching
             for _, row in metadata.iterrows():
-                if (
-                    cleaned_name in str(row[replicate_col])
-                    or str(row[replicate_col]) in cleaned_name
-                ):
+                if cleaned_name in str(row[replicate_col]) or str(row[replicate_col]) in cleaned_name:
                     metadata_match = pd.DataFrame([row])
                     break
 
@@ -704,9 +703,7 @@ def identify_and_classify_controls(
         for control_type, keywords in control_keywords.items():
             for keyword in keywords:
                 if keyword in sample_lower:
-                    identified_patterns[keyword] = (
-                        identified_patterns.get(keyword, 0) + 1
-                    )
+                    identified_patterns[keyword] = identified_patterns.get(keyword, 0) + 1
                     # Return capitalized version of control type
                     if control_type == "pool":
                         return "Pool"
@@ -723,9 +720,7 @@ def identify_and_classify_controls(
 
         return None
 
-    def classify_from_metadata(
-        sample_name: str, metadata_row: pd.Series
-    ) -> Optional[str]:
+    def classify_from_metadata(sample_name: str, metadata_row: pd.Series) -> Optional[str]:
         """Check metadata columns for control indicators"""
         if metadata is None:
             return None
@@ -768,11 +763,7 @@ def identify_and_classify_controls(
         original_group = sample_info.get("Group", "Unknown")
 
         # Skip if update_nan_only is True and sample has a valid group
-        if (
-            update_nan_only
-            and pd.notna(original_group)
-            and str(original_group) != "Unknown"
-        ):
+        if update_nan_only and pd.notna(original_group) and str(original_group) != "Unknown":
             continue
 
         # Try classification from sample name first
@@ -797,9 +788,7 @@ def identify_and_classify_controls(
             changes.append(
                 {
                     "sample": sample_name,
-                    "original": str(original_group)
-                    if pd.notna(original_group)
-                    else "NaN",
+                    "original": str(original_group) if pd.notna(original_group) else "NaN",
                     "new": new_group,
                 }
             )
@@ -815,9 +804,7 @@ def identify_and_classify_controls(
         # Track control types
         group_lower = str(group).lower()
         for control_type in control_keywords.keys():
-            if any(
-                keyword in group_lower for keyword in control_keywords[control_type]
-            ):
+            if any(keyword in group_lower for keyword in control_keywords[control_type]):
                 control_types.add(control_type)
                 break
 
@@ -836,11 +823,7 @@ def identify_and_classify_controls(
             count
             for group, count in group_counts.items()
             if group not in ["Unknown"]
-            and any(
-                keyword in str(group).lower()
-                for keywords in control_keywords.values()
-                for keyword in keywords
-            )
+            and any(keyword in str(group).lower() for keywords in control_keywords.values() for keyword in keywords)
         ),
         "study_samples": sum(
             count

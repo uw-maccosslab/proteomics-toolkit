@@ -4,7 +4,6 @@ import pandas as pd
 import pytest
 
 from proteomics_toolkit.data_import import (
-    BATCH_SUFFIX_DELIMITER,
     clean_description,
     clean_sample_names,
     create_sample_column_mapping,
@@ -15,7 +14,6 @@ from proteomics_toolkit.data_import import (
     parse_uniprot_identifier,
     strip_batch_suffix,
 )
-
 
 # ---------------------------------------------------------------------------
 # parse_uniprot_identifier

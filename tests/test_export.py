@@ -3,14 +3,12 @@
 import os
 
 import pandas as pd
-import pytest
 
 from proteomics_toolkit.export import (
     create_config_dict_from_notebook_vars,
     export_analysis_results,
     export_timestamped_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # export_analysis_results
@@ -30,9 +28,7 @@ class TestExportAnalysisResults:
         # Check the normalized data file was created
         assert os.path.exists(result["normalized_data"])
 
-    def test_exports_with_differential_results(
-        self, tmp_path, standardized_protein_data, sample_metadata_dict
-    ):
+    def test_exports_with_differential_results(self, tmp_path, standardized_protein_data, sample_metadata_dict):
         diff_results = pd.DataFrame(
             {
                 "Protein": standardized_protein_data["Protein"].tolist(),

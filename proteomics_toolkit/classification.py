@@ -61,26 +61,25 @@ def run_binary_classification(
             'class_names': Array of class name strings.
             'fold_roc_data': List of (fpr, tpr, auc) tuples per fold.
     """
-    from sklearn.linear_model import LogisticRegression
     from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import LeaveOneOut, StratifiedKFold
-    from sklearn.preprocessing import StandardScaler, LabelEncoder
+    from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import (
         accuracy_score,
+        auc,
         balanced_accuracy_score,
         classification_report,
         confusion_matrix,
         roc_auc_score,
         roc_curve,
-        auc,
     )
+    from sklearn.model_selection import LeaveOneOut, StratifiedKFold
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
 
     # Align subjects
     common_subjects = fold_change_matrix.index.intersection(group_labels.index)
     if len(common_subjects) < 10:
         raise ValueError(
-            f"Only {len(common_subjects)} subjects have both fold-change "
-            f"data and group labels. Need at least 10."
+            f"Only {len(common_subjects)} subjects have both fold-change data and group labels. Need at least 10."
         )
 
     X = fold_change_matrix.loc[common_subjects].copy()
@@ -130,30 +129,31 @@ def run_binary_classification(
     # Set up classifier factory (create fresh per fold)
     def make_clf():
         if method == "logistic_regression":
-            return LogisticRegression(
-                max_iter=5000, solver="saga", penalty="l1", C=1.0, random_state=42
-            )
+            return LogisticRegression(max_iter=5000, solver="saga", penalty="l1", C=1.0, random_state=42)
         elif method == "random_forest":
             return RandomForestClassifier(
-                n_estimators=100, max_depth=10, min_samples_split=5,
-                min_samples_leaf=2, random_state=42, n_jobs=-1
+                n_estimators=100, max_depth=10, min_samples_split=5, min_samples_leaf=2, random_state=42, n_jobs=-1
             )
         elif method == "linear_svm":
-            from sklearn.svm import LinearSVC
             from sklearn.calibration import CalibratedClassifierCV
+            from sklearn.svm import LinearSVC
+
             svm_base = LinearSVC(C=0.01, random_state=42, max_iter=5000)
             return CalibratedClassifierCV(svm_base, cv=3)
         elif method == "xgboost":
             from xgboost import XGBClassifier
+
             return XGBClassifier(
-                n_estimators=100, max_depth=3, learning_rate=0.1,
-                random_state=42, eval_metric="logloss",
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.1,
+                random_state=42,
+                eval_metric="logloss",
                 use_label_encoder=False,
             )
         else:
             raise ValueError(
-                f"Unknown method: {method}. "
-                f"Use 'logistic_regression', 'random_forest', 'linear_svm', or 'xgboost'."
+                f"Unknown method: {method}. Use 'logistic_regression', 'random_forest', 'linear_svm', or 'xgboost'."
             )
 
     # Cross-validated predictions and per-fold ROC data
@@ -191,9 +191,7 @@ def run_binary_classification(
             auc_overall = 1.0 - auc_overall
             y_prob_all = 1.0 - y_prob_all
             y_pred_all = 1 - y_pred_all
-            fold_roc_data = [
-                (fpr, tpr, max(a, 1.0 - a)) for fpr, tpr, a in fold_roc_data
-            ]
+            fold_roc_data = [(fpr, tpr, max(a, 1.0 - a)) for fpr, tpr, a in fold_roc_data]
     except ValueError:
         auc_overall = None
 
@@ -222,6 +220,7 @@ def run_binary_classification(
     elif method == "linear_svm":
         # CalibratedClassifierCV wraps the SVC; train a bare LinearSVC for coefficients
         from sklearn.svm import LinearSVC
+
         svm_for_coef = LinearSVC(C=0.01, random_state=42, max_iter=5000)
         svm_for_coef.fit(X_scaled, y_encoded)
         importances = pd.Series(np.abs(svm_for_coef.coef_[0]), index=feature_names)
@@ -247,15 +246,17 @@ def run_binary_classification(
     print(f"Binary Classification Results ({method})")
     print(f"{'=' * 50}")
     print(f"Classes: {class_names[0]} vs {class_names[1]}")
-    print(f"Subjects: {len(common_subjects)} ({(y_encoded == 0).sum()} {class_names[0]}, "
-          f"{(y_encoded == 1).sum()} {class_names[1]})")
+    print(
+        f"Subjects: {len(common_subjects)} ({(y_encoded == 0).sum()} {class_names[0]}, "
+        f"{(y_encoded == 1).sum()} {class_names[1]})"
+    )
     print(f"Features: {n_features}")
     print(f"CV Method: {cv_label}")
     print(f"\nAccuracy: {acc:.3f}")
     print(f"Balanced Accuracy: {bal_acc:.3f}")
     if auc_mean is not None:
         print(f"AUC-ROC: {auc_mean:.3f} +/- {auc_std:.3f}")
-    print(f"\nConfusion Matrix:")
+    print("\nConfusion Matrix:")
     print(f"  Predicted:  {class_names[0]:>6}  {class_names[1]:>6}")
     for i, label in enumerate(class_names):
         print(f"  {label:>10}  {cm[i, 0]:>6}  {cm[i, 1]:>6}")
@@ -324,8 +325,7 @@ def plot_fold_change_pca(
     if group_colors is None:
         unique_groups = y.unique()
         default_palette = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
-        group_colors = {g: default_palette[i % len(default_palette)]
-                        for i, g in enumerate(sorted(unique_groups))}
+        group_colors = {g: default_palette[i % len(default_palette)] for i, g in enumerate(sorted(unique_groups))}
 
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -345,8 +345,7 @@ def plot_fold_change_pca(
 
     if annotate_subjects:
         for i, subj in enumerate(common):
-            ax.annotate(str(subj), (coords[i, 0], coords[i, 1]),
-                        fontsize=8, alpha=0.7)
+            ax.annotate(str(subj), (coords[i, 0], coords[i, 1]), fontsize=8, alpha=0.7)
 
     ax.set_xlabel(f"PC1 ({var_explained[0]:.1f}% variance)", fontsize=14)
     if len(var_explained) > 1:
@@ -385,11 +384,11 @@ def plot_roc_curve(
         matplotlib Figure object.
     """
     import matplotlib.pyplot as plt
-    from sklearn.metrics import roc_curve, auc
+    from sklearn.metrics import auc, roc_curve
 
     fold_roc_data = classification_results.get("fold_roc_data", [])
     n_features = classification_results["n_features"]
-    class_names = classification_results["class_names"]
+    classification_results["class_names"]
 
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -413,7 +412,10 @@ def plot_roc_curve(
 
         # Mean ROC curve
         ax.plot(
-            mean_fpr, mean_tpr, color=color, lw=2,
+            mean_fpr,
+            mean_tpr,
+            color=color,
+            lw=2,
             label=f"AUC = {mean_auc:.2f} +/- {std_auc:.2f} ({n_features} features)",
         )
 
@@ -421,8 +423,11 @@ def plot_roc_curve(
         tpr_upper = np.minimum(mean_tpr + std_tpr, 1.0)
         tpr_lower = np.maximum(mean_tpr - std_tpr, 0.0)
         ax.fill_between(
-            mean_fpr, tpr_lower, tpr_upper,
-            alpha=0.2, color=color,
+            mean_fpr,
+            tpr_lower,
+            tpr_upper,
+            alpha=0.2,
+            color=color,
         )
     else:
         # Fallback: single aggregated ROC curve (e.g., LOO-CV)
@@ -434,7 +439,10 @@ def plot_roc_curve(
         roc_auc = auc(fpr, tpr) if auc_val is None else auc_val
 
         ax.plot(
-            fpr, tpr, color=color, lw=2,
+            fpr,
+            tpr,
+            color=color,
+            lw=2,
             label=f"AUC = {roc_auc:.3f} ({n_features} features)",
         )
 
@@ -458,10 +466,10 @@ def plot_roc_curve(
 
 # Default colors for classifier methods
 METHOD_COLORS = {
-    "logistic_regression": "#1f77b4",   # blue
-    "random_forest": "#2ca02c",         # green
-    "linear_svm": "#ff7f0e",            # orange
-    "xgboost": "#9467bd",               # purple
+    "logistic_regression": "#1f77b4",  # blue
+    "random_forest": "#2ca02c",  # green
+    "linear_svm": "#ff7f0e",  # orange
+    "xgboost": "#9467bd",  # purple
 }
 
 METHOD_LABELS = {
@@ -496,7 +504,7 @@ def plot_roc_comparison(
         matplotlib Figure object.
     """
     import matplotlib.pyplot as plt
-    from sklearn.metrics import roc_curve, auc
+    from sklearn.metrics import auc, roc_curve
 
     if method_colors is None:
         method_colors = {}
@@ -505,8 +513,7 @@ def plot_roc_comparison(
     mean_fpr = np.linspace(0, 1, 100)
 
     # Fallback palette for unknown method names
-    fallback_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-                       "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
+    fallback_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
     color_idx = 0
 
     for method_name, cr in results_dict.items():
@@ -537,21 +544,22 @@ def plot_roc_comparison(
             std_auc = np.std(aucs_list)
 
             ax.plot(
-                mean_fpr, mean_tpr, color=color, lw=2,
+                mean_fpr,
+                mean_tpr,
+                color=color,
+                lw=2,
                 label=f"{label} (AUC = {mean_auc:.2f} +/- {std_auc:.2f})",
             )
             tpr_upper = np.minimum(mean_tpr + std_tpr, 1.0)
             tpr_lower = np.maximum(mean_tpr - std_tpr, 0.0)
-            ax.fill_between(mean_fpr, tpr_lower, tpr_upper,
-                            alpha=0.15, color=color)
+            ax.fill_between(mean_fpr, tpr_lower, tpr_upper, alpha=0.15, color=color)
         else:
             # Fallback: single aggregated curve
             y_true = cr["y_true"]
             y_prob = cr["y_prob"]
             fpr, tpr, _ = roc_curve(y_true, y_prob)
             roc_auc = cr.get("auc_roc", auc(fpr, tpr))
-            ax.plot(fpr, tpr, color=color, lw=2,
-                    label=f"{label} (AUC = {roc_auc:.3f})")
+            ax.plot(fpr, tpr, color=color, lw=2, label=f"{label} (AUC = {roc_auc:.3f})")
 
     ax.plot([0, 1], [0, 1], "k--", lw=1.5, alpha=0.5, label="Chance (AUC = 0.50)")
 

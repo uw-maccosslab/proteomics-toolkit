@@ -4,13 +4,14 @@ Visualization Module for Proteomics Analysis Toolkit
 Functions for creating plots and visualizations for proteomics data analysis.
 """
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import seaborn as sns
-from typing import Dict, List, Optional, Tuple, Literal, Union
 import warnings
+from typing import Dict, List, Literal, Optional, Tuple, Union
+
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
 
 from .data_import import BATCH_SUFFIX_DELIMITER
 
@@ -53,12 +54,12 @@ def _make_display_labels(sample_columns: List[str]) -> List[str]:
 def _color_to_rgba(color: Union[str, tuple, np.ndarray]) -> tuple:
     """
     Convert any color format (hex string, named color, RGB tuple, etc.) to RGBA tuple.
-    
+
     Parameters:
     -----------
     color : str, tuple, or np.ndarray
         Color in any matplotlib-compatible format
-        
+
     Returns:
     --------
     tuple
@@ -176,18 +177,23 @@ def plot_box_plot(
                     print(f"Warning: Sample {sample} not found in data columns")
         else:
             print(f"Warning: Group {group} not found in samples_by_group")
-        
+
         pos += 0.5  # Add space between groups
 
-    print(f"Debug: Final arrays lengths - box_data: {len(box_data)}, positions: {len(positions)}, colors: {len(colors)}, labels: {len(labels)}")
+    print(
+        f"Debug: Final arrays lengths - box_data: {len(box_data)}, "
+        f"positions: {len(positions)}, colors: {len(colors)}, labels: {len(labels)}"
+    )
 
     if len(box_data) == 0:
         print("Error: No data to plot!")
         return
 
     # Ensure all arrays have the same length
-    assert len(box_data) == len(positions) == len(colors) == len(labels), \
-        f"Array length mismatch: box_data={len(box_data)}, positions={len(positions)}, colors={len(colors)}, labels={len(labels)}"
+    assert len(box_data) == len(positions) == len(colors) == len(labels), (
+        f"Array length mismatch: box_data={len(box_data)}, positions={len(positions)}, "
+        f"colors={len(colors)}, labels={len(labels)}"
+    )
 
     # Create box plots
     bp = ax.boxplot(
@@ -233,9 +239,7 @@ def plot_box_plot(
     # Print summary statistics
     print("Box plot summary:")
     print(f"Total samples plotted: {len(box_data)}")
-    print(
-        f"Average proteins per sample: {np.mean([len(data) for data in box_data]):.0f}"
-    )
+    print(f"Average proteins per sample: {np.mean([len(data) for data in box_data]):.0f}")
 
 
 def plot_volcano(
@@ -316,7 +320,7 @@ def plot_volcano(
                 break
         else:
             gene_col_used = None  # No gene column found
-    
+
     # Determine which p-value column to use
     p_col_used = None
     fallback_used = False
@@ -333,12 +337,8 @@ def plot_volcano(
             p_col_used = "P.Value"
             p_type_label = "P-value"
             fallback_used = True
-            print(
-                f"Warning: No significant proteins found using adjusted p-values (FDR < {p_threshold})"
-            )
-            print(
-                "Note: Automatically falling back to unadjusted p-values for visualization"
-            )
+            print(f"Warning: No significant proteins found using adjusted p-values (FDR < {p_threshold})")
+            print("Note: Automatically falling back to unadjusted p-values for visualization")
             print("    Note: Results shown use raw p-values, interpret with caution")
         else:
             p_col_used = "adj.P.Val"
@@ -364,9 +364,7 @@ def plot_volcano(
     # Determine effective threshold based on normalization method
     if normalization_method and normalization_method.upper() == "VSN":
         # For VSN/arcsinh data, use smaller thresholds since arcsinh space is compressed
-        effective_threshold = (
-            fc_threshold * 0.5
-        )  # Scale down the threshold for arcsinh space
+        effective_threshold = fc_threshold * 0.5  # Scale down the threshold for arcsinh space
     else:
         # For log2 data, use the original threshold
         effective_threshold = fc_threshold
@@ -406,7 +404,7 @@ def plot_volcano(
                 alpha=alpha,
                 s=point_size,
                 label=label,
-                edgecolors='white',
+                edgecolors="white",
                 linewidth=0.5,
             )
 
@@ -420,10 +418,7 @@ def plot_volcano(
     # Label top significant proteins
     if label_top_n > 0 and gene_col_used is not None and gene_col_used in df.columns:
         significant = (
-            df[
-                (df[p_col_used] < p_threshold)
-                & (abs(df["logFC"]) > effective_threshold)
-            ]
+            df[(df[p_col_used] < p_threshold) & (abs(df["logFC"]) > effective_threshold)]
             .sort_values(p_col_used)
             .head(label_top_n)
         )
@@ -431,17 +426,17 @@ def plot_volcano(
         for _, row in significant.iterrows():
             # Offset labels based on position to reduce overlap
             x_offset = 8 if row["logFC"] > 0 else -8
-            ha = 'left' if row["logFC"] > 0 else 'right'
+            ha = "left" if row["logFC"] > 0 else "right"
             ax.annotate(
                 row[gene_col_used],
                 (row["logFC"], row["neg_log10_p"]),
                 xytext=(x_offset, 5),
                 textcoords="offset points",
                 fontsize=label_fontsize,
-                fontweight='bold',
+                fontweight="bold",
                 alpha=0.9,
                 ha=ha,
-                arrowprops=dict(arrowstyle='-', color='gray', alpha=0.3, lw=0.5),
+                arrowprops=dict(arrowstyle="-", color="gray", alpha=0.3, lw=0.5),
             )
 
     # Customize plot
@@ -455,11 +450,7 @@ def plot_volcano(
 
     # Print title as a statement before the plot
     if title is None:
-        title_suffix = (
-            f" (using {'raw' if fallback_used else use_adjusted_pvalue} p-values)"
-            if fallback_used
-            else ""
-        )
+        title_suffix = f" (using {'raw' if fallback_used else use_adjusted_pvalue} p-values)" if fallback_used else ""
         plot_title = f"Volcano Plot ({fc_description} > {fc_threshold}, {p_type_label} < {p_threshold}){title_suffix}"
     else:
         plot_title = title
@@ -501,16 +492,10 @@ def plot_volcano(
 
     print("Volcano plot summary:")
     print(f"Total proteins: {len(df)}")
-    print(
-        f"P-value type used: {p_type_label} ({'fallback from FDR' if fallback_used else use_adjusted_pvalue})"
-    )
+    print(f"P-value type used: {p_type_label} ({'fallback from FDR' if fallback_used else use_adjusted_pvalue})")
     print(f"Significant ({p_type_label} < {p_threshold}): {n_significant}")
-    print(
-        f"Up-regulated ({fc_description} > {fc_threshold}, {p_type_label} < {p_threshold}): {n_up}"
-    )
-    print(
-        f"Down-regulated ({fc_description} < -{fc_threshold}, {p_type_label} < {p_threshold}): {n_down}"
-    )
+    print(f"Up-regulated ({fc_description} > {fc_threshold}, {p_type_label} < {p_threshold}): {n_up}")
+    print(f"Down-regulated ({fc_description} < -{fc_threshold}, {p_type_label} < {p_threshold}): {n_down}")
 
 
 def plot_normalization_comparison(
@@ -604,12 +589,11 @@ def plot_normalization_comparison(
         norm_medians = plot_normalized.median()
 
     print(f"Normalization comparison ({method}):")
-    print(
-        f"Original median range: {original_medians.max() - original_medians.min():.3f}"
-    )
+    print(f"Original median range: {original_medians.max() - original_medians.min():.3f}")
     print(f"Normalized median range: {norm_medians.max() - norm_medians.min():.3f}")
     print(
-        f"Range reduction: {1 - (norm_medians.max() - norm_medians.min()) / (original_medians.max() - original_medians.min()):.1%}"
+        "Range reduction: "
+        f"{1 - (norm_medians.max() - norm_medians.min()) / (original_medians.max() - original_medians.min()):.1%}"
     )
 
 
@@ -681,9 +665,7 @@ def plot_sample_correlation_heatmap(
         # Calculate actual correlation range for better color scaling
         correlation_values = correlation_matrix.values
         # Get upper triangle (exclude diagonal which is always 1)
-        upper_triangle = correlation_values[
-            np.triu_indices_from(correlation_values, k=1)
-        ]
+        upper_triangle = correlation_values[np.triu_indices_from(correlation_values, k=1)]
         actual_min = np.min(upper_triangle)
         actual_max = np.max(upper_triangle)
 
@@ -706,9 +688,7 @@ def plot_sample_correlation_heatmap(
         # Customize
         g.ax_heatmap.set_xlabel("Samples")
         g.ax_heatmap.set_ylabel("Samples")
-        g.fig.suptitle(
-            f"Sample Correlation Heatmap ({method.title()})", fontsize=16, y=1.02
-        )
+        g.fig.suptitle(f"Sample Correlation Heatmap ({method.title()})", fontsize=16, y=1.02)
 
     plt.show()
 
@@ -779,7 +759,7 @@ def plot_sample_correlation_triangular_heatmap(
             return True
         if isinstance(val, float) and pd.isna(val):
             return True
-        if isinstance(val, str) and val.lower() in ('na', 'nan', ''):
+        if isinstance(val, str) and val.lower() in ("na", "nan", ""):
             return True
         return False
 
@@ -789,7 +769,7 @@ def plot_sample_correlation_triangular_heatmap(
         meta = sample_metadata.get(sample, {})
         # Try the specified group_column first, then fall back to alternatives
         group = meta.get(group_column)
-        
+
         if _is_na_value(group):
             group = meta.get("Sample Category")
         if _is_na_value(group):
@@ -797,7 +777,7 @@ def plot_sample_correlation_triangular_heatmap(
         if _is_na_value(group):
             group = "Unknown"
         groups.append(str(group))
-    
+
     unique_groups = sorted(set(groups))
 
     # Use provided group colors or create color palette for groups
@@ -832,7 +812,7 @@ def plot_sample_correlation_triangular_heatmap(
 
     if show_clustering:
         # Perform hierarchical clustering
-        from scipy.cluster.hierarchy import linkage, dendrogram
+        from scipy.cluster.hierarchy import dendrogram, linkage
         from scipy.spatial.distance import squareform
 
         # Create distance matrix from correlation (1 - correlation for hierarchical clustering)
@@ -858,9 +838,9 @@ def plot_sample_correlation_triangular_heatmap(
 
     # Create figure - we'll use mpl_toolkits for proper alignment
     from mpl_toolkits.axes_grid1 import make_axes_locatable
-    
+
     fig, ax_heatmap = plt.subplots(figsize=figsize)
-    
+
     # Create a mask for the upper triangle to show only lower triangle (excluding diagonal)
     mask = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
 
@@ -876,30 +856,28 @@ def plot_sample_correlation_triangular_heatmap(
         square=True,  # Square aspect ratio
         linewidths=0.5 if n_samples <= 50 else 0.1,  # Thinner lines for many samples
         cbar_kws={
-            "label": f"{method.title()} Correlation", 
+            "label": f"{method.title()} Correlation",
             "shrink": 0.5,  # Reduced height to better match triangular heatmap
-            "aspect": 20,   # Narrower colorbar
+            "aspect": 20,  # Narrower colorbar
         },
         ax=ax_heatmap,
         annot_kws={"size": annot_fontsize} if show_annotations else {},
     )
-    
+
     # Increase colorbar label and tick font sizes
     cbar = heatmap.collections[0].colorbar
-    cbar.ax.set_ylabel(f"{method.title()} Correlation", fontsize=label_fontsize + 2, fontweight='bold')
+    cbar.ax.set_ylabel(f"{method.title()} Correlation", fontsize=label_fontsize + 2, fontweight="bold")
     cbar.ax.tick_params(labelsize=label_fontsize)
 
     # Set tick labels
     if n_samples <= 50:
-        ax_heatmap.set_xticklabels(
-            ax_heatmap.get_xticklabels(), rotation=45, ha="right", fontsize=label_fontsize
-        )
+        ax_heatmap.set_xticklabels(ax_heatmap.get_xticklabels(), rotation=45, ha="right", fontsize=label_fontsize)
         ax_heatmap.set_yticklabels(ax_heatmap.get_yticklabels(), rotation=0, fontsize=label_fontsize)
     else:
         # Too many samples - hide tick labels
         ax_heatmap.set_xticklabels([])
         ax_heatmap.set_yticklabels([])
-    
+
     ax_heatmap.set_xlabel("")
     ax_heatmap.set_ylabel("")
 
@@ -912,15 +890,14 @@ def plot_sample_correlation_triangular_heatmap(
 
     # Convert colors to RGBA format for imshow (handles hex strings, named colors, etc.)
     sample_colors_rgba = [_color_to_rgba(c) for c in sample_colors]
-    
+
     # Use make_axes_locatable for properly aligned color bars
     divider = make_axes_locatable(ax_heatmap)
-    
+
     # Create left color bar - append to left side, shares y-axis with heatmap
     ax_left_colorbar = divider.append_axes("left", size="1.5%", pad=0.05)
     left_colors = np.array(sample_colors_rgba).reshape(-1, 1, 4)
-    ax_left_colorbar.imshow(left_colors, aspect='auto', origin='upper',
-                            extent=[0, 1, n_samples, 0])
+    ax_left_colorbar.imshow(left_colors, aspect="auto", origin="upper", extent=[0, 1, n_samples, 0])
     ax_left_colorbar.set_xlim(0, 1)
     ax_left_colorbar.set_ylim(n_samples, 0)  # Match heatmap orientation (0 at top)
     ax_left_colorbar.set_xticks([])
@@ -928,13 +905,12 @@ def plot_sample_correlation_triangular_heatmap(
     ax_left_colorbar.tick_params(left=False, bottom=False)  # Remove tick marks
     for spine in ax_left_colorbar.spines.values():
         spine.set_visible(False)  # Remove border
-    ax_left_colorbar.set_ylabel("Group", fontsize=label_fontsize + 4, fontweight='bold')
-    
+    ax_left_colorbar.set_ylabel("Group", fontsize=label_fontsize + 4, fontweight="bold")
+
     # Create bottom color bar - append to bottom, shares x-axis with heatmap
     ax_bottom_colorbar = divider.append_axes("bottom", size="1.5%", pad=0.05)
     bottom_colors = np.array(sample_colors_rgba).reshape(1, -1, 4)
-    ax_bottom_colorbar.imshow(bottom_colors, aspect='auto', origin='upper',
-                              extent=[0, n_samples, 1, 0])
+    ax_bottom_colorbar.imshow(bottom_colors, aspect="auto", origin="upper", extent=[0, n_samples, 1, 0])
     ax_bottom_colorbar.set_xlim(0, n_samples)
     ax_bottom_colorbar.set_ylim(1, 0)
     ax_bottom_colorbar.set_xticks([])
@@ -942,19 +918,29 @@ def plot_sample_correlation_triangular_heatmap(
     ax_bottom_colorbar.tick_params(left=False, bottom=False)  # Remove tick marks
     for spine in ax_bottom_colorbar.spines.values():
         spine.set_visible(False)  # Remove border
-    ax_bottom_colorbar.set_xlabel("Group", fontsize=label_fontsize + 4, fontweight='bold')
+    ax_bottom_colorbar.set_xlabel("Group", fontsize=label_fontsize + 4, fontweight="bold")
 
     # Add legend for groups - only include groups that actually appear in the data
     # Filter out "na"-like values that were replaced by Sample Category fallback
     legend_groups = [g for g in unique_groups if not _is_na_value(g)]
-    legend_handles = [Patch(facecolor=_color_to_rgba(group_color_map[g]), 
-                            edgecolor='black', label=g) 
-                      for g in legend_groups if groups.count(g) > 0]
-    
+    legend_handles = [
+        Patch(facecolor=_color_to_rgba(group_color_map[g]), edgecolor="black", label=g)
+        for g in legend_groups
+        if groups.count(g) > 0
+    ]
+
     # Place legend close to the plot (upper right, just outside the heatmap)
-    fig.legend(handles=legend_handles, loc='upper right', bbox_to_anchor=(0.98, 0.98),
-               fontsize=label_fontsize, title="Groups", title_fontsize=label_fontsize + 2,
-               frameon=True, fancybox=True, shadow=True)
+    fig.legend(
+        handles=legend_handles,
+        loc="upper right",
+        bbox_to_anchor=(0.98, 0.98),
+        fontsize=label_fontsize,
+        title="Groups",
+        title_fontsize=label_fontsize + 2,
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+    )
 
     plt.tight_layout()
     plt.show()
@@ -968,7 +954,7 @@ def plot_sample_correlation_triangular_heatmap(
     print(f"  Min correlation: {np.nanmin(lower_triangle):.3f}")
     print(f"  Max correlation: {np.nanmax(lower_triangle):.3f}")
     print(f"  Correlation range: {np.nanmax(lower_triangle) - np.nanmin(lower_triangle):.3f}")
-    
+
     if not show_annotations:
         print(f"\n  Note: Correlation values hidden ({n_samples} samples > {max_samples_for_annotations} threshold)")
 
@@ -1158,15 +1144,10 @@ def plot_comparative_pca(
         pca_result = pca.fit_transform(pca_input_scaled)
 
         # Create DataFrame with results
-        pca_df = pd.DataFrame(
-            pca_result[:, :2], columns=["PC1", "PC2"], index=complete_data.columns
-        )
+        pca_df = pd.DataFrame(pca_result[:, :2], columns=["PC1", "PC2"], index=complete_data.columns)
 
         # Add group information
-        pca_df["Group"] = [
-            sample_metadata.get(sample, {}).get("Group", "Unknown")
-            for sample in pca_df.index
-        ]
+        pca_df["Group"] = [sample_metadata.get(sample, {}).get("Group", "Unknown") for sample in pca_df.index]
         pca_df["Sample"] = pca_df.index
 
         return pca_df, pca
@@ -1189,15 +1170,9 @@ def plot_comparative_pca(
         # Get unique groups and set colors - use group_order if provided for consistent legend ordering
         if group_order is not None:
             # Use provided group order, but only include groups that exist in the data
-            unique_groups = [
-                group for group in group_order if group in pca_df["Group"].values
-            ]
+            unique_groups = [group for group in group_order if group in pca_df["Group"].values]
             # Add any remaining groups not in group_order
-            remaining_groups = [
-                group
-                for group in pca_df["Group"].unique()
-                if group not in unique_groups
-            ]
+            remaining_groups = [group for group in pca_df["Group"].unique() if group not in unique_groups]
             unique_groups.extend(remaining_groups)
         else:
             unique_groups = pca_df["Group"].unique()
@@ -1206,13 +1181,8 @@ def plot_comparative_pca(
             import matplotlib.pyplot as plt
 
             tab10_cmap = plt.cm.get_cmap("tab10")
-            colors = [
-                tab10_cmap(i / max(1, len(unique_groups) - 1))
-                for i in range(len(unique_groups))
-            ]
-            current_group_colors = {
-                group: colors[i] for i, group in enumerate(unique_groups)
-            }
+            colors = [tab10_cmap(i / max(1, len(unique_groups) - 1)) for i in range(len(unique_groups))]
+            current_group_colors = {group: colors[i] for i, group in enumerate(unique_groups)}
         else:
             current_group_colors = group_colors.copy()
 
@@ -1231,27 +1201,17 @@ def plot_comparative_pca(
                     linewidth=0.5,
                 )
 
-        ax.set_xlabel(
-            f"PC1 ({pca.explained_variance_ratio_[0]:.1%} variance)", fontsize=14
-        )
-        ax.set_ylabel(
-            f"PC2 ({pca.explained_variance_ratio_[1]:.1%} variance)", fontsize=14
-        )
+        ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%} variance)", fontsize=14)
+        ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%} variance)", fontsize=14)
         ax.set_title(title_suffix, fontsize=16, fontweight="bold")
         ax.grid(True, alpha=0.3)
         ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=10)
 
     # Perform PCA on all datasets
     print("Performing comparative PCA analysis...")
-    original_pca_df, original_pca = perform_pca_analysis(
-        original_data, "Original Data", log_transform=True
-    )
-    median_pca_df, median_pca = perform_pca_analysis(
-        median_normalized_data, "Median Normalized", log_transform=True
-    )
-    vsn_pca_df, vsn_pca = perform_pca_analysis(
-        vsn_normalized_data, "VSN Normalized", log_transform=False
-    )
+    original_pca_df, original_pca = perform_pca_analysis(original_data, "Original Data", log_transform=True)
+    median_pca_df, median_pca = perform_pca_analysis(median_normalized_data, "Median Normalized", log_transform=True)
+    vsn_pca_df, vsn_pca = perform_pca_analysis(vsn_normalized_data, "VSN Normalized", log_transform=False)
 
     # Create plots
     fig, axes = plt.subplots(1, 3, figsize=figsize)
@@ -1275,9 +1235,7 @@ def plot_comparative_pca(
         print(f"**{dataset_name}:**")
         print(f"  PC1 variance: {pca.explained_variance_ratio_[0]:.1%}")
         print(f"  PC2 variance: {pca.explained_variance_ratio_[1]:.1%}")
-        print(
-            f"  Total variance (PC1-PC2): {pca.explained_variance_ratio_[:2].sum():.1%}"
-        )
+        print(f"  Total variance (PC1-PC2): {pca.explained_variance_ratio_[:2].sum():.1%}")
 
         # Calculate group separation (average distance between group centroids)
         unique_groups = pca_df["Group"].unique()
@@ -1304,9 +1262,7 @@ def plot_comparative_pca(
                         distances.append(dist)
 
                 if distances:
-                    print(
-                        f"  Inter-group distance: {np.mean(distances):.2f} ± {np.std(distances):.2f}"
-                    )
+                    print(f"  Inter-group distance: {np.mean(distances):.2f} ± {np.std(distances):.2f}")
         print()
 
     print_pca_summary(original_pca, original_pca_df, "Original Data")
@@ -1373,7 +1329,7 @@ def plot_control_correlation(
     corr_matrix = control_data.corr(method="pearson")
 
     if cluster:
-        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.cluster.hierarchy import leaves_list, linkage
         from scipy.spatial.distance import squareform
 
         # Compute clustering order
@@ -1428,13 +1384,16 @@ def plot_control_correlation(
 
             # Legend below the plot
             from matplotlib.patches import Patch
-            handles = [
-                Patch(facecolor=group_colors.get(g, "#888888"), label=g)
-                for g in unique_groups_ordered
-            ]
-            ax.legend(handles=handles, loc="upper center",
-                      bbox_to_anchor=(0.5, -0.12), frameon=True,
-                      title="Group", ncol=len(unique_groups_ordered))
+
+            handles = [Patch(facecolor=group_colors.get(g, "#888888"), label=g) for g in unique_groups_ordered]
+            ax.legend(
+                handles=handles,
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.12),
+                frameon=True,
+                title="Group",
+                ncol=len(unique_groups_ordered),
+            )
     else:
         fig, ax = plt.subplots(figsize=figsize)
         sns.heatmap(
@@ -1457,9 +1416,7 @@ def plot_control_correlation(
     off_diag = corr_matrix.values[np.triu_indices_from(corr_matrix.values, k=1)]
     off_diag = off_diag[~np.isnan(off_diag)]
     if len(off_diag) > 0:
-        print(f"Mean r = {np.mean(off_diag):.3f}, "
-              f"Min r = {np.min(off_diag):.3f}, "
-              f"Max r = {np.max(off_diag):.3f}")
+        print(f"Mean r = {np.mean(off_diag):.3f}, Min r = {np.min(off_diag):.3f}, Max r = {np.max(off_diag):.3f}")
 
 
 def plot_control_correlation_analysis(
@@ -1500,9 +1457,7 @@ def plot_control_correlation_analysis(
     try:
         import seaborn as sns  # noqa: F401  # Used for optional enhanced plotting
     except ImportError:
-        print(
-            "Required packages (seaborn, scipy) not available for correlation analysis"
-        )
+        print("Required packages (seaborn, scipy) not available for correlation analysis")
         return
 
     # Handle default control labels - look for common control patterns
@@ -1534,17 +1489,13 @@ def plot_control_correlation_analysis(
                 control_labels.append(value)
 
         if not control_labels:
-            print(
-                f"No control samples found automatically in column '{control_column}'."
-            )
+            print(f"No control samples found automatically in column '{control_column}'.")
             print(f"Available values: {sorted(unique_control_values)}")
             print("Please specify control_labels parameter explicitly.")
             return
 
     print("=== CONTROL CORRELATION ANALYSIS ===\n")
-    print(
-        f"Looking for control samples in column '{control_column}' with labels: {control_labels}"
-    )
+    print(f"Looking for control samples in column '{control_column}' with labels: {control_labels}")
 
     # Find control samples using simplified approach
     all_control_samples = []
@@ -1562,9 +1513,7 @@ def plot_control_correlation_analysis(
 
     if len(all_control_samples) < 2:
         print("\n⚠ Warning: Less than 2 control samples found!")
-        print(
-            f"Check that your control_column ('{control_column}') and control_labels ({control_labels}) are correct."
-        )
+        print(f"Check that your control_column ('{control_column}') and control_labels ({control_labels}) are correct.")
         return
 
     def create_control_heatmap(data, title, ax, log_transform=False):
@@ -1719,9 +1668,7 @@ def plot_control_correlation_analysis(
     def print_correlation_summary(corr_matrix, dataset_name):
         if corr_matrix is not None:
             # Get off-diagonal correlations
-            off_diagonal = corr_matrix.values[
-                np.triu_indices_from(corr_matrix.values, k=1)
-            ]
+            off_diagonal = corr_matrix.values[np.triu_indices_from(corr_matrix.values, k=1)]
             off_diagonal = off_diagonal[~np.isnan(off_diagonal)]
 
             if len(off_diagonal) > 0:
@@ -1734,9 +1681,7 @@ def plot_control_correlation_analysis(
                 # Count high correlations
                 high_corr = np.sum(off_diagonal > 0.8)
                 total = len(off_diagonal)
-                print(
-                    f"  High correlation (>0.8): {high_corr}/{total} ({100 * high_corr / total:.1f}%)"
-                )
+                print(f"  High correlation (>0.8): {high_corr}/{total} ({100 * high_corr / total:.1f}%)")
 
     print_correlation_summary(corr_original, "Original Data")
     print_correlation_summary(corr_median, "Median Normalized")
@@ -1771,9 +1716,7 @@ def plot_control_group_correlation_analysis(
         Figure size (width, height)
     """
 
-    print(
-        f"\n=== INDIVIDUAL CONTROL GROUP CORRELATION ANALYSIS ({normalization_method}) ==="
-    )
+    print(f"\n=== INDIVIDUAL CONTROL GROUP CORRELATION ANALYSIS ({normalization_method}) ===")
 
     # Find control samples by type
     control_groups = {}
@@ -1883,9 +1826,7 @@ def plot_control_group_correlation_analysis(
                             f"r = {correlation:.3f}",
                             transform=ax.transAxes,
                             fontsize=10,
-                            bbox=dict(
-                                boxstyle="round,pad=0.3", facecolor="white", alpha=0.8
-                            ),
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
                             verticalalignment="top",
                         )
 
@@ -1897,16 +1838,12 @@ def plot_control_group_correlation_analysis(
                     ax.text(
                         0.5,
                         0.5,
-                        f"{correlation:.3f}***"
-                        if correlation > 0.95
-                        else f"{correlation:.3f}",
+                        f"{correlation:.3f}***" if correlation > 0.95 else f"{correlation:.3f}",
                         ha="center",
                         va="center",
                         fontsize=14,
                         fontweight="bold",
-                        bbox=dict(
-                            boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8
-                        ),
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
                     )
                     ax.set_xlim(0, 1)
                     ax.set_ylim(0, 1)
@@ -1931,9 +1868,7 @@ def plot_control_group_correlation_analysis(
             print(f"  Max correlation: {np.max(off_diagonal):.3f}")
             high_corr = np.sum(off_diagonal > 0.9)
             total = len(off_diagonal)
-            print(
-                f"  High correlation (>0.9): {high_corr}/{total} ({100 * high_corr / total:.1f}%)"
-            )
+            print(f"  High correlation (>0.9): {high_corr}/{total} ({100 * high_corr / total:.1f}%)")
 
         print(f"\n{group_name} analysis complete!")
         print("-" * 50)
@@ -2001,16 +1936,12 @@ def plot_individual_control_pool_analysis(
                 control_labels.append(value)
 
         if not control_labels:
-            print(
-                f"No control samples found automatically in column '{control_column}'."
-            )
+            print(f"No control samples found automatically in column '{control_column}'.")
             print(f"Available values: {sorted(unique_control_values)}")
             print("Please specify control_labels parameter explicitly.")
             return
 
-    print(
-        f"\n=== INDIVIDUAL CONTROL POOL CORRELATION ANALYSIS ({normalization_method}) ==="
-    )
+    print(f"\n=== INDIVIDUAL CONTROL POOL CORRELATION ANALYSIS ({normalization_method}) ===")
 
     # Find control samples using simplified approach
     pool_samples = {}
@@ -2025,9 +1956,7 @@ def plot_individual_control_pool_analysis(
             pool_samples[control_label] = found_samples
 
     if not pool_samples:
-        print(
-            f"No control pool samples found in column '{control_column}' with labels {control_labels}!"
-        )
+        print(f"No control pool samples found in column '{control_column}' with labels {control_labels}!")
         return
 
     # Process each control pool that has multiple samples
@@ -2122,9 +2051,7 @@ def plot_individual_control_pool_analysis(
                             f"r = {correlation:.3f}",
                             transform=ax.transAxes,
                             fontsize=10,
-                            bbox=dict(
-                                boxstyle="round,pad=0.3", facecolor="white", alpha=0.8
-                            ),
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
                             verticalalignment="top",
                         )
 
@@ -2136,16 +2063,12 @@ def plot_individual_control_pool_analysis(
                     ax.text(
                         0.5,
                         0.5,
-                        f"{correlation:.3f}***"
-                        if correlation > 0.95
-                        else f"{correlation:.3f}",
+                        f"{correlation:.3f}***" if correlation > 0.95 else f"{correlation:.3f}",
                         ha="center",
                         va="center",
                         fontsize=14,
                         fontweight="bold",
-                        bbox=dict(
-                            boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8
-                        ),
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
                     )
                     ax.set_xlim(0, 1)
                     ax.set_ylim(0, 1)
@@ -2170,9 +2093,7 @@ def plot_individual_control_pool_analysis(
             print(f"  Max correlation: {np.max(off_diagonal):.3f}")
             high_corr = np.sum(off_diagonal > 0.9)
             total = len(off_diagonal)
-            print(
-                f"  High correlation (>0.9): {high_corr}/{total} ({100 * high_corr / total:.1f}%)"
-            )
+            print(f"  High correlation (>0.9): {high_corr}/{total} ({100 * high_corr / total:.1f}%)")
 
         print(f"\n{pool_name} analysis complete!")
         print("-" * 50)
@@ -2187,15 +2108,15 @@ def plot_control_cv_distribution(
     normalization_method: str = "Median",
     figsize: Tuple[int, int] = (18, 6),
     cv_threshold: float = 20.0,
-    title_suffix: str = ""
+    title_suffix: str = "",
 ) -> Dict[str, List[float]]:
     """
     Create CV distribution histograms for control samples by control type.
-    
-    This function analyzes the coefficient of variance (CV) distribution for each 
-    control type to assess reproducibility between control replicates. Uses median 
+
+    This function analyzes the coefficient of variance (CV) distribution for each
+    control type to assess reproducibility between control replicates. Uses median
     normalized, non-log transformed data for CV calculations.
-    
+
     Parameters:
     -----------
     data : pd.DataFrame
@@ -2216,12 +2137,12 @@ def plot_control_cv_distribution(
         CV threshold line to display (%), default 20.0
     title_suffix : str, optional
         Additional text to append to plot title
-        
+
     Returns:
     --------
     Dict[str, List[float]]
         Dictionary mapping control type to list of CV values for that type
-        
+
     Notes:
     ------
     - CV is calculated as (std/mean * 100) for each protein across control samples
@@ -2229,9 +2150,9 @@ def plot_control_cv_distribution(
     - Lower CV values indicate better reproducibility between control replicates
     - At least 2 samples of each control type are required for CV calculation
     """
-    
+
     print("=== CONTROL SAMPLE CV DISTRIBUTION ANALYSIS ===")
-    
+
     # Get control samples for each control type
     control_samples_by_type = {}
     for control_label in control_labels:
@@ -2239,110 +2160,133 @@ def plot_control_cv_distribution(
         for sample_name, metadata_dict in sample_metadata.items():
             if sample_name in sample_columns and metadata_dict.get(control_column) == control_label:
                 control_samples_by_type[control_label].append(sample_name)
-    
+
     print("Control samples by type:")
     for control_type, samples in control_samples_by_type.items():
         print(f"  {control_type}: {len(samples)} samples")
-    
+
     # Calculate CV for each control type
     cv_data = {}
     for control_type, control_sample_list in control_samples_by_type.items():
         if len(control_sample_list) > 1:  # Need at least 2 samples to calculate CV
             # Get the control sample data
             control_data = data[control_sample_list]
-            
+
             # Calculate CV for each protein across control samples
             mean_values = control_data.mean(axis=1)
             std_values = control_data.std(axis=1)
-            
+
             # Calculate CV (std/mean * 100) for proteins with non-zero means
             cv_values = []
             for i in range(len(mean_values)):
                 if mean_values.iloc[i] > 0:  # Avoid division by zero
                     cv = (std_values.iloc[i] / mean_values.iloc[i]) * 100
                     cv_values.append(cv)
-            
+
             cv_data[control_type] = cv_values
             print(f"  {control_type}: {len(cv_values)} proteins with calculable CV")
         else:
             cv_data[control_type] = []
             print(f"  {control_type}: Insufficient samples for CV calculation")
-    
+
     # Create the histogram plot
     fig, axes = plt.subplots(1, len(control_labels), figsize=figsize)
     if len(control_labels) == 1:
         axes = [axes]  # Ensure axes is always iterable
-    
-    title = f'Coefficient of Variance Distribution for Control Samples\n({normalization_method} Normalized Data)'
+
+    title = f"Coefficient of Variance Distribution for Control Samples\n({normalization_method} Normalized Data)"
     if title_suffix:
-        title += f' - {title_suffix}'
-    fig.suptitle(title, fontsize=16, fontweight='bold')
-    
+        title += f" - {title_suffix}"
+    fig.suptitle(title, fontsize=16, fontweight="bold")
+
     for idx, control_type in enumerate(control_labels):
         ax = axes[idx]
         cv_values = cv_data.get(control_type, [])
-        
+
         if len(cv_values) > 0:
             # Create histogram
-            n, bins, patches = ax.hist(cv_values, bins=50, alpha=0.7, color='skyblue', 
-                                     edgecolor='black', linewidth=0.5)
-            
+            n, bins, patches = ax.hist(cv_values, bins=50, alpha=0.7, color="skyblue", edgecolor="black", linewidth=0.5)
+
             # Calculate statistics
             median_cv = np.median(cv_values)
             mean_cv = np.mean(cv_values)
             cv_under_threshold = (np.array(cv_values) < cv_threshold).sum() / len(cv_values) * 100
             cv_under_10 = (np.array(cv_values) < 10).sum() / len(cv_values) * 100
-            
+
             # Add vertical line for median CV
-            ax.axvline(median_cv, color='red', linestyle='--', linewidth=2, 
-                       label=f'Median CV: {median_cv:.1f}%')
-            
+            ax.axvline(median_cv, color="red", linestyle="--", linewidth=2, label=f"Median CV: {median_cv:.1f}%")
+
             # Add vertical line at CV threshold
-            ax.axvline(cv_threshold, color='orange', linestyle=':', linewidth=2, alpha=0.8,
-                       label=f'{cv_threshold}% CV threshold')
-            
+            ax.axvline(
+                cv_threshold,
+                color="orange",
+                linestyle=":",
+                linewidth=2,
+                alpha=0.8,
+                label=f"{cv_threshold}% CV threshold",
+            )
+
             # Add text annotation for CV statistics
-            stats_text = f'{cv_under_threshold:.1f}% of proteins\nhave CV < {cv_threshold}%'
-            ax.text(0.95, 0.95, stats_text, 
-                    transform=ax.transAxes, fontsize=11, fontweight='bold',
-                    verticalalignment='top', horizontalalignment='right',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-            
+            stats_text = f"{cv_under_threshold:.1f}% of proteins\nhave CV < {cv_threshold}%"
+            ax.text(
+                0.95,
+                0.95,
+                stats_text,
+                transform=ax.transAxes,
+                fontsize=11,
+                fontweight="bold",
+                verticalalignment="top",
+                horizontalalignment="right",
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+            )
+
             # Formatting
-            ax.set_title(f'{control_type} Controls\n({len(control_samples_by_type[control_type])} samples)', 
-                         fontsize=14, fontweight='bold')
-            ax.set_xlabel('Coefficient of Variance (%)', fontsize=12)
-            ax.set_ylabel('Number of Proteins', fontsize=12)
+            ax.set_title(
+                f"{control_type} Controls\n({len(control_samples_by_type[control_type])} samples)",
+                fontsize=14,
+                fontweight="bold",
+            )
+            ax.set_xlabel("Coefficient of Variance (%)", fontsize=12)
+            ax.set_ylabel("Number of Proteins", fontsize=12)
             ax.legend(fontsize=10)
             ax.grid(True, alpha=0.3)
-            
+
             # Set reasonable x-axis limits
             ax.set_xlim(0, min(100, np.percentile(cv_values, 99)))
-            
+
             # Print detailed statistics
             print(f"\n{control_type} Statistics:")
             print(f"  Median CV: {median_cv:.2f}%")
             print(f"  Mean CV: {mean_cv:.2f}%")
             print(f"  Proteins with CV < {cv_threshold}%: {cv_under_threshold:.1f}%")
             print(f"  Proteins with CV < 10%: {cv_under_10:.1f}%")
-            
+
         else:
             # Handle case with insufficient data
-            ax.text(0.5, 0.5, f'Insufficient data\nfor {control_type}\n(need ≥2 samples)', 
-                    transform=ax.transAxes, fontsize=14, 
-                    horizontalalignment='center', verticalalignment='center')
-            ax.set_title(f'{control_type} Controls\n({len(control_samples_by_type.get(control_type, []))} samples)', 
-                         fontsize=14, fontweight='bold')
-            ax.set_xlabel('Coefficient of Variance (%)', fontsize=12)
-            ax.set_ylabel('Number of Proteins', fontsize=12)
-    
+            ax.text(
+                0.5,
+                0.5,
+                f"Insufficient data\nfor {control_type}\n(need ≥2 samples)",
+                transform=ax.transAxes,
+                fontsize=14,
+                horizontalalignment="center",
+                verticalalignment="center",
+            )
+            ax.set_title(
+                f"{control_type} Controls\n({len(control_samples_by_type.get(control_type, []))} samples)",
+                fontsize=14,
+                fontweight="bold",
+            )
+            ax.set_xlabel("Coefficient of Variance (%)", fontsize=12)
+            ax.set_ylabel("Number of Proteins", fontsize=12)
+
     plt.tight_layout()
     plt.show()
-    
+
     print("\nDone: Control sample CV distribution analysis complete")
     print(f"Note: CV calculated from {normalization_method.lower()} normalized (non-log transformed) data")
     print("Lower CV values indicate better reproducibility between control replicates")
-    
+
     return cv_data
 
 
@@ -2352,13 +2296,14 @@ def plot_control_cv_distribution(
 # These functions create heatmaps and parallel coordinate plots for any grouped data,
 # including temporal trends, dose-response, treatment groups, clusters, etc.
 
+
 def plot_grouped_heatmap(
     data_df: pd.DataFrame,
     value_columns: List[str],
     group_column: str,
     label_column: Optional[str] = None,
-    title: str = 'Expression Heatmap by Group',
-    cmap: str = 'RdBu_r',
+    title: str = "Expression Heatmap by Group",
+    cmap: str = "RdBu_r",
     zscore: bool = True,
     vmin: float = -2,
     vmax: float = 2,
@@ -2366,16 +2311,16 @@ def plot_grouped_heatmap(
     max_per_group: int = 50,
     sort_by_pvalue: bool = True,
     pvalue_column: Optional[str] = None,
-    figsize: Optional[Tuple[int, int]] = None
+    figsize: Optional[Tuple[int, int]] = None,
 ) -> plt.Figure:
     """
     Create a heatmap of expression data organized by groups (clusters, treatments, etc).
-    
+
     This is a general-purpose heatmap function that can be used for:
     - Temporal trends (weeks as columns, clusters as groups)
     - Dose-response (doses as columns, treatment groups as groups)
     - Any categorical grouping of proteins
-    
+
     Parameters
     ----------
     data_df : pd.DataFrame
@@ -2404,23 +2349,23 @@ def plot_grouped_heatmap(
         Column name containing p-values for sorting
     figsize : tuple, optional
         Figure size (width, height). Auto-calculated if None.
-        
+
     Returns
     -------
     Figure
         Matplotlib figure object
-        
+
     Examples
     --------
     >>> # Temporal heatmap by cluster
     >>> fig = plot_grouped_heatmap(
-    ...     merged_df, 
+    ...     merged_df,
     ...     value_columns=['Week_0', 'Week_2', 'Week_4', 'Week_8'],
     ...     group_column='Cluster_Name',
     ...     label_column='Gene',
     ...     title='Temporal Protein Expression by Cluster'
     ... )
-    
+
     >>> # Dose-response heatmap by treatment
     >>> fig = plot_grouped_heatmap(
     ...     dose_df,
@@ -2431,7 +2376,7 @@ def plot_grouped_heatmap(
     """
     # Get data matrix
     X = data_df[value_columns].values.astype(float)
-    
+
     # Z-score if requested
     if zscore:
         X_means = np.nanmean(X, axis=1, keepdims=True)
@@ -2441,59 +2386,59 @@ def plot_grouped_heatmap(
     else:
         X_z = X
         vmin, vmax = np.nanmin(X_z), np.nanmax(X_z)
-    
+
     # Sort by group, then optionally by p-value
     sorted_df = data_df.copy()
-    sorted_df['_z_data'] = list(X_z)
-    
+    sorted_df["_z_data"] = list(X_z)
+
     sort_cols = [group_column]
     ascending = [True]
     if sort_by_pvalue and pvalue_column and pvalue_column in sorted_df.columns:
         sort_cols.append(pvalue_column)
         ascending.append(True)
-    
+
     sorted_df = sorted_df.sort_values(sort_cols, ascending=ascending)
-    
+
     # Limit rows per group
     limited_dfs = []
     for group in sorted_df[group_column].unique():
         group_subset = sorted_df[sorted_df[group_column] == group].head(max_per_group)
         limited_dfs.append(group_subset)
     sorted_df = pd.concat(limited_dfs)
-    
+
     # Create heatmap data
-    heatmap_data = np.vstack(sorted_df['_z_data'].values)
-    
+    heatmap_data = np.vstack(sorted_df["_z_data"].values)
+
     # Clean column labels
-    col_labels = [str(c).replace('Week_', 'W').replace('Dose_', 'D') for c in value_columns]
-    
+    col_labels = [str(c).replace("Week_", "W").replace("Dose_", "D") for c in value_columns]
+
     # Row labels
     row_labels = sorted_df[label_column].tolist() if label_column and show_labels else None
-    
+
     # Calculate figure size
     if figsize is None:
         fig_height = min(12, max(6, len(sorted_df) * 0.12))
         figsize = (12, fig_height)
-    
+
     fig, ax = plt.subplots(figsize=figsize)
     plt.subplots_adjust(right=0.75, left=0.15)
-    
+
     # Plot heatmap
-    im = ax.imshow(heatmap_data, aspect='auto', cmap=cmap, vmin=vmin, vmax=vmax)
-    
+    im = ax.imshow(heatmap_data, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+
     # X-axis labels
     ax.set_xticks(range(len(col_labels)))
-    ax.set_xticklabels(col_labels, fontsize=11, fontweight='bold')
-    ax.set_xlabel('Condition', fontsize=12, fontweight='bold')
-    
+    ax.set_xticklabels(col_labels, fontsize=11, fontweight="bold")
+    ax.set_xlabel("Condition", fontsize=12, fontweight="bold")
+
     # Y-axis labels
     if row_labels and len(sorted_df) <= 50:
         ax.set_yticks(range(len(row_labels)))
         ax.set_yticklabels(row_labels, fontsize=8)
     else:
-        ax.set_ylabel(f'Proteins (n={len(sorted_df)})', fontsize=12)
+        ax.set_ylabel(f"Proteins (n={len(sorted_df)})", fontsize=12)
         ax.set_yticks([])
-    
+
     # Add group separators and labels
     cluster_bounds = []
     current_idx = 0
@@ -2501,25 +2446,25 @@ def plot_grouped_heatmap(
         n_in_group = (sorted_df[group_column] == group).sum()
         cluster_bounds.append((current_idx, group, n_in_group))
         if current_idx > 0:
-            ax.axhline(y=current_idx - 0.5, color='white', linewidth=2)
+            ax.axhline(y=current_idx - 0.5, color="white", linewidth=2)
         current_idx += n_in_group
-    
+
     # Group labels on right side
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
-    group_mids = [start + n/2 for start, _, n in cluster_bounds]
+    group_mids = [start + n / 2 for start, _, n in cluster_bounds]
     group_labels_text = [f"{name}\n(n={n})" for _, name, n in cluster_bounds]
     ax2.set_yticks(group_mids)
-    ax2.set_yticklabels(group_labels_text, fontsize=10, fontweight='bold')
-    
+    ax2.set_yticklabels(group_labels_text, fontsize=10, fontweight="bold")
+
     # Colorbar
     cbar_ax = fig.add_axes([0.92, 0.25, 0.02, 0.5])
     cbar = fig.colorbar(im, cax=cbar_ax)
-    cbar.set_label('Z-score' if zscore else 'Value', fontsize=11, labelpad=10)
+    cbar.set_label("Z-score" if zscore else "Value", fontsize=11, labelpad=10)
     cbar.ax.tick_params(labelsize=9)
-    
-    ax.set_title(title, fontsize=14, fontweight='bold', pad=10)
-    
+
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=10)
+
     return fig
 
 
@@ -2527,28 +2472,28 @@ def plot_grouped_trajectories(
     data_df: pd.DataFrame,
     value_columns: List[str],
     group_column: str,
-    title: str = 'Expression Trajectories by Group',
+    title: str = "Expression Trajectories by Group",
     x_values: Optional[List[float]] = None,
-    x_label: str = 'Condition',
-    y_label: str = 'Z-scored Value',
+    x_label: str = "Condition",
+    y_label: str = "Z-scored Value",
     zscore: bool = True,
     alpha: float = 0.3,
     linewidth: float = 1.5,
-    line_color: str = '#1f4e79',
-    mean_color: str = 'black',
+    line_color: str = "#1f4e79",
+    mean_color: str = "black",
     show_mean: bool = True,
     n_cols: int = 2,
-    figsize: Optional[Tuple[int, int]] = None
+    figsize: Optional[Tuple[int, int]] = None,
 ) -> plt.Figure:
     """
     Create parallel coordinate / trajectory plots for each group.
-    
+
     This function creates a grid of line plots showing individual trajectories
     and mean trajectory for each group. Useful for:
     - Temporal trends across time points
     - Dose-response curves
     - Any continuous variable across conditions
-    
+
     Parameters
     ----------
     data_df : pd.DataFrame
@@ -2581,12 +2526,12 @@ def plot_grouped_trajectories(
         Number of columns in subplot grid
     figsize : tuple, optional
         Figure size. Auto-calculated if None.
-        
+
     Returns
     -------
     Figure
         Matplotlib figure object
-        
+
     Examples
     --------
     >>> # Temporal trajectories by cluster
@@ -2598,7 +2543,7 @@ def plot_grouped_trajectories(
     ...     x_label='Week',
     ...     title='Temporal Patterns by Cluster'
     ... )
-    
+
     >>> # Dose-response by sensitivity group
     >>> fig = plot_grouped_trajectories(
     ...     dose_df,
@@ -2611,7 +2556,7 @@ def plot_grouped_trajectories(
     """
     # Get data and optionally z-score
     X = data_df[value_columns].values.astype(float)
-    
+
     if zscore:
         X_means = np.nanmean(X, axis=1, keepdims=True)
         X_stds = np.nanstd(X, axis=1, keepdims=True)
@@ -2620,7 +2565,7 @@ def plot_grouped_trajectories(
         X_z = np.nan_to_num(X_z, nan=0, posinf=0, neginf=0)
     else:
         X_z = X
-    
+
     # Extract x-values from column names if not provided
     if x_values is None:
         # Try to extract numbers from column names
@@ -2628,63 +2573,64 @@ def plot_grouped_trajectories(
         for col in value_columns:
             # Try common patterns: Week_0, Week0, W0, Dose_10, D10, etc.
             import re
-            match = re.search(r'[-+]?\d*\.?\d+', str(col))
+
+            match = re.search(r"[-+]?\d*\.?\d+", str(col))
             if match:
                 x_values.append(float(match.group()))
             else:
                 x_values.append(len(x_values))  # Fallback to index
-    
+
     # Get unique groups
     groups = data_df[group_column].unique()
     n_groups = len(groups)
-    
+
     n_rows = (n_groups + n_cols - 1) // n_cols
-    
+
     if figsize is None:
         figsize = (7 * n_cols, max(4 * n_rows, 8))
-    
+
     fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
     if n_groups == 1:
         axes = np.array([axes])
     axes = axes.flatten()
-    
+
     for idx, group_name in enumerate(groups):
         ax = axes[idx]
-        
+
         mask = data_df[group_column] == group_name
         n_items = mask.sum()
-        
+
         if n_items > 0:
             # Plot individual trajectories
             for i, is_in_group in enumerate(mask):
                 if is_in_group:
                     ax.plot(x_values, X_z[i], color=line_color, alpha=alpha, linewidth=linewidth)
-            
+
             # Plot mean trajectory
             if show_mean:
                 group_mean = X_z[mask].mean(axis=0)
-                ax.plot(x_values, group_mean, color=mean_color, linewidth=4, label=f'Mean (n={n_items})')
-                ax.plot(x_values, group_mean, color='orange', linewidth=2.5, linestyle='--')
-        
-        ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)
+                ax.plot(x_values, group_mean, color=mean_color, linewidth=4, label=f"Mean (n={n_items})")
+                ax.plot(x_values, group_mean, color="orange", linewidth=2.5, linestyle="--")
+
+        ax.axhline(y=0, color="gray", linestyle=":", alpha=0.5)
         ax.set_xlabel(x_label, fontsize=12)
         ax.set_ylabel(y_label, fontsize=12)
-        ax.set_title(f'{group_name}\n(n={n_items})', fontsize=12, fontweight='bold')
+        ax.set_title(f"{group_name}\n(n={n_items})", fontsize=12, fontweight="bold")
         ax.set_xticks(x_values)
         if zscore:
             ax.set_ylim(-2.5, 2.5)
         if show_mean:
-            ax.legend(loc='upper right', fontsize=10)
+            ax.legend(loc="upper right", fontsize=10)
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=10)
-    
+
     # Hide unused subplots
     for idx in range(n_groups, len(axes)):
         axes[idx].set_visible(False)
-    
-    plt.suptitle(title, fontsize=14, fontweight='bold', y=1.02)
+
+    plt.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
-    
+
     return fig
 
 
@@ -2692,18 +2638,18 @@ def plot_protein_profile(
     data_df: pd.DataFrame,
     protein_id: str,
     value_columns: List[str],
-    protein_column: str = 'Protein',
-    gene_column: Optional[str] = 'Gene',
+    protein_column: str = "Protein",
+    gene_column: Optional[str] = "Gene",
     x_values: Optional[List[float]] = None,
-    x_label: str = 'Condition',
-    y_label: str = 'Abundance',
+    x_label: str = "Condition",
+    y_label: str = "Abundance",
     title: Optional[str] = None,
-    color: str = '#1f4e79',
-    figsize: Tuple[int, int] = (10, 6)
+    color: str = "#1f4e79",
+    figsize: Tuple[int, int] = (10, 6),
 ) -> plt.Figure:
     """
     Plot the expression profile of a single protein across conditions.
-    
+
     Parameters
     ----------
     data_df : pd.DataFrame
@@ -2726,7 +2672,7 @@ def plot_protein_profile(
         Line and marker color
     figsize : tuple
         Figure size
-        
+
     Returns
     -------
     Figure
@@ -2736,26 +2682,26 @@ def plot_protein_profile(
     mask = data_df[protein_column] == protein_id
     if not mask.any():
         raise ValueError(f"Protein '{protein_id}' not found in data")
-    
+
     protein_row = data_df[mask].iloc[0]
     values = protein_row[value_columns].values.astype(float)
-    
+
     if x_values is None:
         x_values = list(range(len(value_columns)))
-    
+
     # Generate title
     if title is None:
         gene = protein_row.get(gene_column, protein_id) if gene_column else protein_id
-        title = f'{gene} ({protein_id})'
-    
+        title = f"{gene} ({protein_id})"
+
     fig, ax = plt.subplots(figsize=figsize)
-    
-    ax.plot(x_values, values, 'o-', color=color, linewidth=2, markersize=10)
+
+    ax.plot(x_values, values, "o-", color=color, linewidth=2, markersize=10)
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight="bold")
     ax.set_xticks(x_values)
     ax.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
     return fig

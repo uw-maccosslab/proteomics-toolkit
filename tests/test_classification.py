@@ -1,9 +1,5 @@
 """Tests for the classification module."""
 
-import numpy as np
-import pandas as pd
-import pytest
-
 from proteomics_toolkit.classification import (
     run_binary_classification,
 )

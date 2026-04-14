@@ -5,11 +5,13 @@ This module provides a clean, configuration-driven approach to differential
 protein expression analysis with support for various statistical methods.
 """
 
-import pandas as pd
-import numpy as np
-from scipy.stats import ttest_1samp, ttest_ind, mannwhitneyu, wilcoxon
-from statsmodels.stats.multitest import multipletests
 import warnings
+
+import numpy as np
+import pandas as pd
+from scipy.stats import mannwhitneyu, ttest_1samp, ttest_ind, wilcoxon
+from statsmodels.stats.multitest import multipletests
+
 from .normalization import is_normalization_log_transformed
 from .preprocessing import _normalize_group_value
 
@@ -40,7 +42,7 @@ def _sanitize_formula_term(term):
         Sanitized term safe for use in formulas
     """
     # Check if term needs quoting (contains spaces or special characters)
-    if ' ' in term or any(char in term for char in [':', '-', '+', '*', '/', '(', ')', '[', ']']):
+    if " " in term or any(char in term for char in [":", "-", "+", "*", "/", "(", ")", "[", "]"]):
         return f'Q("{term}")'
     return term
 
@@ -68,19 +70,19 @@ def _apply_log_transformation_if_needed(data, config):
     if config.log_transform_before_stats == "auto":
         # Use existing normalization infrastructure to determine if data is already log-transformed
         if hasattr(config, "normalization_method") and config.normalization_method:
-            already_log_transformed = is_normalization_log_transformed(
-                config.normalization_method
-            )
+            already_log_transformed = is_normalization_log_transformed(config.normalization_method)
 
             if already_log_transformed:
                 apply_log_transform = False
                 print(
-                    f"Log transformation: AUTO-DETECTED (not needed - {config.normalization_method} already log-transforms data)"
+                    f"Log transformation: AUTO-DETECTED "
+                    f"(not needed - {config.normalization_method} already log-transforms data)"
                 )
             else:
                 apply_log_transform = True
                 print(
-                    f"Log transformation: AUTO-DETECTED (needed - {config.normalization_method} preserves original scale)"
+                    f"Log transformation: AUTO-DETECTED "
+                    f"(needed - {config.normalization_method} preserves original scale)"
                 )
         else:
             # No normalization method info, check data range as fallback
@@ -89,9 +91,7 @@ def _apply_log_transformation_if_needed(data, config):
                 mean_value = sample_data_range.mean().mean()
                 apply_log_transform = mean_value > 50
                 status = "needed" if apply_log_transform else "not needed"
-                print(
-                    f"Log transformation: AUTO-DETECTED ({status} - mean value {mean_value:.1f})"
-                )
+                print(f"Log transformation: AUTO-DETECTED ({status} - mean value {mean_value:.1f})")
             else:
                 apply_log_transform = False
                 print("Log transformation: AUTO-DETECTED (no numeric columns found)")
@@ -119,45 +119,32 @@ def _apply_log_transformation_if_needed(data, config):
         print("  -> Handling negative values...")
         min_val = sample_data_subset.min().min()
         shift_amount = abs(min_val) + 1
-        transformed_data[numeric_columns] = (
-            transformed_data[numeric_columns] + shift_amount
-        )
+        transformed_data[numeric_columns] = transformed_data[numeric_columns] + shift_amount
         print(f"     Shifted all values by +{shift_amount:.2f}")
 
     # Determine pseudocount
     if config.log_pseudocount is None:
-        pseudocount = (
-            max(1e-6, sample_data_subset.min().min() / 100)
-            if sample_data_subset.min().min() > 0
-            else 0.1
-        )
+        pseudocount = max(1e-6, sample_data_subset.min().min() / 100) if sample_data_subset.min().min() > 0 else 0.1
     else:
         pseudocount = config.log_pseudocount
 
     # Apply appropriate log transformation
     if config.log_base == "log2":
-        transformed_data[numeric_columns] = np.log2(
-            transformed_data[numeric_columns] + pseudocount
-        )
+        transformed_data[numeric_columns] = np.log2(transformed_data[numeric_columns] + pseudocount)
     elif config.log_base == "log10":
-        transformed_data[numeric_columns] = np.log10(
-            transformed_data[numeric_columns] + pseudocount
-        )
+        transformed_data[numeric_columns] = np.log10(transformed_data[numeric_columns] + pseudocount)
     elif config.log_base == "ln":
-        transformed_data[numeric_columns] = np.log(
-            transformed_data[numeric_columns] + pseudocount
-        )
+        transformed_data[numeric_columns] = np.log(transformed_data[numeric_columns] + pseudocount)
     else:
         raise ValueError(f"Unknown log base: {config.log_base}")
 
-    print(
-        f"  -> Applied {config.log_base} transformation with pseudocount {pseudocount}"
-    )
+    print(f"  -> Applied {config.log_base} transformation with pseudocount {pseudocount}")
 
     # Verify transformation
     new_mean = transformed_data[numeric_columns].mean().mean()
     print(
-        f"  -> New data range: {transformed_data[numeric_columns].min().min():.2f} to {transformed_data[numeric_columns].max().max():.2f}"
+        f"  -> New data range: {transformed_data[numeric_columns].min().min():.2f}"
+        f" to {transformed_data[numeric_columns].max().max():.2f}"
     )
     print(f"  -> New mean: {new_mean:.2f}")
 
@@ -173,21 +160,23 @@ class StatisticalConfig:
     - 'linear_trend': Linear trend over time/dose (requires time_column, tests slope != 0)
     - 'longitudinal': Any change over time (requires time_column, F-test on time as factor)
     - 'interaction': Group × Time interaction (requires group_column, paired_column, interaction_terms)
-    
+
     Note: 'dose_response' is accepted as an alias for 'linear_trend' for backward compatibility.
     """
 
     def __init__(self):
         # Basic analysis parameters
         self.statistical_test_method = "mixed_effects"
-        self.analysis_type = None  # Must be set by user: 'paired', 'unpaired', 'linear_trend', 'longitudinal', 'interaction'
+        self.analysis_type = (
+            None  # Must be set by user: 'paired', 'unpaired', 'linear_trend', 'longitudinal', 'interaction'
+        )
         self.p_value_threshold = 0.05
         self.fold_change_threshold = 1.5
 
         # Experimental design - set based on analysis type
         self.subject_column = None  # Required for mixed-effects models
-        self.time_column = None     # For linear_trend/longitudinal analysis (Week, Time, etc.)
-        self.dose_column = None     # Alias for time_column (backward compatibility)
+        self.time_column = None  # For linear_trend/longitudinal analysis (Week, Time, etc.)
+        self.dose_column = None  # Alias for time_column (backward compatibility)
 
         # Group comparison parameters (for paired/unpaired/interaction analyses)
         self.group_column = None
@@ -227,48 +216,51 @@ class StatisticalConfig:
     def validate(self):
         """Validate that required parameters are set for the chosen analysis type"""
         if not self.analysis_type:
-            raise ValueError("analysis_type must be set. Choose: 'paired', 'unpaired', 'linear_trend', 'longitudinal', or 'interaction'")
+            raise ValueError(
+                "analysis_type must be set. Choose: 'paired', 'unpaired', "
+                "'linear_trend', 'longitudinal', or 'interaction'"
+            )
 
         # Get time column (time_column preferred, dose_column for backward compatibility)
         time_col = self.time_column or self.dose_column
 
         # Validate linear_trend analysis (formerly dose_response)
-        if self.analysis_type in ('linear_trend', 'dose_response'):
+        if self.analysis_type in ("linear_trend", "dose_response"):
             if not time_col:
                 raise ValueError("linear_trend analysis requires time_column to be set")
-            if self.statistical_test_method == 'mixed_effects' and not self.subject_column:
+            if self.statistical_test_method == "mixed_effects" and not self.subject_column:
                 raise ValueError("Mixed-effects linear_trend analysis requires subject_column")
 
         # Validate longitudinal analysis (F-test for any change over time)
-        elif self.analysis_type == 'longitudinal':
+        elif self.analysis_type == "longitudinal":
             if not time_col:
                 raise ValueError("longitudinal analysis requires time_column to be set")
-            if self.statistical_test_method == 'mixed_effects' and not self.subject_column:
+            if self.statistical_test_method == "mixed_effects" and not self.subject_column:
                 raise ValueError("Mixed-effects longitudinal analysis requires subject_column")
 
         # Validate paired group comparison
-        elif self.analysis_type == 'paired':
+        elif self.analysis_type == "paired":
             if not self.group_column or not self.group_labels:
                 raise ValueError("paired analysis requires group_column and group_labels")
             if not self.paired_label1 or not self.paired_label2:
                 raise ValueError("paired analysis requires paired_label1 and paired_label2")
-            if self.statistical_test_method == 'mixed_effects' and not self.subject_column:
+            if self.statistical_test_method == "mixed_effects" and not self.subject_column:
                 raise ValueError("Mixed-effects paired analysis requires subject_column")
 
         # Validate unpaired group comparison
-        elif self.analysis_type == 'unpaired':
+        elif self.analysis_type == "unpaired":
             if not self.group_column or not self.group_labels:
                 raise ValueError("unpaired analysis requires group_column and group_labels")
 
         # Validate interaction analysis
-        elif self.analysis_type == 'interaction':
+        elif self.analysis_type == "interaction":
             if not self.group_column or not self.group_labels:
                 raise ValueError("interaction analysis requires group_column and group_labels")
             if not self.paired_column:
                 raise ValueError("interaction analysis requires paired_column")
             if not self.interaction_terms:
                 raise ValueError("interaction analysis requires interaction_terms")
-            if self.statistical_test_method == 'mixed_effects' and not self.subject_column:
+            if self.statistical_test_method == "mixed_effects" and not self.subject_column:
                 raise ValueError("Mixed-effects interaction analysis requires subject_column")
 
         return True
@@ -297,7 +289,7 @@ def prepare_metadata_dataframe(sample_metadata_dict, sample_columns, config):
             expected_cols.append(config.subject_column)
         if config.paired_column:
             expected_cols.append(config.paired_column)
-        if hasattr(config, 'group_column') and config.group_column:
+        if hasattr(config, "group_column") and config.group_column:
             expected_cols.append(config.group_column)
         return pd.DataFrame(columns=expected_cols)
 
@@ -321,11 +313,12 @@ def prepare_metadata_dataframe(sample_metadata_dict, sample_columns, config):
 
     # Group column is only required for group comparison analyses
     # NOT required for dose-response or continuous predictor models
-    if hasattr(config, 'group_column') and config.group_column:
+    if hasattr(config, "group_column") and config.group_column:
         # Only require if we're using interaction terms that include the group column
         # or if analysis_type indicates group comparison
-        if (config.interaction_terms and config.group_column in config.interaction_terms) or \
-           (hasattr(config, 'analysis_type') and config.analysis_type in ['paired', 'unpaired']):
+        if (config.interaction_terms and config.group_column in config.interaction_terms) or (
+            hasattr(config, "analysis_type") and config.analysis_type in ["paired", "unpaired"]
+        ):
             required_cols.append(config.group_column)
 
     # Validate required columns exist
@@ -346,17 +339,17 @@ def prepare_metadata_dataframe(sample_metadata_dict, sample_columns, config):
         raise ValueError("No samples remain after filtering for required metadata")
 
     print(f"  After filtering: {len(metadata_df)} samples")
-    
+
     # Only print subject info if subject_column is defined
     if config.subject_column and config.subject_column in metadata_df.columns:
         print(f"  Subjects: {metadata_df[config.subject_column].nunique()}")
 
     # Only print group info if group_column is defined and exists in metadata
-    if hasattr(config, 'group_column') and config.group_column and config.group_column in metadata_df.columns:
+    if hasattr(config, "group_column") and config.group_column and config.group_column in metadata_df.columns:
         print(f"  Groups: {metadata_df[config.group_column].value_counts().to_dict()}")
 
         # Handle categorical vs continuous variable treatment
-        if hasattr(config, 'force_categorical') and config.force_categorical:
+        if hasattr(config, "force_categorical") and config.force_categorical:
             # Convert group column to categorical (string) type to force statsmodels to treat as factors
             metadata_df[config.group_column] = metadata_df[config.group_column].astype(str)
             print("  Group variable treatment: CATEGORICAL (converted to string factors)")
@@ -386,9 +379,7 @@ def run_paired_t_test(protein_data, metadata_df, config):
             print(f"  Processed {i + 1}/{n_proteins} proteins...")
 
         # Get data for this protein
-        protein_df = pd.DataFrame(
-            {"Sample": protein_values.index, "Intensity": protein_values.values}
-        )
+        protein_df = pd.DataFrame({"Sample": protein_values.index, "Intensity": protein_values.values})
 
         # Merge with metadata
         protein_df = protein_df.merge(metadata_df, on="Sample", how="inner")
@@ -401,28 +392,18 @@ def run_paired_t_test(protein_data, metadata_df, config):
             continue
 
         # Calculate paired differences for each subject
-        baseline_data = protein_df[
-            protein_df[config.paired_column] == config.paired_label1
-        ]
-        followup_data = protein_df[
-            protein_df[config.paired_column] == config.paired_label2
-        ]
+        baseline_data = protein_df[protein_df[config.paired_column] == config.paired_label1]
+        followup_data = protein_df[protein_df[config.paired_column] == config.paired_label2]
 
         # Merge on subject to get paired data
-        paired_data = baseline_data.merge(
-            followup_data, on=config.subject_column, suffixes=("_baseline", "_followup")
-        )
+        paired_data = baseline_data.merge(followup_data, on=config.subject_column, suffixes=("_baseline", "_followup"))
 
         if len(paired_data) < 3:  # Need at least 3 pairs
-            results.append(
-                _create_empty_result(protein_idx, "Insufficient paired data")
-            )
+            results.append(_create_empty_result(protein_idx, "Insufficient paired data"))
             continue
 
         # Calculate differences (followup - baseline)
-        differences = (
-            paired_data["Intensity_followup"] - paired_data["Intensity_baseline"]
-        )
+        differences = paired_data["Intensity_followup"] - paired_data["Intensity_baseline"]
 
         try:
             # Paired t-test (test if mean difference != 0)
@@ -497,19 +478,12 @@ def compute_paired_fold_changes(protein_data, sample_metadata, config):
     )
 
     # Filter to samples with valid subject and timepoint
-    valid_mask = (
-        metadata_df[config.subject_column].notna()
-        & metadata_df[config.paired_column].notna()
-    )
+    valid_mask = metadata_df[config.subject_column].notna() & metadata_df[config.paired_column].notna()
     metadata_df = metadata_df[valid_mask]
 
     # Split by timepoint
-    baseline = metadata_df[
-        metadata_df[config.paired_column] == config.paired_label1
-    ].set_index(config.subject_column)
-    followup = metadata_df[
-        metadata_df[config.paired_column] == config.paired_label2
-    ].set_index(config.subject_column)
+    baseline = metadata_df[metadata_df[config.paired_column] == config.paired_label1].set_index(config.subject_column)
+    followup = metadata_df[metadata_df[config.paired_column] == config.paired_label2].set_index(config.subject_column)
 
     # Find subjects present at both timepoints
     paired_subjects = baseline.index.intersection(followup.index)
@@ -533,10 +507,7 @@ def compute_paired_fold_changes(protein_data, sample_metadata, config):
         followup_sample = followup.loc[subject, "Sample"]
 
         if baseline_sample in sample_cols and followup_sample in sample_cols:
-            diff = (
-                protein_data[followup_sample].values
-                - protein_data[baseline_sample].values
-            )
+            diff = protein_data[followup_sample].values - protein_data[baseline_sample].values
             fc_rows[subject] = diff
 
     fc_matrix = pd.DataFrame(fc_rows, index=protein_data.index).T
@@ -546,11 +517,9 @@ def compute_paired_fold_changes(protein_data, sample_metadata, config):
     return fc_matrix
 
 
-def run_mixed_effects_analysis(
-    protein_data, metadata_df, config, protein_annotations=None
-):
+def run_mixed_effects_analysis(protein_data, metadata_df, config, protein_annotations=None):
     """Run mixed-effects model analysis
-    
+
     Supports multiple analysis types:
     - linear_trend (or dose_response): Protein ~ Time + (1|Subject) with continuous time
       Tests if there is a linear trend over time (slope != 0)
@@ -564,16 +533,14 @@ def run_mixed_effects_analysis(
         raise ImportError("statsmodels is required for mixed-effects analysis")
 
     # Get time column (time_column preferred, dose_column for backward compatibility)
-    time_col = getattr(config, 'time_column', None) or getattr(config, 'dose_column', None)
-    
+    time_col = getattr(config, "time_column", None) or getattr(config, "dose_column", None)
+
     # Determine if this is a longitudinal (categorical time) analysis
-    is_longitudinal = hasattr(config, 'analysis_type') and config.analysis_type == 'longitudinal'
-    is_linear_trend = hasattr(config, 'analysis_type') and config.analysis_type in ('linear_trend', 'dose_response')
+    is_longitudinal = hasattr(config, "analysis_type") and config.analysis_type == "longitudinal"
+    is_linear_trend = hasattr(config, "analysis_type") and config.analysis_type in ("linear_trend", "dose_response")
 
     # Determine model description for logging
-    all_interaction_terms = (
-        config.interaction_terms + config.additional_interactions
-    )
+    all_interaction_terms = config.interaction_terms + config.additional_interactions
 
     if len(all_interaction_terms) >= 2:
         term1 = _sanitize_formula_term(all_interaction_terms[0])
@@ -623,9 +590,7 @@ def run_mixed_effects_analysis(
             actual_protein_name = protein_idx  # Fallback to index
 
         # Prepare data for this protein
-        protein_df = pd.DataFrame(
-            {"Sample": protein_values.index, "Intensity": protein_values.values}
-        )
+        protein_df = pd.DataFrame({"Sample": protein_values.index, "Intensity": protein_values.values})
 
         # Merge with metadata
         protein_df = protein_df.merge(metadata_df, on="Sample", how="inner")
@@ -634,18 +599,12 @@ def run_mixed_effects_analysis(
         protein_df = protein_df.dropna(subset=["Intensity"])
 
         if len(protein_df) < 8:  # Need sufficient data for mixed model
-            results.append(
-                _create_empty_mixed_effects_result(
-                    actual_protein_name, "Insufficient data"
-                )
-            )
+            results.append(_create_empty_mixed_effects_result(actual_protein_name, "Insufficient data"))
             continue
 
         try:
             # Build formula - supports both interaction models and additive models
-            all_interaction_terms = (
-                config.interaction_terms + config.additional_interactions
-            )
+            all_interaction_terms = config.interaction_terms + config.additional_interactions
 
             formula = None
 
@@ -676,9 +635,7 @@ def run_mixed_effects_analysis(
 
             else:
                 # No main effects specified - need at least one predictor
-                raise ValueError(
-                    "Need at least one predictor variable (interaction_terms, time_column, or covariates)"
-                )
+                raise ValueError("Need at least one predictor variable (interaction_terms, time_column, or covariates)")
 
             # Add covariates if specified
             if config.covariates:
@@ -696,14 +653,12 @@ def run_mixed_effects_analysis(
                 warnings.filterwarnings("ignore", message=".*convergence.*")
                 warnings.filterwarnings("ignore", message=".*singular.*")
 
-                model = mixedlm(
-                    formula, protein_df, groups=protein_df[config.subject_column]
-                )
+                model = mixedlm(formula, protein_df, groups=protein_df[config.subject_column])
 
                 # Try robust BFGS method first (more stable than LBFGS)
                 # Fallback to other methods if needed
                 fitted_model = None
-                for method in ['bfgs', 'nm', 'powell', 'lbfgs']:
+                for method in ["bfgs", "nm", "powell", "lbfgs"]:
                     try:
                         fitted_model = model.fit(method=method, disp=False)  # type: ignore[call-arg]
                         break
@@ -733,9 +688,7 @@ def run_mixed_effects_analysis(
                 interaction_candidates = [
                     p
                     for p in params.index
-                    if config.interaction_terms[0] in p
-                    and config.interaction_terms[1] in p
-                    and ":" in p
+                    if config.interaction_terms[0] in p and config.interaction_terms[1] in p and ":" in p
                 ]
 
                 if interaction_candidates:
@@ -746,11 +699,7 @@ def run_mixed_effects_analysis(
 
                 # Find group effect parameters
                 group_candidates = [
-                    p
-                    for p in params.index
-                    if config.interaction_terms[0] in p
-                    and ":" not in p
-                    and p != "Intercept"
+                    p for p in params.index if config.interaction_terms[0] in p and ":" not in p and p != "Intercept"
                 ]
 
                 if group_candidates:
@@ -760,11 +709,7 @@ def run_mixed_effects_analysis(
 
                 # Find time effect parameters
                 time_candidates = [
-                    p
-                    for p in params.index
-                    if config.interaction_terms[1] in p
-                    and ":" not in p
-                    and p != "Intercept"
+                    p for p in params.index if config.interaction_terms[1] in p and ":" not in p and p != "Intercept"
                 ]
 
                 if time_candidates:
@@ -784,11 +729,7 @@ def run_mixed_effects_analysis(
                 if primary_predictor:
                     # Find the parameter for the primary predictor
                     primary_candidates = [
-                        p
-                        for p in params.index
-                        if primary_predictor in p
-                        and ":" not in p
-                        and p != "Intercept"
+                        p for p in params.index if primary_predictor in p and ":" not in p and p != "Intercept"
                     ]
 
                     if is_longitudinal and len(primary_candidates) > 1:
@@ -859,9 +800,7 @@ def run_mixed_effects_analysis(
             error_message = f"Model failed: {e}"
             if i < 3:  # Show details for first few failures
                 print(f"  Protein {i + 1} failed: {error_message}")
-            results.append(
-                _create_empty_mixed_effects_result(actual_protein_name, error_message)
-            )
+            results.append(_create_empty_mixed_effects_result(actual_protein_name, error_message))
 
     print(f"Done: Mixed-effects analysis completed for {len(results)} proteins")
     return pd.DataFrame(results)
@@ -877,9 +816,7 @@ def run_unpaired_t_test(protein_data, metadata_df, config):
 
     # Filter to specific timepoint if needed
     if config.paired_column and config.paired_label2:
-        metadata_df = metadata_df[
-            metadata_df[config.paired_column] == config.paired_label2
-        ]
+        metadata_df = metadata_df[metadata_df[config.paired_column] == config.paired_label2]
         print(f"  Analyzing {config.paired_label2} timepoint only")
 
     for i, (protein_idx, protein_values) in enumerate(protein_data.iterrows()):
@@ -887,9 +824,7 @@ def run_unpaired_t_test(protein_data, metadata_df, config):
             print(f"  Processed {i + 1}/{n_proteins} proteins...")
 
         # Get data for this protein
-        protein_df = pd.DataFrame(
-            {"Sample": protein_values.index, "Intensity": protein_values.values}
-        )
+        protein_df = pd.DataFrame({"Sample": protein_values.index, "Intensity": protein_values.values})
 
         # Merge with metadata
         protein_df = protein_df.merge(metadata_df, on="Sample", how="inner")
@@ -900,12 +835,8 @@ def run_unpaired_t_test(protein_data, metadata_df, config):
             continue
 
         # Split into groups
-        group1_data = protein_df[
-            protein_df[config.group_column] == config.group_labels[0]
-        ]["Intensity"]
-        group2_data = protein_df[
-            protein_df[config.group_column] == config.group_labels[1]
-        ]["Intensity"]
+        group1_data = protein_df[protein_df[config.group_column] == config.group_labels[0]]["Intensity"]
+        group2_data = protein_df[protein_df[config.group_column] == config.group_labels[1]]["Intensity"]
 
         if len(group1_data) < 2 or len(group2_data) < 2:
             results.append(_create_empty_result(protein_idx, "Insufficient group data"))
@@ -913,23 +844,16 @@ def run_unpaired_t_test(protein_data, metadata_df, config):
 
         try:
             # Use Student's t-test (equal variance) or Welch's t-test based on config
-            equal_var = getattr(config, 'assume_equal_variance', False)
+            equal_var = getattr(config, "assume_equal_variance", False)
             t_stat, p_value = ttest_ind(group2_data, group1_data, equal_var=equal_var)
             test_name = "Student's t-test" if equal_var else "Welch's t-test"
 
             # Calculate effect size
             pooled_std = np.sqrt(
-                (
-                    (len(group1_data) - 1) * group1_data.var()
-                    + (len(group2_data) - 1) * group2_data.var()
-                )
+                ((len(group1_data) - 1) * group1_data.var() + (len(group2_data) - 1) * group2_data.var())
                 / (len(group1_data) + len(group2_data) - 2)
             )
-            cohens_d = (
-                (group2_data.mean() - group1_data.mean()) / pooled_std
-                if pooled_std > 0
-                else 0
-            )
+            cohens_d = (group2_data.mean() - group1_data.mean()) / pooled_std if pooled_std > 0 else 0
 
             # Log fold change
             log_fc = group2_data.mean() - group1_data.mean()
@@ -969,9 +893,7 @@ def run_wilcoxon_test(protein_data, metadata_df, config):
             print(f"  Processed {i + 1}/{n_proteins} proteins...")
 
         # Get data for this protein
-        protein_df = pd.DataFrame(
-            {"Sample": protein_values.index, "Intensity": protein_values.values}
-        )
+        protein_df = pd.DataFrame({"Sample": protein_values.index, "Intensity": protein_values.values})
 
         # Merge with metadata
         protein_df = protein_df.merge(metadata_df, on="Sample", how="inner")
@@ -984,41 +906,29 @@ def run_wilcoxon_test(protein_data, metadata_df, config):
             continue
 
         # Calculate paired differences for each subject
-        baseline_data = protein_df[
-            protein_df[config.paired_column] == config.paired_label1
-        ]
-        followup_data = protein_df[
-            protein_df[config.paired_column] == config.paired_label2
-        ]
+        baseline_data = protein_df[protein_df[config.paired_column] == config.paired_label1]
+        followup_data = protein_df[protein_df[config.paired_column] == config.paired_label2]
 
         # Merge on subject to get paired data
-        paired_data = baseline_data.merge(
-            followup_data, on=config.subject_column, suffixes=("_baseline", "_followup")
-        )
+        paired_data = baseline_data.merge(followup_data, on=config.subject_column, suffixes=("_baseline", "_followup"))
 
         if len(paired_data) < 3:  # Need at least 3 pairs
-            results.append(
-                _create_empty_result(protein_idx, "Insufficient paired data")
-            )
+            results.append(_create_empty_result(protein_idx, "Insufficient paired data"))
             continue
 
         # Calculate differences (followup - baseline)
-        differences = (
-            paired_data["Intensity_followup"] - paired_data["Intensity_baseline"]
-        )
+        differences = paired_data["Intensity_followup"] - paired_data["Intensity_baseline"]
 
         # Remove zero differences for Wilcoxon test
         non_zero_diffs = differences[differences != 0]
-        
+
         if len(non_zero_diffs) < 3:
-            results.append(
-                _create_empty_result(protein_idx, "Insufficient non-zero differences")
-            )
+            results.append(_create_empty_result(protein_idx, "Insufficient non-zero differences"))
             continue
 
         try:
             # Wilcoxon signed-rank test
-            statistic, p_value = wilcoxon(non_zero_diffs, alternative='two-sided')
+            statistic, p_value = wilcoxon(non_zero_diffs, alternative="two-sided")
 
             # Calculate effect size (r = z / sqrt(N))
             # For Wilcoxon, we use median and IQR
@@ -1061,13 +971,13 @@ def run_mann_whitney_test(protein_data, metadata_df, config):
     n_proteins = len(protein_data)
 
     # Filter to specific timepoint if needed (only if paired_column is present in metadata)
-    if (config.paired_column and 
-        config.paired_label2 and 
-        hasattr(config, 'paired_column') and 
-        config.paired_column in metadata_df.columns):
-        metadata_df = metadata_df[
-            metadata_df[config.paired_column] == config.paired_label2
-        ]
+    if (
+        config.paired_column
+        and config.paired_label2
+        and hasattr(config, "paired_column")
+        and config.paired_column in metadata_df.columns
+    ):
+        metadata_df = metadata_df[metadata_df[config.paired_column] == config.paired_label2]
         print(f"  Analyzing {config.paired_label2} timepoint only")
 
     for i, (protein_idx, protein_values) in enumerate(protein_data.iterrows()):
@@ -1075,9 +985,7 @@ def run_mann_whitney_test(protein_data, metadata_df, config):
             print(f"  Processed {i + 1}/{n_proteins} proteins...")
 
         # Get data for this protein
-        protein_df = pd.DataFrame(
-            {"Sample": protein_values.index, "Intensity": protein_values.values}
-        )
+        protein_df = pd.DataFrame({"Sample": protein_values.index, "Intensity": protein_values.values})
 
         # Merge with metadata
         protein_df = protein_df.merge(metadata_df, on="Sample", how="inner")
@@ -1088,12 +996,8 @@ def run_mann_whitney_test(protein_data, metadata_df, config):
             continue
 
         # Split into groups
-        group1_data = protein_df[
-            protein_df[config.group_column] == config.group_labels[0]
-        ]["Intensity"]
-        group2_data = protein_df[
-            protein_df[config.group_column] == config.group_labels[1]
-        ]["Intensity"]
+        group1_data = protein_df[protein_df[config.group_column] == config.group_labels[0]]["Intensity"]
+        group2_data = protein_df[protein_df[config.group_column] == config.group_labels[1]]["Intensity"]
 
         if len(group1_data) < 2 or len(group2_data) < 2:
             results.append(_create_empty_result(protein_idx, "Insufficient group data"))
@@ -1104,20 +1008,18 @@ def run_mann_whitney_test(protein_data, metadata_df, config):
             # Convert to float arrays to ensure scipy compatibility
             group1_arr = np.asarray(group1_data, dtype=float)
             group2_arr = np.asarray(group2_data, dtype=float)
-            statistic, p_value = mannwhitneyu(
-                group2_arr, group1_arr, alternative='two-sided'
-            )
+            statistic, p_value = mannwhitneyu(group2_arr, group1_arr, alternative="two-sided")
 
             # Calculate effect size (r = z / sqrt(N))
             # For Mann-Whitney, we use median and IQR-based effect size
             median1 = group1_data.median()
             median2 = group2_data.median()
-            
+
             # Pooled MAD for effect size
             mad1 = np.median(np.abs(group1_data - median1)) * 1.4826
             mad2 = np.median(np.abs(group2_data - median2)) * 1.4826
             pooled_mad = np.sqrt((mad1**2 + mad2**2) / 2)
-            
+
             effect_size = (median2 - median1) / pooled_mad if pooled_mad > 0 else 0
 
             # Log fold change using medians
@@ -1195,45 +1097,38 @@ def apply_multiple_testing_correction(results_df, config):
         return results_df
 
     # Check if correction should be applied
-    correction_method = getattr(config, 'correction_method', config.use_adjusted_pvalue)
+    correction_method = getattr(config, "correction_method", config.use_adjusted_pvalue)
     if correction_method == "none" or config.use_adjusted_pvalue == "none":
         # No correction - adjusted p-values are same as raw p-values
         results_df["adj.P.Val"] = results_df["P.Value"]
         results_df["Significant"] = results_df["P.Value"] < config.p_value_threshold
         print("Multiple testing correction applied:")
         print("  Method: none (no correction)")
-        print(f"  Significant proteins (p < {config.p_value_threshold}): {(results_df['P.Value'] < config.p_value_threshold).sum()}")
+        print(
+            f"  Significant proteins (p < {config.p_value_threshold}): "
+            f"{(results_df['P.Value'] < config.p_value_threshold).sum()}"
+        )
     else:
         # Apply correction
         all_pvalues = results_df["P.Value"].fillna(1.0)
-        rejected, adj_pvalues, _, _ = multipletests(
-            all_pvalues, method=correction_method
-        )
+        rejected, adj_pvalues, _, _ = multipletests(all_pvalues, method=correction_method)
 
         results_df["adj.P.Val"] = adj_pvalues
         results_df["Significant"] = rejected
 
         print("Multiple testing correction applied:")
         print(f"  Method: {correction_method}")
-        print(
-            f"  Significant proteins (FDR < 0.05): {(results_df['adj.P.Val'] < 0.05).sum()}"
-        )
+        print(f"  Significant proteins (FDR < 0.05): {(results_df['adj.P.Val'] < 0.05).sum()}")
 
     # Add significance categories
     results_df["Significance"] = "Not significant"
-    results_df.loc[results_df["adj.P.Val"] < 0.05, "Significance"] = (
-        "Significant (FDR < 0.05)"
-    )
-    results_df.loc[results_df["adj.P.Val"] < 0.01, "Significance"] = (
-        "Highly significant (FDR < 0.01)"
-    )
+    results_df.loc[results_df["adj.P.Val"] < 0.05, "Significance"] = "Significant (FDR < 0.05)"
+    results_df.loc[results_df["adj.P.Val"] < 0.01, "Significance"] = "Highly significant (FDR < 0.01)"
 
     return results_df
 
 
-def export_results(
-    differential_df: pd.DataFrame, output_file: str, include_all: bool = True
-) -> None:
+def export_results(differential_df: pd.DataFrame, output_file: str, include_all: bool = True) -> None:
     """
     Export differential analysis results to CSV file.
 
@@ -1258,9 +1153,7 @@ def export_results(
     print("Results exported successfully!")
 
 
-def run_comprehensive_statistical_analysis(
-    normalized_data, sample_metadata, config, protein_annotations=None
-):
+def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, config, protein_annotations=None):
     """
     Statistical analysis with automatic dataset validation and subject pairing
 
@@ -1301,13 +1194,8 @@ def run_comprehensive_statistical_analysis(
     cleaned_sample_metadata = {}
     for sample_name, metadata in sample_metadata.items():
         cleaned_metadata = metadata.copy()
-        if (
-            config.subject_column in cleaned_metadata
-            and cleaned_metadata[config.subject_column]
-        ):
-            cleaned_metadata[config.subject_column] = str(
-                cleaned_metadata[config.subject_column]
-            ).strip()
+        if config.subject_column in cleaned_metadata and cleaned_metadata[config.subject_column]:
+            cleaned_metadata[config.subject_column] = str(cleaned_metadata[config.subject_column]).strip()
         cleaned_sample_metadata[sample_name] = cleaned_metadata
 
     sample_metadata = cleaned_sample_metadata
@@ -1316,30 +1204,20 @@ def run_comprehensive_statistical_analysis(
     # IMPORTANT: With standardized data structure, sample columns start at index 5
     # First 5 columns are always: Protein, Description, Protein Gene, UniProt_Accession, UniProt_Entry_Name
     if len(normalized_data.columns) > 5:
-        all_sample_columns = list(
-            normalized_data.columns[5:]
-        )  # Everything after first 5 annotation columns
-        print(
-            f"  Using standardized data structure: {len(all_sample_columns)} sample columns (columns 6+)"
-        )
+        all_sample_columns = list(normalized_data.columns[5:])  # Everything after first 5 annotation columns
+        print(f"  Using standardized data structure: {len(all_sample_columns)} sample columns (columns 6+)")
     else:
         # Fallback for legacy data (shouldn't happen with create_standard_data_structure)
-        all_sample_columns = normalized_data.select_dtypes(
-            include=[np.number]
-        ).columns.tolist()
+        all_sample_columns = normalized_data.select_dtypes(include=[np.number]).columns.tolist()
         print(f"  Using legacy detection: {len(all_sample_columns)} sample columns")
 
     # Filter to only samples that have metadata
     sample_columns = [col for col in all_sample_columns if col in sample_metadata]
 
     if len(sample_columns) < len(all_sample_columns):
-        print(
-            f"  Filtered to {len(sample_columns)} samples with metadata (from {len(all_sample_columns)} total)"
-        )
+        print(f"  Filtered to {len(sample_columns)} samples with metadata (from {len(all_sample_columns)} total)")
 
-    print(
-        f"  Sample columns: {sample_columns[:3]}{'...' if len(sample_columns) > 3 else ''}"
-    )
+    print(f"  Sample columns: {sample_columns[:3]}{'...' if len(sample_columns) > 3 else ''}")
 
     metadata_df = prepare_metadata_dataframe(sample_metadata, sample_columns, config)
 
@@ -1348,19 +1226,20 @@ def run_comprehensive_statistical_analysis(
 
     # Check if this is a time-based analysis (no group comparison)
     is_time_based = (
-        hasattr(config, 'analysis_type') and 
-        config.analysis_type in ('linear_trend', 'dose_response', 'longitudinal')
+        hasattr(config, "analysis_type") and config.analysis_type in ("linear_trend", "dose_response", "longitudinal")
     ) or (
-        not hasattr(config, 'group_labels') or not config.group_labels or
-        not hasattr(config, 'group_column') or not config.group_column
+        not hasattr(config, "group_labels")
+        or not config.group_labels
+        or not hasattr(config, "group_column")
+        or not config.group_column
     )
 
     if is_time_based:
         # For time-based analyses, all samples are valid (no group filtering needed)
         valid_samples = sample_metadata.copy()
-        if config.analysis_type == 'longitudinal':
+        if config.analysis_type == "longitudinal":
             print("  Analysis type: LONGITUDINAL (F-test for any change over time)")
-        elif config.analysis_type in ('linear_trend', 'dose_response'):
+        elif config.analysis_type in ("linear_trend", "dose_response"):
             print("  Analysis type: LINEAR TREND (testing if slope ≠ 0)")
         else:
             print("  Analysis type: Time-based (no group filtering)")
@@ -1383,11 +1262,11 @@ def run_comprehensive_statistical_analysis(
 
     # Analyze subject pairing structure (only for paired/interaction designs with subject + paired columns)
     has_pairing_info = (
-        not is_time_based and
-        config.subject_column and
-        config.paired_column and
-        hasattr(config, 'analysis_type') and
-        config.analysis_type in ('paired', 'interaction')
+        not is_time_based
+        and config.subject_column
+        and config.paired_column
+        and hasattr(config, "analysis_type")
+        and config.analysis_type in ("paired", "interaction")
     )
     if has_pairing_info:
         pairing_data = {}
@@ -1411,9 +1290,9 @@ def run_comprehensive_statistical_analysis(
 
         # Determine if we're doing continuous analysis (FORCE_CATEGORICAL = False for numeric variables)
         is_continuous_analysis = (
-            hasattr(config, 'force_categorical') and
-            not config.force_categorical and
-            all(str(label).replace('.', '').replace('-', '').isdigit() for label in config.group_labels)
+            hasattr(config, "force_categorical")
+            and not config.force_categorical
+            and all(str(label).replace(".", "").replace("-", "").isdigit() for label in config.group_labels)
         )
 
         for subject, visits in pairing_data.items():
@@ -1436,17 +1315,14 @@ def run_comprehensive_statistical_analysis(
                     incomplete_subjects.append(f"{subject} (mixed groups)")
             else:
                 available_visits = list(visits.keys())
-                incomplete_subjects.append(
-                    f"{subject} (missing visits: {available_visits})"
-                )
+                incomplete_subjects.append(f"{subject} (missing visits: {available_visits})")
 
         # Group complete pairs by treatment group - normalize for comparison
         group_pairs = {}
         for group_label in config.group_labels:
             normalized_group = _normalize_group_value(group_label)
             group_pairs[group_label] = [
-                p for p in complete_pairs
-                if _normalize_group_value(p["group"]) == normalized_group
+                p for p in complete_pairs if _normalize_group_value(p["group"]) == normalized_group
             ]
 
         if is_continuous_analysis:
@@ -1476,8 +1352,8 @@ def run_comprehensive_statistical_analysis(
 
     # Ensure the index contains actual protein identifiers (not integer row numbers)
     # so that iterrows() in test functions yields meaningful Protein values
-    if 'Protein' in statistical_data.columns:
-        filtered_protein_data.index = statistical_data['Protein'].values
+    if "Protein" in statistical_data.columns:
+        filtered_protein_data.index = statistical_data["Protein"].values
 
     print(f"  Method: {config.statistical_test_method}")
     print(f"  Analysis type: {config.analysis_type if config.analysis_type else 'not specified'}")
@@ -1485,11 +1361,11 @@ def run_comprehensive_statistical_analysis(
     print(f"  Samples: {len(available_samples)}")
 
     # Print analysis-specific parameters
-    time_col = getattr(config, 'time_column', None) or getattr(config, 'dose_column', None)
-    if config.analysis_type in ('linear_trend', 'dose_response', 'longitudinal'):
+    time_col = getattr(config, "time_column", None) or getattr(config, "dose_column", None)
+    if config.analysis_type in ("linear_trend", "dose_response", "longitudinal"):
         if time_col:
             print(f"  Time variable: {time_col}")
-    elif config.analysis_type in ['paired', 'unpaired', 'interaction']:
+    elif config.analysis_type in ["paired", "unpaired", "interaction"]:
         if config.group_labels:
             print(f"  Groups: {config.group_labels}")
         if config.paired_label1 and config.paired_label2:
@@ -1500,17 +1376,13 @@ def run_comprehensive_statistical_analysis(
         print(f"  Subject grouping: {config.subject_column}")
 
     if config.statistical_test_method == "mixed_effects":
-        print(
-            f"  Interaction terms: {config.interaction_terms + config.additional_interactions}"
-        )
+        print(f"  Interaction terms: {config.interaction_terms + config.additional_interactions}")
         if config.covariates:
             print(f"  Covariates: {config.covariates}")
 
     # Run appropriate analysis
     if config.statistical_test_method == "mixed_effects":
-        results_df = run_mixed_effects_analysis(
-            filtered_protein_data, metadata_df, config, protein_annotations
-        )
+        results_df = run_mixed_effects_analysis(filtered_protein_data, metadata_df, config, protein_annotations)
     elif config.statistical_test_method in ["paired_t", "paired_welch"]:
         results_df = run_paired_t_test(filtered_protein_data, metadata_df, config)
     elif config.statistical_test_method in ["welch_t", "student_t"]:
@@ -1531,28 +1403,30 @@ def run_comprehensive_statistical_analysis(
     # Merge with protein annotations if provided
     if protein_annotations is not None and len(protein_annotations) > 0:
         print("\nStep 6: Adding protein annotations...")
-        
+
         # Get annotation columns (exclude sample columns and duplicates)
-        annotation_cols = ['Protein']
-        potential_cols = ['Description', 'Gene', 'Protein Gene', 'UniProt_Accession', 
-                         'UniProt_Entry_Name', 'UniProt_Database']
-        
+        annotation_cols = ["Protein"]
+        potential_cols = [
+            "Description",
+            "Gene",
+            "Protein Gene",
+            "UniProt_Accession",
+            "UniProt_Entry_Name",
+            "UniProt_Database",
+        ]
+
         for col in potential_cols:
             if col in protein_annotations.columns:
                 annotation_cols.append(col)
-        
+
         # Merge statistical results with annotations
         annotations_subset = protein_annotations[annotation_cols].copy()
-        results_df = results_df.merge(
-            annotations_subset, 
-            on='Protein', 
-            how='left'
-        )
-        
+        results_df = results_df.merge(annotations_subset, on="Protein", how="left")
+
         # Add Gene column if we have 'Protein Gene' but not 'Gene'
-        if 'Protein Gene' in results_df.columns and 'Gene' not in results_df.columns:
-            results_df['Gene'] = results_df['Protein Gene']
-        
+        if "Protein Gene" in results_df.columns and "Gene" not in results_df.columns:
+            results_df["Gene"] = results_df["Protein Gene"]
+
         print(f"  Added annotation columns: {annotation_cols[1:]}")  # Skip 'Protein' as it's the key
     else:
         print("\nStep 6: No protein annotations provided - skipping annotation merge")
@@ -1563,9 +1437,7 @@ def run_comprehensive_statistical_analysis(
     print("\nDone: Statistical analysis completed!")
     print(f"  Total proteins analyzed: {len(results_df)}")
     print(f"  Proteins with valid results: {results_df['P.Value'].notna().sum()}")
-    print(
-        f"  Significant proteins (FDR < 0.05): {(results_df['adj.P.Val'] < 0.05).sum()}"
-    )
+    print(f"  Significant proteins (FDR < 0.05): {(results_df['adj.P.Val'] < 0.05).sum()}")
 
     return results_df
 
@@ -1624,8 +1496,7 @@ def display_analysis_summary(differential_results, config, label_top_n=10):
 
         # Choose appropriate columns based on analysis type.
         # Prefer human-readable identifiers over the internal PG#### index.
-        id_cols = [c for c in ["Gene", "UniProt_Accession", "Description"]
-                   if c in top_results.columns]
+        id_cols = [c for c in ["Gene", "UniProt_Accession", "Description"] if c in top_results.columns]
         if not id_cols:
             id_cols = ["Protein"]  # fall back to PG index if no annotations present
 
@@ -1655,16 +1526,10 @@ def display_analysis_summary(differential_results, config, label_top_n=10):
             for col in display_df.columns:
                 if col in ["P.Value", "adj.P.Val"]:
                     display_df[col] = display_df[col].apply(
-                        lambda x: f"{x:.2e}"
-                        if pd.notna(x) and x < 0.01
-                        else f"{x:.6f}"
-                        if pd.notna(x)
-                        else "N/A"
+                        lambda x: f"{x:.2e}" if pd.notna(x) and x < 0.01 else f"{x:.6f}" if pd.notna(x) else "N/A"
                     )
                 elif col in ["logFC", "Effect_Size"]:
-                    display_df[col] = display_df[col].apply(
-                        lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
-                    )
+                    display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
                 elif col == "Description":
                     # Truncate long descriptions to keep the table readable
                     display_df[col] = display_df[col].apply(
@@ -1678,9 +1543,7 @@ def display_analysis_summary(differential_results, config, label_top_n=10):
             # Use P.Value column since it contains the interaction p-values
             interaction_significant = (successful_results["P.Value"] < 0.05).sum()
             print("\nInteraction Effects:")
-            print(
-                f"  Significant {' × '.join(config.interaction_terms)} interactions: {interaction_significant}"
-            )
+            print(f"  Significant {' × '.join(config.interaction_terms)} interactions: {interaction_significant}")
 
     else:
         print("\nError: No proteins with valid statistical results")
@@ -1709,10 +1572,6 @@ def display_analysis_summary(differential_results, config, label_top_n=10):
 
 
 # Maintain backwards compatibility
-def run_statistical_analysis(
-    normalized_data, sample_metadata, config, protein_annotations=None
-):
+def run_statistical_analysis(normalized_data, sample_metadata, config, protein_annotations=None):
     """Backwards compatible wrapper for run_comprehensive_statistical_analysis"""
-    return run_comprehensive_statistical_analysis(
-        normalized_data, sample_metadata, config, protein_annotations
-    )
+    return run_comprehensive_statistical_analysis(normalized_data, sample_metadata, config, protein_annotations)

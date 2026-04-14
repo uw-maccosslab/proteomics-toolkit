@@ -14,7 +14,6 @@ from proteomics_toolkit.statistical_analysis import (
     run_wilcoxon_test,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures specific to statistical tests
 # ---------------------------------------------------------------------------
@@ -34,10 +33,12 @@ def _make_unpaired_data():
 
     protein_data = pd.DataFrame(values, index=proteins, columns=all_samples)
 
-    metadata_df = pd.DataFrame({
-        "Sample": all_samples,
-        "Group": ["Control"] * 5 + ["Treatment"] * 5,
-    })
+    metadata_df = pd.DataFrame(
+        {
+            "Sample": all_samples,
+            "Group": ["Control"] * 5 + ["Treatment"] * 5,
+        }
+    )
 
     config = StatisticalConfig()
     config.analysis_type = "unpaired"
@@ -194,11 +195,13 @@ class TestWilcoxonTest:
 
 class TestMultipleTestingCorrection:
     def test_fdr_bh_correction(self):
-        results_df = pd.DataFrame({
-            "Protein": [f"P{i}" for i in range(5)],
-            "P.Value": [0.01, 0.04, 0.03, 0.20, 0.50],
-            "logFC": [1.0, -0.5, 0.8, 0.1, -0.1],
-        })
+        results_df = pd.DataFrame(
+            {
+                "Protein": [f"P{i}" for i in range(5)],
+                "P.Value": [0.01, 0.04, 0.03, 0.20, 0.50],
+                "logFC": [1.0, -0.5, 0.8, 0.1, -0.1],
+            }
+        )
         config = StatisticalConfig()
         config.correction_method = "fdr_bh"
         corrected = apply_multiple_testing_correction(results_df, config)
@@ -206,11 +209,13 @@ class TestMultipleTestingCorrection:
         assert "adj.P.Val" in corrected.columns
 
     def test_bonferroni_correction(self):
-        results_df = pd.DataFrame({
-            "Protein": [f"P{i}" for i in range(3)],
-            "P.Value": [0.01, 0.04, 0.03],
-            "logFC": [1.0, -0.5, 0.8],
-        })
+        results_df = pd.DataFrame(
+            {
+                "Protein": [f"P{i}" for i in range(3)],
+                "P.Value": [0.01, 0.04, 0.03],
+                "logFC": [1.0, -0.5, 0.8],
+            }
+        )
         config = StatisticalConfig()
         config.correction_method = "bonferroni"
         corrected = apply_multiple_testing_correction(results_df, config)

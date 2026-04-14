@@ -6,10 +6,11 @@ from proteomics experiments. It provides functions for creating timestamped
 configuration files and exporting data with proper annotations.
 """
 
-import pandas as pd
-import numpy as np
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
 
 
 def export_analysis_results(
@@ -65,9 +66,7 @@ def export_analysis_results(
 
     # Add annotations to normalized data if filtered_data is available
     if filtered_data is not None:
-        annotated_normalized_data = _add_annotations_to_normalized_data(
-            normalized_data, filtered_data, annotation_cols
-        )
+        annotated_normalized_data = _add_annotations_to_normalized_data(normalized_data, filtered_data, annotation_cols)
         annotated_normalized_data.to_csv(normalized_file, index=False)
         print(f"Normalized data (with annotations) exported to: {normalized_file}")
     else:
@@ -85,21 +84,13 @@ def export_analysis_results(
     print(f"Sample metadata exported to: {metadata_file}")
 
     # Export differential results with annotations if available
-    if (
-        differential_results is not None
-        and not differential_results.empty
-        and filtered_data is not None
-    ):
-        annotated_results = _add_annotations_to_results(
-            differential_results, filtered_data, annotation_cols
-        )
+    if differential_results is not None and not differential_results.empty and filtered_data is not None:
+        annotated_results = _add_annotations_to_results(differential_results, filtered_data, annotation_cols)
 
         differential_file = f"{output_prefix}_differential_results_annotated.csv"
         annotated_results.to_csv(differential_file, index=False)
         exported_files["differential_results"] = differential_file
-        print(
-            f"Differential analysis results (with annotations) exported to: {differential_file}"
-        )
+        print(f"Differential analysis results (with annotations) exported to: {differential_file}")
 
         # Show preview
         _display_results_preview(annotated_results)
@@ -138,30 +129,18 @@ def _add_annotations_to_results(
     """
 
     # Get available annotation columns
-    available_annotation_cols = [
-        col for col in annotation_cols if col in filtered_data.columns
-    ]
+    available_annotation_cols = [col for col in annotation_cols if col in filtered_data.columns]
     print(f"Adding annotation columns: {available_annotation_cols}")
 
     # Create annotations dataframe
     protein_annotations = filtered_data[available_annotation_cols].copy()
 
     # Merge differential results with annotations
-    differential_results_annotated = differential_results.merge(
-        protein_annotations, on="Protein", how="left"
-    )
+    differential_results_annotated = differential_results.merge(protein_annotations, on="Protein", how="left")
 
     # Reorder columns to put annotations first
-    annotation_first_cols = [
-        col
-        for col in available_annotation_cols
-        if col in differential_results_annotated.columns
-    ]
-    statistical_cols = [
-        col
-        for col in differential_results_annotated.columns
-        if col not in annotation_first_cols
-    ]
+    annotation_first_cols = [col for col in available_annotation_cols if col in differential_results_annotated.columns]
+    statistical_cols = [col for col in differential_results_annotated.columns if col not in annotation_first_cols]
 
     # Create final column order: annotations first, then statistical results
     final_column_order = annotation_first_cols + statistical_cols
@@ -203,17 +182,11 @@ def _add_annotations_to_normalized_data(
 
     # With standardized data structure, sample columns start at index 5
     if len(normalized_data.columns) > 5:
-        sample_cols = list(
-            normalized_data.columns[5:]
-        )  # Everything after first 5 annotation columns
-        print(
-            f"Using standardized structure: {len(sample_cols)} sample columns (columns 6+)"
-        )
+        sample_cols = list(normalized_data.columns[5:])  # Everything after first 5 annotation columns
+        print(f"Using standardized structure: {len(sample_cols)} sample columns (columns 6+)")
     else:
         # Fallback for legacy data
-        numeric_cols = normalized_data.select_dtypes(
-            include=[np.number]
-        ).columns.tolist()
+        numeric_cols = normalized_data.select_dtypes(include=[np.number]).columns.tolist()
         sample_cols = [col for col in numeric_cols if col not in annotation_cols]
         print(f"Using legacy detection: {len(sample_cols)} sample columns")
 
@@ -288,16 +261,10 @@ def _add_annotations_to_normalized_data(
         ]
     )
 
-    print(
-        f"Done: Final column order: {annotation_count} annotations + {len(sample_cols)} samples"
-    )
+    print(f"Done: Final column order: {annotation_count} annotations + {len(sample_cols)} samples")
     print("Done: CLEAN structure: No redundant or scattered columns!")
-    print(
-        f"Column order: {list(result_data.columns[:5])}... + {len(sample_cols)} sample columns"
-    )
-    print(
-        "Note: NO redundant columns like 'Gene', 'UniProt_Database', extra 'Description' etc."
-    )
+    print(f"Column order: {list(result_data.columns[:5])}... + {len(sample_cols)} sample columns")
+    print("Note: NO redundant columns like 'Gene', 'UniProt_Database', extra 'Description' etc.")
 
     return result_data
 
@@ -305,9 +272,7 @@ def _add_annotations_to_normalized_data(
 def _display_results_preview(annotated_results: pd.DataFrame) -> None:
     """Display a preview of exported results."""
 
-    print(
-        f"\nExported results preview (columns: {list(annotated_results.columns[:8])}...):"
-    )
+    print(f"\nExported results preview (columns: {list(annotated_results.columns[:8])}...):")
     print(f"Total proteins: {len(annotated_results)}")
 
     if len(annotated_results) > 0:
@@ -366,15 +331,11 @@ def export_timestamped_config(
 
     with open(config_file, "w", encoding="utf-8") as f:
         # Write header
-        f.write(
-            "# =============================================================================\n"
-        )
+        f.write("# =============================================================================\n")
         f.write("# PROTEOMICS ANALYSIS CONFIGURATION\n")
         f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"# Analysis: {analysis_description}\n")
-        f.write(
-            "# =============================================================================\n\n"
-        )
+        f.write("# =============================================================================\n\n")
 
         # Define configuration sections with their possible parameters
         section_configs = [
@@ -462,22 +423,16 @@ def export_timestamped_config(
         for section_name, param_names in section_configs:
             # Check if any parameters from this section exist in the config
             params_in_section = [p for p in param_names if p in config_dict]
-            
+
             if params_in_section:
-                _write_config_section(
-                    f, section_name, config_dict, params_in_section, section_counter
-                )
+                _write_config_section(f, section_name, config_dict, params_in_section, section_counter)
                 section_counter += 1
 
         # Write computed values as comments
         if computed_values:
-            f.write(
-                "# =============================================================================\n"
-            )
+            f.write("# =============================================================================\n")
             f.write("# COMPUTED VALUES (for reference)\n")
-            f.write(
-                "# =============================================================================\n"
-            )
+            f.write("# =============================================================================\n")
 
             for key, value in computed_values.items():
                 if key == "group_colors" and isinstance(value, dict):
@@ -499,13 +454,9 @@ def _write_config_section(
 ) -> None:
     """Write a configuration section to file."""
 
-    file_handle.write(
-        "# =============================================================================\n"
-    )
+    file_handle.write("# =============================================================================\n")
     file_handle.write(f"# {section_number}. {section_name}\n")
-    file_handle.write(
-        "# =============================================================================\n"
-    )
+    file_handle.write("# =============================================================================\n")
 
     for param in param_names:
         if param in config_dict:
@@ -568,9 +519,7 @@ def export_complete_analysis(
     if filtered_data is not None:
         computed_values["Total proteins analyzed"] = len(filtered_data)
     if "final_sample_columns" in config_dict:
-        computed_values["Total samples"] = len(
-            config_dict.get("final_sample_columns", [])
-        )
+        computed_values["Total samples"] = len(config_dict.get("final_sample_columns", []))
     if "formula" in config_dict:
         computed_values["Model formula"] = config_dict.get("formula")
 
@@ -602,13 +551,9 @@ def _print_export_summary(exported_files: Dict[str, str], config_file: str) -> N
     if "sample_metadata" in exported_files:
         print(f"  • {exported_files['sample_metadata']} - Sample metadata")
     if "differential_results" in exported_files:
-        print(
-            f"  • {exported_files['differential_results']} - Differential results with annotations"
-        )
+        print(f"  • {exported_files['differential_results']} - Differential results with annotations")
     if "configuration" in exported_files:
-        print(
-            f"  • {exported_files['configuration']} - Python configuration (timestamped)"
-        )
+        print(f"  • {exported_files['configuration']} - Python configuration (timestamped)")
 
     print("=" * 60)
 
@@ -670,7 +615,7 @@ def create_config_dict_from_notebook_vars(**kwargs) -> Dict[str, Any]:
 
     # Start with minimal defaults
     config_dict = minimal_defaults.copy()
-    
+
     # Add only the parameters that were actually provided
     # This ensures the export only contains what the user configured
     config_dict.update(kwargs)
@@ -705,9 +650,7 @@ def export_significant_proteins_summary(
     fc_threshold = config_dict.get("fold_change_threshold", 1.5)
 
     # Filter to significant proteins
-    significant_results = differential_results[
-        differential_results["adj.P.Val"] < p_threshold
-    ]
+    significant_results = differential_results[differential_results["adj.P.Val"] < p_threshold]
 
     if len(significant_results) == 0:
         print("No significant proteins found - skipping summary export")
@@ -732,9 +675,7 @@ def export_significant_proteins_summary(
 
     # Add significance categories
     summary_data["Regulation"] = summary_data["logFC"].apply(
-        lambda x: "Up"
-        if x > fc_threshold
-        else ("Down" if x < -fc_threshold else "Unchanged")
+        lambda x: "Up" if x > fc_threshold else ("Down" if x < -fc_threshold else "Unchanged")
     )
 
     # Sort by significance
@@ -751,9 +692,7 @@ def export_significant_proteins_summary(
 
 
 # Backwards compatibility functions
-def export_results(
-    differential_df: pd.DataFrame, output_file: str, include_all: bool = True
-) -> None:
+def export_results(differential_df: pd.DataFrame, output_file: str, include_all: bool = True) -> None:
     """
     Export differential analysis results to CSV file.
 

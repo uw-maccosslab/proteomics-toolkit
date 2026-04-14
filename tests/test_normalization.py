@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from proteomics_toolkit.normalization import (
     calculate_normalization_stats,
@@ -18,8 +17,12 @@ from proteomics_toolkit.normalization import (
 )
 
 SAMPLE_NAMES = [
-    "Sample_A1", "Sample_A2", "Sample_A3",
-    "Sample_B1", "Sample_B2", "Sample_B3",
+    "Sample_A1",
+    "Sample_A2",
+    "Sample_A3",
+    "Sample_B1",
+    "Sample_B2",
+    "Sample_B3",
 ]
 
 
