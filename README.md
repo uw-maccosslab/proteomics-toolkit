@@ -63,20 +63,17 @@ for _, row in metadata.iterrows():
     if full_col:
         meta_dict[full_col] = row.to_dict()
 
-# 4. Filter low-confidence proteins
-protein_data_filtered = protein_data[~protein_data['low_confidence']].copy()
-
-# 5. Build annotation + sample data for stats
-annot = protein_data_filtered[[
+# 4. Build annotation + sample data for stats
+annot = protein_data[[
     'leading_protein', 'leading_description', 'leading_gene_name',
     'leading_uniprot_id', 'leading_name'
 ]].copy()
 annot.columns = ['Protein', 'Description', 'Protein Gene', 'UniProt_Accession', 'UniProt_Entry_Name']
 data = pd.concat([annot.reset_index(drop=True),
-                   protein_data_filtered[sample_cols].reset_index(drop=True)], axis=1)
+                   protein_data[sample_cols].reset_index(drop=True)], axis=1)
 data.index = data['Protein']  # accession as index
 
-# 6. Statistical analysis
+# 5. Statistical analysis
 config = ptk.StatisticalConfig()
 config.analysis_type = 'unpaired'
 config.statistical_test_method = 'welch_t'
@@ -92,11 +89,11 @@ results = ptk.run_comprehensive_statistical_analysis(
     data, meta_dict, config, protein_annotations=annot
 )
 
-# 7. Visualization
+# 6. Visualization
 ptk.plot_volcano(results, fc_threshold=1.0, gene_column='Protein Gene', label_top_n=15)
 ptk.display_analysis_summary(results, config)
 
-# 8. Enrichment
+# 7. Enrichment
 enrich_config = ptk.EnrichmentConfig(
     enrichr_libraries=['GO_Biological_Process_2023', 'KEGG_2021_Human'],
     pvalue_cutoff=0.05,

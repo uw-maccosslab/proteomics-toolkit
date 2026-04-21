@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:proteopy.readthedocs.io)",
+      "Bash(python3 -m pytest tests/test_data_import.py -v --tb=short)",
+      "Bash(python3 -m pytest tests/test_visualization.py -v --tb=short)",
+      "Bash(python3 -m pytest tests/test_statistical_analysis.py -v --tb=short)",
+      "Bash(python3 -m proteomics_toolkit.datasets._generate)",
+      "Bash(python3 -m pytest tests/test_datasets.py -v --tb=short)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3)",
+      "Bash(python3 -m pytest tests/ --tb=short)",
+      "Bash(python3 -m venv --help)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}
