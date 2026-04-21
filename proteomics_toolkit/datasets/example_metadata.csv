@@ -1,0 +1,13 @@
+Replicate,Group,Subject,Batch
+Ctrl_01,Control,Subj1,Batch1
+Ctrl_02,Control,Subj2,Batch1
+Ctrl_03,Control,Subj3,Batch1
+Ctrl_04,Control,Subj4,Batch1
+Ctrl_05,Control,Subj5,Batch1
+Ctrl_06,Control,Subj6,Batch1
+Trt_01,Treatment,Subj1,Batch1
+Trt_02,Treatment,Subj2,Batch1
+Trt_03,Treatment,Subj3,Batch1
+Trt_04,Treatment,Subj4,Batch1
+Trt_05,Treatment,Subj5,Batch1
+Trt_06,Treatment,Subj6,Batch1

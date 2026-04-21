@@ -2705,3 +2705,337 @@ def plot_protein_profile(
 
     plt.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Generic QC plots
+#
+# These work on either protein-level or peptide-level DataFrames. They operate
+# on the sample columns plus a ``feature_label`` (default "protein") used only
+# for axis titles.
+# ---------------------------------------------------------------------------
+
+
+def plot_missing_value_heatmap(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    feature_label: str = "protein",
+    figsize: Tuple[float, float] = (12, 8),
+    max_features: int = 500,
+    cluster_features: bool = True,
+) -> plt.Figure:
+    """Visualise the missing-value pattern across samples x features.
+
+    Produces a binary heatmap where dark cells indicate missing (NaN or zero)
+    values and light cells indicate detected values. Useful for spotting
+    systematic missingness tied to specific samples or batches.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Protein- or peptide-level intensity DataFrame.
+    sample_columns : list of str
+        Names of the sample columns to include.
+    feature_label : str
+        Label for the feature axis (e.g. "protein" or "peptide").
+    figsize : tuple
+        Figure size.
+    max_features : int
+        If the DataFrame has more rows than this, sample a random subset to
+        keep the heatmap readable.
+    cluster_features : bool
+        If True, order features by detection count (most-detected at top).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    sample_data = data[sample_columns]
+    is_missing = sample_data.isna() | (sample_data == 0)
+
+    if cluster_features:
+        detection_count = (~is_missing).sum(axis=1)
+        order = detection_count.sort_values(ascending=False).index
+        is_missing = is_missing.loc[order]
+
+    if len(is_missing) > max_features:
+        is_missing = is_missing.sample(n=max_features, random_state=0)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(is_missing.astype(int).values, aspect="auto", cmap="Greys", interpolation="nearest")
+    ax.set_xticks(range(len(sample_columns)))
+    ax.set_xticklabels(_make_display_labels(sample_columns), rotation=90, fontsize=8)
+    ax.set_xlabel("Sample")
+    ax.set_ylabel(f"{feature_label.capitalize()}s (ordered by detection)")
+    ax.set_title(f"Missing-value pattern ({len(is_missing)} {feature_label}s shown)")
+    plt.tight_layout()
+    return fig
+
+
+def plot_identifications_per_sample(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    sample_metadata: Optional[Dict[str, Dict]] = None,
+    group_column: str = "Group",
+    feature_label: str = "protein",
+    figsize: Tuple[float, float] = (12, 6),
+) -> plt.Figure:
+    """Bar chart of the number of features identified per sample.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Protein- or peptide-level intensity DataFrame.
+    sample_columns : list of str
+        Names of the sample columns to include.
+    sample_metadata : dict, optional
+        Mapping from sample name to metadata dict; used to colour bars by group.
+    group_column : str
+        Key in ``sample_metadata`` entries to use for group colouring.
+    feature_label : str
+        Label for the feature axis (e.g. "protein" or "peptide").
+    figsize : tuple
+        Figure size.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    sample_data = data[sample_columns]
+    counts = (~(sample_data.isna() | (sample_data == 0))).sum(axis=0)
+
+    # Assign colours by group if metadata is available
+    if sample_metadata is not None:
+        groups = [sample_metadata.get(s, {}).get(group_column, "Unknown") for s in sample_columns]
+        unique_groups = sorted(set(groups))
+        palette = sns.color_palette("Set1", n_colors=max(len(unique_groups), 3))
+        group_to_color = {g: palette[i % len(palette)] for i, g in enumerate(unique_groups)}
+        bar_colors = [group_to_color[g] for g in groups]
+    else:
+        bar_colors = "steelblue"
+        group_to_color = None
+
+    fig, ax = plt.subplots(figsize=figsize)
+    x = np.arange(len(sample_columns))
+    ax.bar(x, counts.values, color=bar_colors)
+    ax.set_xticks(x)
+    ax.set_xticklabels(_make_display_labels(sample_columns), rotation=90, fontsize=8)
+    ax.set_ylabel(f"{feature_label.capitalize()}s identified")
+    ax.set_title(f"{feature_label.capitalize()} identifications per sample")
+
+    if group_to_color is not None:
+        handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in group_to_color.values()]
+        ax.legend(handles, group_to_color.keys(), title=group_column, loc="best", fontsize=8)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_intensity_distributions(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    log_transform: bool = True,
+    feature_label: str = "protein",
+    figsize: Tuple[float, float] = (10, 6),
+) -> plt.Figure:
+    """Density plot overlay of (log) intensity per sample.
+
+    Useful for visually checking that samples are on comparable scales before
+    and after normalization.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Protein- or peptide-level intensity DataFrame.
+    sample_columns : list of str
+        Names of the sample columns to include.
+    log_transform : bool
+        If True, log2-transform non-zero values before plotting.
+    feature_label : str
+        Label used in the plot title (e.g. "protein" or "peptide").
+    figsize : tuple
+        Figure size.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    display_names = _make_display_labels(sample_columns)
+
+    for col, label in zip(sample_columns, display_names):
+        values = data[col].replace(0, np.nan).dropna().values
+        if log_transform:
+            values = np.log2(values)
+        if len(values) > 1:
+            sns.kdeplot(values, ax=ax, label=label, linewidth=1, alpha=0.7)
+
+    ax.set_xlabel("log2(intensity)" if log_transform else "intensity")
+    ax.set_ylabel("Density")
+    ax.set_title(f"{feature_label.capitalize()} intensity distribution per sample")
+    ax.legend(fontsize=7, loc="best", ncol=2)
+    plt.tight_layout()
+    return fig
+
+
+def plot_cv_distribution(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    sample_metadata: Optional[Dict[str, Dict]] = None,
+    group_column: str = "Group",
+    feature_label: str = "protein",
+    figsize: Tuple[float, float] = (10, 6),
+) -> plt.Figure:
+    """Coefficient-of-variation distribution across all samples (or by group).
+
+    For each feature, computes CV = std / mean across the supplied samples.
+    When ``sample_metadata`` is provided and contains ``group_column``,
+    a separate CV distribution is drawn per group (overlayed).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Protein- or peptide-level intensity DataFrame.
+    sample_columns : list of str
+        Names of the sample columns to include.
+    sample_metadata : dict, optional
+        Mapping from sample name to metadata dict.
+    group_column : str
+        Key in ``sample_metadata`` entries to use for per-group distributions.
+    feature_label : str
+        Label used in the plot title (e.g. "protein" or "peptide").
+    figsize : tuple
+        Figure size.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+
+    def _cv(frame: pd.DataFrame) -> pd.Series:
+        mean = frame.mean(axis=1)
+        std = frame.std(axis=1)
+        cv = (std / mean).replace([np.inf, -np.inf], np.nan).dropna()
+        return cv * 100  # percent
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if sample_metadata is not None:
+        groups = [sample_metadata.get(s, {}).get(group_column, "Unknown") for s in sample_columns]
+        group_to_samples: Dict[str, List[str]] = {}
+        for s, g in zip(sample_columns, groups):
+            group_to_samples.setdefault(g, []).append(s)
+        palette = sns.color_palette("Set1", n_colors=max(len(group_to_samples), 3))
+        for i, (group, cols) in enumerate(sorted(group_to_samples.items())):
+            if len(cols) >= 2:
+                cv_values = _cv(data[cols])
+                sns.kdeplot(cv_values, ax=ax, label=f"{group} (n={len(cols)})", color=palette[i % len(palette)])
+        ax.legend(title=group_column, loc="best")
+    else:
+        cv_values = _cv(data[sample_columns])
+        sns.kdeplot(cv_values, ax=ax, color="steelblue", fill=True, alpha=0.3)
+
+    ax.set_xlabel("CV (%)")
+    ax.set_ylabel("Density")
+    ax.set_title(f"{feature_label.capitalize()}-level CV distribution")
+    plt.tight_layout()
+    return fig
+
+
+def plot_peptide_coverage_map(
+    peptide_data: pd.DataFrame,
+    protein_id: str,
+    sample_columns: List[str],
+    protein_column: str = "leading_protein",
+    sequence_column: str = "peptide_sequence",
+    start_column: Optional[str] = None,
+    protein_length: Optional[int] = None,
+    figsize: Tuple[float, float] = (12, 6),
+) -> plt.Figure:
+    """Map detected peptides onto a protein's sequence coordinates.
+
+    Each peptide is drawn as a horizontal bar spanning its start-to-end
+    positions along the protein. Bar opacity encodes mean detection frequency
+    (fraction of samples in which the peptide was detected).
+
+    If ``start_column`` is provided, positions come directly from that column.
+    Otherwise, if the peptide sequence can be located within a parent protein
+    sequence passed via ``protein_length``, positions are estimated. In that
+    fallback case, peptides are laid out sequentially along 1..protein_length
+    and only relative positions matter.
+
+    Parameters
+    ----------
+    peptide_data : pd.DataFrame
+        Peptide-level DataFrame. Must contain ``protein_column`` and
+        ``sequence_column``.
+    protein_id : str
+        Protein identifier to match in ``protein_column``.
+    sample_columns : list of str
+        Sample columns to use for the detection-frequency calculation.
+    protein_column : str
+        Column name holding the parent-protein identifier for each peptide.
+    sequence_column : str
+        Column name holding the peptide amino-acid sequence.
+    start_column : str, optional
+        Column name holding the 1-based start position of each peptide along
+        the protein. If None, peptides are drawn ordered by sequence.
+    protein_length : int, optional
+        Total length of the protein (in residues) for the x-axis scale.
+        If None, inferred from max start+len.
+    figsize : tuple
+        Figure size.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Raises
+    ------
+    ValueError
+        If no peptides are found for ``protein_id``.
+    """
+    subset = peptide_data[peptide_data[protein_column] == protein_id].copy()
+    if subset.empty:
+        raise ValueError(f"No peptides found matching {protein_column}={protein_id!r}")
+
+    sequences = subset[sequence_column].astype(str).tolist()
+    lengths = [len(seq) for seq in sequences]
+
+    if start_column is not None and start_column in subset.columns:
+        starts = subset[start_column].astype(int).tolist()
+    else:
+        # Fallback: order by sequence, lay out end-to-end along the protein
+        order = np.argsort(sequences)
+        sequences = [sequences[i] for i in order]
+        lengths = [lengths[i] for i in order]
+        subset = subset.iloc[order]
+        starts = []
+        pos = 1
+        for length in lengths:
+            starts.append(pos)
+            pos += length
+
+    if protein_length is None:
+        protein_length = max(s + length for s, length in zip(starts, lengths))
+
+    # Detection frequency per peptide: fraction of samples with nonzero / non-NA value
+    sample_values = subset[sample_columns]
+    detected = ~(sample_values.isna() | (sample_values == 0))
+    detection_freq = detected.sum(axis=1) / len(sample_columns)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for i, (seq, start, length, freq) in enumerate(zip(sequences, starts, lengths, detection_freq)):
+        alpha = max(0.2, float(freq))
+        ax.broken_barh([(start, length)], (i - 0.4, 0.8), facecolors="steelblue", alpha=alpha)
+
+    ax.set_xlim(0, protein_length + 1)
+    ax.set_ylim(-1, len(sequences))
+    ax.set_xlabel("Residue position")
+    ax.set_ylabel("Peptide")
+    ax.set_yticks(range(len(sequences)))
+    ax.set_yticklabels(sequences, fontsize=7)
+    ax.set_title(f"Peptide coverage: {protein_id}")
+    ax.grid(axis="x", alpha=0.3)
+    plt.tight_layout()
+    return fig

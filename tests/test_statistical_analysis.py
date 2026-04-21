@@ -221,3 +221,98 @@ class TestMultipleTestingCorrection:
         corrected = apply_multiple_testing_correction(results_df, config)
         assert isinstance(corrected, pd.DataFrame)
         assert "adj.P.Val" in corrected.columns
+
+
+# ---------------------------------------------------------------------------
+# Peptide-level statistics
+#
+# The existing statistical functions are row-indexed and do not assume a
+# protein identifier. These tests verify that peptide rows flow through the
+# same pipeline.
+# ---------------------------------------------------------------------------
+
+
+def _make_unpaired_peptide_data():
+    """Create peptide_data + metadata_df for unpaired tests."""
+    rng = np.random.default_rng(7)
+    samples_a = [f"A_{i}" for i in range(5)]
+    samples_b = [f"B_{i}" for i in range(5)]
+    all_samples = samples_a + samples_b
+
+    peptides = [f"PEPTIDE_{i}" for i in range(15)]
+    values = rng.uniform(1e4, 1e6, size=(15, 10))
+    values[0, 5:] += 5e5  # make first peptide clearly different in group B
+
+    peptide_data = pd.DataFrame(values, index=peptides, columns=all_samples)
+
+    metadata_df = pd.DataFrame(
+        {
+            "Sample": all_samples,
+            "Group": ["Control"] * 5 + ["Treatment"] * 5,
+        }
+    )
+
+    config = StatisticalConfig()
+    config.analysis_type = "unpaired"
+    config.group_column = "Group"
+    config.group_labels = ["Control", "Treatment"]
+    config.log_transform_before_stats = False
+
+    return peptide_data, metadata_df, config
+
+
+def _make_paired_peptide_data():
+    """Create peptide_data + metadata_df for paired tests."""
+    rng = np.random.default_rng(8)
+    subjects = ["S1", "S2", "S3", "S4", "S5"]
+    samples_pre = [f"{s}_Pre" for s in subjects]
+    samples_post = [f"{s}_Post" for s in subjects]
+    all_samples = samples_pre + samples_post
+
+    peptides = [f"PEPTIDE_{i}" for i in range(15)]
+    values = rng.uniform(1e4, 1e6, size=(15, 10))
+    values[0, 5:] += 5e5
+
+    peptide_data = pd.DataFrame(values, index=peptides, columns=all_samples)
+
+    rows = []
+    for s in subjects:
+        rows.append({"Sample": f"{s}_Pre", "Subject": s, "Timepoint": "Pre", "Group": "A"})
+        rows.append({"Sample": f"{s}_Post", "Subject": s, "Timepoint": "Post", "Group": "A"})
+    metadata_df = pd.DataFrame(rows)
+
+    config = StatisticalConfig()
+    config.analysis_type = "paired"
+    config.group_column = "Group"
+    config.group_labels = ["A"]
+    config.subject_column = "Subject"
+    config.paired_column = "Timepoint"
+    config.paired_label1 = "Pre"
+    config.paired_label2 = "Post"
+    config.log_transform_before_stats = False
+
+    return peptide_data, metadata_df, config
+
+
+class TestPeptideLevelStatistics:
+    def test_unpaired_t_test_on_peptides(self):
+        peptide_data, metadata_df, config = _make_unpaired_peptide_data()
+        result = run_unpaired_t_test(peptide_data, metadata_df, config)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == len(peptide_data)
+
+    def test_mann_whitney_on_peptides(self):
+        peptide_data, metadata_df, config = _make_unpaired_peptide_data()
+        result = run_mann_whitney_test(peptide_data, metadata_df, config)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == len(peptide_data)
+
+    def test_paired_t_test_on_peptides(self):
+        peptide_data, metadata_df, config = _make_paired_peptide_data()
+        result = run_paired_t_test(peptide_data, metadata_df, config)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_wilcoxon_on_peptides(self):
+        peptide_data, metadata_df, config = _make_paired_peptide_data()
+        result = run_wilcoxon_test(peptide_data, metadata_df, config)
+        assert isinstance(result, pd.DataFrame)

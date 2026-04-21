@@ -478,6 +478,176 @@ def load_prism_data(
     return protein_data, metadata, sample_columns
 
 
+def load_prism_peptide_data(
+    parquet_file: str,
+    metadata_file: Optional[str] = None,
+    peptide_cols: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], List[str]]:
+    """
+    Load PRISM-processed peptide parquet output and associated metadata.
+
+    Thin convenience wrapper around :func:`load_prism_data` for use with
+    ``corrected_peptides.parquet``. PRISM always emits both a protein and a
+    peptide parquet; this wrapper exists so the peptide path is discoverable
+    from the public API.
+
+    Parameters
+    ----------
+    parquet_file : str
+        Path to the PRISM ``corrected_peptides.parquet`` file.
+    metadata_file : str, optional
+        Path to sample metadata CSV.
+    peptide_cols : list of str, optional
+        Names of non-sample columns containing peptide annotations.
+        If None, auto-detected as non-float64 columns.
+
+    Returns
+    -------
+    peptide_data : pd.DataFrame
+        Peptide quantitation data with all columns intact.
+    metadata : pd.DataFrame or None
+        Sample metadata if metadata_file was provided.
+    sample_columns : list of str
+        List of sample column names (with batch suffix if present).
+
+    Example
+    -------
+    >>> peptide_data, metadata, sample_cols = load_prism_peptide_data(
+    ...     'PRISM-Output/corrected_peptides.parquet',
+    ...     'PRISM-Output/sample_metadata.csv'
+    ... )
+    """
+    return load_prism_data(parquet_file, metadata_file, protein_cols=peptide_cols)
+
+
+def load_diann_data(
+    pg_matrix_file: str,
+    metadata_file: Optional[str] = None,
+    annotation_cols: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], List[str]]:
+    """
+    Load a DIA-NN ``report.pg_matrix.tsv`` protein-group matrix plus metadata.
+
+    DIA-NN's ``pg_matrix.tsv`` is a wide-format table: one row per protein
+    group, with annotation columns (``Protein.Group``, ``Protein.Ids``,
+    ``Protein.Names``, ``Genes``, ``First.Protein.Description``) followed by
+    sample columns containing intensity values. Sample columns are typically
+    full raw/mzML file paths.
+
+    This function loads the file, maps DIA-NN annotation columns onto the
+    toolkit's standard 5-column annotation prefix (``Protein``,
+    ``Description``, ``Protein Gene``, ``UniProt_Accession``,
+    ``UniProt_Entry_Name``), and returns the sample column names separately
+    so downstream functions can use them directly.
+
+    Parameters
+    ----------
+    pg_matrix_file : str
+        Path to the DIA-NN ``report.pg_matrix.tsv`` file.
+    metadata_file : str, optional
+        Path to sample metadata CSV.
+    annotation_cols : list of str, optional
+        Names of non-sample columns in the pg_matrix. If None, uses the
+        standard DIA-NN annotation column names.
+
+    Returns
+    -------
+    protein_data : pd.DataFrame
+        Protein-group quantitation data. The 5 standardized annotation
+        columns appear first, followed by original DIA-NN annotation
+        columns (preserved for reference) and sample columns.
+    metadata : pd.DataFrame or None
+        Sample metadata if ``metadata_file`` was provided.
+    sample_columns : list of str
+        List of sample column names (typically file paths; call
+        :func:`clean_sample_names` to strip common prefixes).
+
+    Example
+    -------
+    >>> protein_data, metadata, sample_cols = load_diann_data(
+    ...     'diann-output/report.pg_matrix.tsv',
+    ...     'metadata.csv'
+    ... )
+    >>> # DIA-NN sample columns are file paths; clean them for display
+    >>> col_map = clean_sample_names(sample_cols, auto_detect=True)
+    """
+    print("=== LOADING DIA-NN pg_matrix DATA ===\n")
+
+    if not os.path.exists(pg_matrix_file):
+        raise FileNotFoundError(f"DIA-NN pg_matrix file not found: {pg_matrix_file}")
+
+    try:
+        protein_data = pd.read_csv(pg_matrix_file, sep="\t")
+        print(f"Loaded DIA-NN pg_matrix: {protein_data.shape[0]} protein groups x {protein_data.shape[1]} columns")
+    except Exception as e:
+        raise ValueError(f"Error loading DIA-NN pg_matrix file: {e}")
+
+    # Standard DIA-NN annotation columns
+    default_annotation_cols = [
+        "Protein.Group",
+        "Protein.Ids",
+        "Protein.Names",
+        "Genes",
+        "First.Protein.Description",
+    ]
+    diann_annotation_cols = annotation_cols if annotation_cols is not None else default_annotation_cols
+
+    missing_cols = [c for c in diann_annotation_cols if c not in protein_data.columns]
+    if missing_cols:
+        print(f"Warning: DIA-NN annotation columns missing from pg_matrix: {missing_cols}")
+
+    # Sample columns are everything else
+    sample_columns = [col for col in protein_data.columns if col not in diann_annotation_cols]
+    print(f"Sample columns: {len(sample_columns)}")
+
+    # Map DIA-NN annotations onto the toolkit's standard 5-column prefix.
+    # Take the first ID/name/gene when multiple are separated by ';'.
+    def _first(series: pd.Series) -> pd.Series:
+        return series.fillna("").astype(str).str.split(";").str[0].str.strip()
+
+    standardized = pd.DataFrame(index=protein_data.index)
+    if "Protein.Group" in protein_data.columns:
+        standardized["Protein"] = protein_data["Protein.Group"].fillna("").astype(str)
+    else:
+        standardized["Protein"] = ""
+    if "First.Protein.Description" in protein_data.columns:
+        standardized["Description"] = protein_data["First.Protein.Description"].fillna("").astype(str)
+    else:
+        standardized["Description"] = ""
+    standardized["Protein Gene"] = _first(protein_data["Genes"]) if "Genes" in protein_data.columns else ""
+    if "Protein.Ids" in protein_data.columns:
+        standardized["UniProt_Accession"] = _first(protein_data["Protein.Ids"])
+    else:
+        standardized["UniProt_Accession"] = ""
+    if "Protein.Names" in protein_data.columns:
+        standardized["UniProt_Entry_Name"] = _first(protein_data["Protein.Names"])
+    else:
+        standardized["UniProt_Entry_Name"] = ""
+
+    # Attach the standardized prefix, then the original DIA-NN annotation columns
+    # (preserved for reference), then the sample columns.
+    original_annotation_present = [c for c in diann_annotation_cols if c in protein_data.columns]
+    protein_data = pd.concat(
+        [standardized, protein_data[original_annotation_present], protein_data[sample_columns]],
+        axis=1,
+    )
+
+    # Load metadata if provided
+    metadata = None
+    if metadata_file:
+        if not os.path.exists(metadata_file):
+            print(f"Warning: Metadata file not found: {metadata_file}")
+        else:
+            try:
+                metadata = pd.read_csv(metadata_file)
+                print(f"Loaded metadata: {metadata.shape[0]} samples x {metadata.shape[1]} columns")
+            except Exception as e:
+                print(f"Warning: Could not load metadata file: {e}")
+
+    print("\nDIA-NN data loading completed successfully!")
+    return protein_data, metadata, sample_columns
+
+
 def clean_sample_names(
     sample_columns: List[str],
     common_prefix: Optional[str] = None,

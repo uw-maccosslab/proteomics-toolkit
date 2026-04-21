@@ -94,6 +94,7 @@ The toolkit includes comprehensive validation with clear error messages:
 from . import (
     classification,  # Binary classification and fold-change PCA
     data_import,  # Data loading and parsing
+    datasets,  # Bundled example datasets
     enrichment,  # Gene set enrichment analysis
     export,  # Results export and configuration management
     normalization,  # Normalization methods
@@ -104,7 +105,7 @@ from . import (
     visualization,  # Plotting and visualization
 )
 
-__version__ = "26.1.0"
+__version__ = "26.2.0"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================
@@ -124,7 +125,9 @@ from .data_import import (
     clean_sample_names,  # Clean up sample column names automatically
     create_sample_column_mapping,  # Map metadata sample names to data columns
     detect_batch_suffix,  # Detect skyline-prism batch suffix in column names
+    load_diann_data,  # Load DIA-NN report.pg_matrix.tsv protein-group matrix
     load_prism_data,  # Load PRISM parquet output (corrected_proteins.parquet)
+    load_prism_peptide_data,  # Load PRISM peptide parquet (corrected_peptides.parquet)
     load_skyline_data,  # Main function: Load protein/peptide data + metadata
     strip_batch_suffix,  # Strip batch suffix to get short sample names
 )
@@ -214,11 +217,16 @@ from .visualization import (
     plot_control_correlation,  # QC plot: Simple control sample correlation heatmap
     plot_control_correlation_analysis,  # QC plot: Control sample correlation analysis
     plot_control_group_correlation_analysis,  # QC plot: Group-wise control correlations
+    plot_cv_distribution,  # QC plot: CV distribution across all samples (or by group)
     plot_grouped_heatmap,  # Heatmap for any grouped data
     plot_grouped_trajectories,  # Line plots for grouped trajectories
+    plot_identifications_per_sample,  # QC plot: #features identified per sample (bar)
     plot_individual_control_pool_analysis,  # Detailed: Individual control pool analysis
+    plot_intensity_distributions,  # QC plot: Density overlay of intensity per sample
+    plot_missing_value_heatmap,  # QC plot: Missing-value pattern across samples x features
     plot_normalization_comparison,  # QC plot: Before/after normalization comparison
     plot_pca,  # QC plot: Principal component analysis
+    plot_peptide_coverage_map,  # QC plot: Peptide positions along a protein sequence
     plot_protein_profile,  # Single protein profile plot
     plot_volcano,  # Main results plot: Volcano plot for differential analysis
 )
@@ -230,6 +238,7 @@ from .visualization import (
 __all__ = [
     # MODULES - Full module access for advanced workflows
     "data_import",  # Complete data import functionality
+    "datasets",  # Bundled example datasets
     "preprocessing",  # Complete preprocessing functionality
     "normalization",  # All normalization methods
     "statistical_analysis",  # Complete statistical analysis suite
@@ -242,6 +251,8 @@ __all__ = [
     # DATA LOADING - Start here for any analysis
     "load_skyline_data",  # ESSENTIAL: Load protein data + metadata
     "load_prism_data",  # Load PRISM parquet output (corrected_proteins.parquet)
+    "load_prism_peptide_data",  # Load PRISM peptide parquet (corrected_peptides.parquet)
+    "load_diann_data",  # Load DIA-NN report.pg_matrix.tsv protein-group matrix
     "clean_sample_names",  # Clean and standardize sample column names
     "detect_batch_suffix",  # Detect skyline-prism batch suffix in column names
     "strip_batch_suffix",  # Strip batch suffix to get short sample names
@@ -293,6 +304,11 @@ __all__ = [
     "plot_grouped_heatmap",  # Heatmap for any grouped data
     "plot_grouped_trajectories",  # Trajectory plots for groups
     "plot_protein_profile",  # Single protein profile
+    "plot_missing_value_heatmap",  # QC: missing-value pattern (proteins or peptides)
+    "plot_identifications_per_sample",  # QC: #features identified per sample
+    "plot_intensity_distributions",  # QC: density overlay of intensity per sample
+    "plot_cv_distribution",  # QC: CV distribution across all samples (or by group)
+    "plot_peptide_coverage_map",  # QC: peptide positions along a protein sequence
     # TEMPORAL CLUSTERING - Longitudinal trend analysis
     "TemporalClusteringConfig",  # Configuration for temporal analysis
     "run_temporal_analysis",  # MAIN FUNCTION: Complete temporal analysis pipeline

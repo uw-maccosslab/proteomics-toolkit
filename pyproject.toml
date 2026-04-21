@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proteomics-toolkit"
-version = "26.1.0"
+version = "26.2.0"
 description = "Proteomics analysis toolkit for mass spectrometry data"
 readme = "README.md"
 license = "Apache-2.0"
@@ -48,7 +48,10 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["proteomics_toolkit"]
+packages = ["proteomics_toolkit", "proteomics_toolkit.datasets"]
+
+[tool.setuptools.package-data]
+"proteomics_toolkit.datasets" = ["*.parquet", "*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
