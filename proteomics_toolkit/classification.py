@@ -185,13 +185,19 @@ def run_binary_classification(
     # Check for label inversion before computing metrics.
     # LabelEncoder assigns labels alphabetically (NR=0, R=1), but the classifier
     # may learn the mapping in reverse. Detect this via AUC < 0.5 and flip.
+    #
+    # When flipping, each per-fold ROC must be reflected across y = x
+    # (swap fpr <-> tpr, new_auc = 1 - old_auc). Previously only the scalar
+    # per-fold auc was swapped to max(a, 1-a) while the (fpr, tpr) arrays were
+    # left untouched, which left plotted curves below the diagonal even though
+    # the reported AUC was >= 0.5.
     try:
         auc_overall = roc_auc_score(y_encoded, y_prob_all)
         if auc_overall < 0.5:
             auc_overall = 1.0 - auc_overall
             y_prob_all = 1.0 - y_prob_all
             y_pred_all = 1 - y_pred_all
-            fold_roc_data = [(fpr, tpr, max(a, 1.0 - a)) for fpr, tpr, a in fold_roc_data]
+            fold_roc_data = [(tpr, fpr, 1.0 - a) for fpr, tpr, a in fold_roc_data]
     except ValueError:
         auc_overall = None
 
