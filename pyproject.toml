@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proteomics-toolkit"
-version = "26.2.0"
+version = "26.2.1"
 description = "Proteomics analysis toolkit for mass spectrometry data"
 readme = "README.md"
 license = "Apache-2.0"
@@ -32,6 +32,7 @@ dependencies = [
     "seaborn>=0.12",
     "pyarrow>=12.0",
     "requests>=2.25",
+    "xgboost>=1.7",
 ]
 
 [project.urls]
@@ -40,8 +41,6 @@ Repository = "https://github.com/uw-maccosslab/proteomics-toolkit"
 Issues = "https://github.com/uw-maccosslab/proteomics-toolkit/issues"
 
 [project.optional-dependencies]
-xgboost = ["xgboost>=1.7"]
-all = ["xgboost>=1.7"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",

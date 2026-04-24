@@ -1140,7 +1140,7 @@ wheels = [
 
 [[package]]
 name = "proteomics-toolkit"
-version = "26.2.0"
+version = "26.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
@@ -1156,18 +1156,13 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "seaborn" },
     { name = "statsmodels" },
+    { name = "xgboost" },
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "xgboost" },
-]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
-]
-xgboost = [
-    { name = "xgboost" },
 ]
 
 [package.metadata]
@@ -1183,10 +1178,9 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.10" },
     { name = "seaborn", specifier = ">=0.12" },
     { name = "statsmodels", specifier = ">=0.14" },
-    { name = "xgboost", marker = "extra == 'all'", specifier = ">=1.7" },
-    { name = "xgboost", marker = "extra == 'xgboost'", specifier = ">=1.7" },
+    { name = "xgboost", specifier = ">=1.7" },
 ]
-provides-extras = ["xgboost", "all", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "pyarrow"
