@@ -11,7 +11,9 @@ from proteomics_toolkit.statistical_analysis import (
     _trigamma_inverse,
     apply_multiple_testing_correction,
     get_intensity_trend_points,
+    run_comprehensive_statistical_analysis,
     run_mann_whitney_test,
+    run_mixed_effects_analysis,
     run_moderated_linear_model,
     run_paired_t_test,
     run_unpaired_t_test,
@@ -504,3 +506,98 @@ class TestLimmaPriorRobust:
         # Outliers inflate e_var under plain fit, so d0_plain is pulled
         # low. Robust fit should give a larger d0 (stronger prior).
         assert d0_robust > d0_plain
+
+
+
+class TestMixedEffectsProteinNameLookup:
+    """Regression tests for the protein_annotations lookup in run_mixed_effects_analysis.
+
+    v26.2.0 introduced an index reassignment in run_comprehensive_statistical_analysis
+    that made filtered_protein_data.index hold protein IDs, while protein_annotations
+    retained its original integer RangeIndex. That broke the
+    ``protein_annotations.loc[protein_idx, "Protein"]`` lookup with a KeyError when
+    annotations were provided.
+    """
+
+    @staticmethod
+    def _make_longitudinal_fixture():
+        rng = np.random.default_rng(0)
+        subjects = ["S1", "S2", "S3", "S4", "S5", "S6"]
+        weeks = [0, 4, 8]
+        samples, rows = [], []
+        for s in subjects:
+            for w in weeks:
+                name = f"{s}_W{w}"
+                samples.append(name)
+                rows.append({"Sample": name, "BRI Subject ID": s, "Week": w})
+        metadata_df = pd.DataFrame(rows)
+
+        proteins = [f"sp|P{idx:04d}|PROT{idx:04d}_HUMAN" for idx in range(5)]
+        values = rng.uniform(1e5, 1e7, size=(len(proteins), len(samples)))
+        protein_values = pd.DataFrame(values, columns=samples)
+        annotations = pd.DataFrame(
+            {
+                "Protein": proteins,
+                "Description": [f"desc {p}" for p in proteins],
+                "Protein Gene": [f"GENE{i}" for i in range(len(proteins))],
+            }
+        )
+        normalized_data = pd.concat([annotations.reset_index(drop=True), protein_values.reset_index(drop=True)], axis=1)
+
+        config = StatisticalConfig()
+        config.analysis_type = "dose_response"
+        config.statistical_test_method = "mixed_effects"
+        config.dose_column = "Week"
+        config.subject_column = "BRI Subject ID"
+        config.log_transform_before_stats = False
+        config.correction_method = "fdr_bh"
+
+        sample_metadata = {
+            row["Sample"]: {k: row[k] for k in ("BRI Subject ID", "Week")}
+            for _, row in metadata_df.iterrows()
+        }
+
+        return normalized_data, sample_metadata, config, annotations, proteins
+
+    def test_dose_response_with_annotations_does_not_keyerror(self):
+        normalized_data, sample_metadata, config, annotations, expected_proteins = (
+            self._make_longitudinal_fixture()
+        )
+
+        results = run_comprehensive_statistical_analysis(
+            normalized_data=normalized_data,
+            sample_metadata=sample_metadata,
+            config=config,
+            protein_annotations=annotations,
+        )
+
+        assert "Protein" in results.columns
+        assert set(results["Protein"]) == set(expected_proteins)
+
+    def test_direct_call_with_integer_indexed_annotations(self):
+        rng = np.random.default_rng(1)
+        subjects = ["S1", "S2", "S3", "S4"]
+        weeks = [0, 4]
+        samples, rows = [], []
+        for s in subjects:
+            for w in weeks:
+                name = f"{s}_W{w}"
+                samples.append(name)
+                rows.append({"Sample": name, "Subject": s, "Week": w})
+        metadata_df = pd.DataFrame(rows)
+
+        proteins = [f"sp|Q{idx:04d}|P{idx:04d}_HUMAN" for idx in range(3)]
+        values = rng.uniform(1e5, 1e7, size=(len(proteins), len(samples)))
+        protein_data = pd.DataFrame(values, index=proteins, columns=samples)
+        annotations = pd.DataFrame({"Protein": proteins})
+
+        config = StatisticalConfig()
+        config.analysis_type = "dose_response"
+        config.statistical_test_method = "mixed_effects"
+        config.dose_column = "Week"
+        config.subject_column = "Subject"
+        config.log_transform_before_stats = False
+
+        results = run_mixed_effects_analysis(protein_data, metadata_df, config, annotations)
+
+        assert set(results["Protein"]) == set(proteins)

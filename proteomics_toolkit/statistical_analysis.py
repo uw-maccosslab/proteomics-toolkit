@@ -599,12 +599,19 @@ def run_mixed_effects_analysis(protein_data, metadata_df, config, protein_annota
         if (i + 1) % 100 == 0:
             print(f"  Processed {i + 1}/{n_proteins} proteins...")
 
-        # Get actual protein name if annotations are provided
-        if protein_annotations is not None and "Protein" in protein_annotations.columns:
-            # Use protein_idx (the actual row index) to get the correct protein name
+        # Get actual protein name if annotations are provided.
+        # run_comprehensive_statistical_analysis reindexes protein_data by Protein ID
+        # before calling this function, so protein_idx is already the protein name in
+        # that path. Older callers may still pass an integer-indexed DataFrame with a
+        # separate annotations table; keep that lookup working by falling back only
+        # when protein_idx actually resolves in the annotations index.
+        actual_protein_name = protein_idx
+        if (
+            protein_annotations is not None
+            and "Protein" in protein_annotations.columns
+            and protein_idx in protein_annotations.index
+        ):
             actual_protein_name = protein_annotations.loc[protein_idx, "Protein"]
-        else:
-            actual_protein_name = protein_idx  # Fallback to index
 
         # Prepare data for this protein
         protein_df = pd.DataFrame({"Sample": protein_values.index, "Intensity": protein_values.values})
