@@ -6,9 +6,13 @@ import pytest
 
 from proteomics_toolkit.statistical_analysis import (
     StatisticalConfig,
+    _fit_limma_prior,
     _sanitize_formula_term,
+    _trigamma_inverse,
     apply_multiple_testing_correction,
+    get_intensity_trend_points,
     run_mann_whitney_test,
+    run_moderated_linear_model,
     run_paired_t_test,
     run_unpaired_t_test,
     run_wilcoxon_test,
@@ -316,3 +320,187 @@ class TestPeptideLevelStatistics:
         peptide_data, metadata_df, config = _make_paired_peptide_data()
         result = run_wilcoxon_test(peptide_data, metadata_df, config)
         assert isinstance(result, pd.DataFrame)
+
+
+# ---------------------------------------------------------------------------
+# limma_like / deqms_like
+# ---------------------------------------------------------------------------
+
+
+def _make_limma_fixture(with_effect_rows=10, total_rows=60, seed=42):
+    """Build a protein DataFrame + metadata + config for limma/DEqMS tests.
+
+    Values are log-space so ``log_transform_before_stats = False`` is safe.
+    The first ``with_effect_rows`` features get a +1.5 treatment shift and
+    everyone else is pure noise.
+    """
+    rng = np.random.default_rng(seed)
+    samples_a = [f"A_{i}" for i in range(6)]
+    samples_b = [f"B_{i}" for i in range(6)]
+    all_samples = samples_a + samples_b
+
+    values = rng.normal(loc=10, scale=0.5, size=(total_rows, 12))
+    values[:with_effect_rows, 6:] += 1.5
+
+    features = [f"P{i:04d}" for i in range(total_rows)]
+    feature_data = pd.DataFrame(values, index=features, columns=all_samples)
+
+    metadata_df = pd.DataFrame(
+        {
+            "Sample": all_samples,
+            "Group": ["Control"] * 6 + ["Treatment"] * 6,
+        }
+    )
+
+    config = StatisticalConfig()
+    config.analysis_type = "unpaired"
+    config.group_column = "Group"
+    config.group_labels = ["Control", "Treatment"]
+    config.log_transform_before_stats = False
+    config.statistical_test_method = "limma_like"
+
+    return feature_data, metadata_df, config
+
+
+class TestTrigammaInverse:
+    def test_identity_round_trip(self):
+        # ψ'(ψ'⁻¹(x)) should recover x for x in (0, ∞).
+        from scipy.special import polygamma
+
+        for target in [0.01, 0.1, 0.5, 1.0, 5.0]:
+            inv = _trigamma_inverse(target)
+            assert np.isclose(polygamma(1, inv), target, rtol=1e-6)
+
+
+class TestModeratedLinearModelLimma:
+    def test_returns_standard_schema(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "limma"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        for col in ("Protein", "logFC", "AveExpr", "t", "P.Value", "n_group1", "n_group2"):
+            assert col in result.columns
+        assert len(result) == len(feature_data)
+
+    def test_ranks_differential_features_first(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "limma"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        top10 = set(result.sort_values("P.Value").head(10)["Protein"])
+        expected = {f"P{i:04d}" for i in range(10)}
+        assert top10 == expected
+
+    def test_fold_change_sign_matches_direction(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "limma"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        spiked = result[result["Protein"].str.match(r"P000[0-9]$")]
+        assert (spiked["logFC"] > 0).all()
+
+    def test_peptide_level_works(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "limma"
+        feature_data.index = [f"PEPTIDE_{i}" for i in range(len(feature_data))]
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert len(result) == len(feature_data)
+        assert result["Protein"].iloc[0].startswith("PEPTIDE_")
+
+
+class TestModeratedLinearModelDeqms:
+    def test_returns_standard_schema_with_count_col(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(0)
+        feature_data["n_peptides"] = rng.integers(2, 20, size=len(feature_data))
+        config.moderation = "deqms"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        for col in ("Protein", "logFC", "t", "P.Value", "peptide_count_used", "deqms_s0_sq"):
+            assert col in result.columns
+
+    def test_missing_count_column_raises(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "deqms"
+        with pytest.raises(ValueError, match="peptide-count column"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_custom_count_column_honoured(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(1)
+        feature_data["custom_count"] = rng.integers(2, 20, size=len(feature_data))
+        config.moderation = "deqms"
+        config.peptide_count_column = "custom_count"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert result["peptide_count_used"].notna().all()
+
+    def test_ranks_differential_features_first(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(2)
+        feature_data["n_peptides"] = rng.integers(2, 20, size=len(feature_data))
+        config.moderation = "deqms"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        top10 = set(result.sort_values("P.Value").head(10)["Protein"])
+        expected = {f"P{i:04d}" for i in range(10)}
+        assert top10 == expected
+
+
+class TestModeratedLinearModelIntensityTrend:
+    def test_returns_intensity_columns_and_attrs(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        for col in ("Protein", "logFC", "t", "P.Value", "intensity_s0_sq", "intensity_used"):
+            assert col in result.columns
+        # Per-(feature, group) points DataFrame is stashed on attrs
+        pts = result.attrs.get("intensity_trend_points")
+        assert pts is not None
+        assert {"feature_idx", "group", "mean_intensity", "sd_intensity", "predicted_sd"}.issubset(pts.columns)
+
+    def test_get_intensity_trend_points_accessor(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        pts = get_intensity_trend_points(result)
+        assert len(pts) > 0
+        assert "mean_intensity" in pts.columns
+
+    def test_get_intensity_trend_points_raises_when_missing(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "limma"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        with pytest.raises(ValueError, match="intensity_trend"):
+            get_intensity_trend_points(result)
+
+    def test_ranks_differential_features_first(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        top10 = set(result.sort_values("P.Value").head(10)["Protein"])
+        expected = {f"P{i:04d}" for i in range(10)}
+        assert top10 == expected
+
+
+class TestModerationOptionValidation:
+    def test_invalid_moderation_raises(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "bogus"
+        with pytest.raises(ValueError, match="moderation must be one of"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+
+class TestLimmaPriorRobust:
+    def test_robust_tightens_prior_df_when_outliers_present(self):
+        # Outliers inflate the variance of log(s^2), pushing d0 toward 0
+        # under the plain estimator. Robust Winsorization (median/MAD-based
+        # threshold) should keep d0 near the true prior df.
+        rng = np.random.default_rng(7)
+        n = 400
+        # Generate from a true (s0^2, d0) = (0.04, 20) inverse chi-square so
+        # the plain estimator targets d0 = 20.
+        s2 = 0.04 * 20.0 / rng.chisquare(df=20.0, size=n)
+        # Inject 8 extreme outliers
+        s2[:8] = s2[:8] * 200
+        d = np.full(n, 10.0)
+
+        _, d0_plain = _fit_limma_prior(s2, d, robust=False)
+        _, d0_robust = _fit_limma_prior(s2, d, robust=True)
+        # Outliers inflate e_var under plain fit, so d0_plain is pulled
+        # low. Robust fit should give a larger d0 (stronger prior).
+        assert d0_robust > d0_plain

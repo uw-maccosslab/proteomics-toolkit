@@ -14,11 +14,61 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def select_features_by_mad(fold_change_matrix, n_top_features=50):
+    """Rank features by median absolute deviation across subjects (unsupervised).
+
+    MAD is a label-free measure of variability, so using it for feature
+    selection cannot leak outcome information into downstream classification.
+    Preferred over fold-change-based selection for small datasets.
+
+    Args:
+        fold_change_matrix: DataFrame with subjects as rows and proteins
+            as columns.
+        n_top_features: Number of features to return.
+
+    Returns:
+        List of top-N feature column names (ordered most-variable first).
+    """
+    medians = fold_change_matrix.median(axis=0)
+    mad = (fold_change_matrix.sub(medians, axis=1)).abs().median(axis=0)
+    top = mad.nlargest(min(n_top_features, len(mad)))
+    return list(top.index)
+
+
+def _select_top_by_ttest(X_train, y_train, n_top_features):
+    """Rank columns of X_train by |Welch t-statistic| between the two classes.
+
+    Private helper used for nested differential-abundance feature selection
+    inside cross-validation. Features are ranked using only the training
+    subset of each fold so the held-out test split never influences
+    selection.
+    """
+    from scipy.stats import ttest_ind
+
+    classes = np.unique(y_train)
+    if len(classes) != 2:
+        # Degenerate fold - fall back to MAD ranking on the training split
+        train_df = pd.DataFrame(X_train)
+        return list(select_features_by_mad(train_df, n_top_features=n_top_features))
+    mask0 = y_train == classes[0]
+    mask1 = y_train == classes[1]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        tstat, _ = ttest_ind(
+            X_train[mask0], X_train[mask1], axis=0, equal_var=False, nan_policy="omit"
+        )
+    tstat = np.abs(np.asarray(tstat, dtype=float))
+    tstat[~np.isfinite(tstat)] = -np.inf
+    order = np.argsort(-tstat)  # descending
+    n = min(n_top_features, len(order))
+    return order[:n].tolist()
+
+
 def run_binary_classification(
     fold_change_matrix,
     group_labels,
     feature_proteins=None,
     n_top_features=50,
+    feature_selection="mad",
     method="logistic_regression",
     cv_method=5,
 ):
@@ -29,16 +79,39 @@ def run_binary_classification(
     out-of-sample performance. Per-fold ROC data is stored for plotting
     mean +/- SD ROC curves.
 
+    Feature selection strategies (``feature_selection`` argument):
+
+    - ``"mad"`` *(default, recommended)*: unsupervised selection by median
+      absolute deviation across subjects. The outcome label is never
+      consulted, so there is no selection-to-classification leakage.
+    - ``"differential_abundance"``: nested supervised selection. Inside
+      each CV fold, a per-feature Welch t-test is fit on the training
+      split only; the top ``n_top_features`` by |t| are used to train
+      the classifier and score the held-out test split. This is the
+      statistically correct way to use a supervised ranker without
+      leakage.
+    - ``"fold_change"``: legacy behaviour - top by absolute mean
+      fold-change across all subjects. **Leaky on small datasets** when
+      classes differ systematically; use MAD or nested DA instead.
+
+    Passing an explicit ``feature_proteins`` list overrides the automatic
+    selection for every fold. This is appropriate when the feature list
+    comes from a truly independent source (different cohort, prior
+    biological knowledge).
+
     Args:
         fold_change_matrix: DataFrame with subjects as rows and proteins as
             columns. Values are typically per-subject fold-changes.
         group_labels: Series mapping subject IDs (matching fold_change_matrix
             index) to binary group labels (e.g., 'R' / 'NR').
         feature_proteins: Optional list of protein IDs to use as features.
-            If None, selects the top n_top_features by absolute mean
-            fold-change across subjects.
+            When supplied, bypasses ``feature_selection`` and uses these
+            features in every fold.
         n_top_features: Number of top features to select when
-            feature_proteins is None. Ignored if feature_proteins is provided.
+            ``feature_proteins`` is None. Applies to all three selection
+            strategies.
+        feature_selection: One of ``"mad"`` (default), ``"differential_abundance"``,
+            or ``"fold_change"``. See above for details.
         method: Classification method. One of 'logistic_regression',
             'random_forest', 'linear_svm', or 'xgboost'.
         cv_method: Cross-validation strategy. Integer for k-fold (default 5),
@@ -52,10 +125,18 @@ def run_binary_classification(
             'auc_std': Standard deviation of AUC across folds.
             'confusion_matrix': Confusion matrix as numpy array.
             'cv_predictions': DataFrame with true and predicted labels.
-            'feature_importances': Series of feature importance scores.
+            'feature_importances': Series of feature importance scores
+                (from final fit on all data; for ``differential_abundance``
+                this uses the full-data DA ranking and is meant as a
+                descriptive summary, not a CV-validated metric).
             'classification_report': Text classification report.
-            'n_features': Number of features used.
-            'feature_names': List of feature protein IDs used.
+            'n_features': Number of features used per fold.
+            'feature_names': For ``mad`` / ``fold_change`` / explicit
+                ``feature_proteins``: the fixed feature set. For
+                ``differential_abundance``: the feature set selected
+                from the full data (distinct from the per-fold sets
+                that drove CV performance).
+            'feature_selection': Echo of the strategy used.
             'y_true': Encoded true labels array.
             'y_prob': Predicted probability array.
             'class_names': Array of class name strings.
@@ -88,13 +169,21 @@ def run_binary_classification(
     # Drop proteins with any NaN across subjects
     X = X.dropna(axis=1)
 
-    # Select features
+    # Feature-selection resolution
+    valid_selection = {"mad", "differential_abundance", "fold_change"}
+    if feature_selection not in valid_selection:
+        raise ValueError(
+            f"feature_selection must be one of {sorted(valid_selection)}; got {feature_selection!r}"
+        )
+
+    nested_da = False
     if feature_proteins is not None:
         available = [p for p in feature_proteins if p in X.columns]
         if len(available) < 2:
             logger.warning(
                 "Fewer than 2 specified feature proteins found in data. "
-                "Falling back to top %d by absolute mean fold-change.",
+                "Falling back to %s selection with n_top_features=%d.",
+                feature_selection,
                 n_top_features,
             )
             feature_proteins = None
@@ -102,13 +191,27 @@ def run_binary_classification(
             X = X[available]
 
     if feature_proteins is None:
-        mean_abs_fc = X.abs().mean(axis=0)
-        top_features = mean_abs_fc.nlargest(min(n_top_features, len(mean_abs_fc)))
-        X = X[top_features.index]
+        if feature_selection == "mad":
+            top_names = select_features_by_mad(X, n_top_features=n_top_features)
+            X = X[top_names]
+        elif feature_selection == "fold_change":
+            mean_abs_fc = X.abs().mean(axis=0)
+            top_features = mean_abs_fc.nlargest(min(n_top_features, len(mean_abs_fc)))
+            X = X[top_features.index]
+        elif feature_selection == "differential_abundance":
+            # Defer per-fold selection; X stays as the full feature space.
+            nested_da = True
 
     feature_names = list(X.columns)
-    n_features = len(feature_names)
-    print(f"Classification using {n_features} features, {len(common_subjects)} subjects")
+    n_features = min(n_top_features, len(feature_names)) if nested_da else len(feature_names)
+    if nested_da:
+        print(
+            f"Classification using nested differential-abundance selection "
+            f"(top {n_features} per fold, from {len(feature_names)} candidates), "
+            f"{len(common_subjects)} subjects"
+        )
+    else:
+        print(f"Classification using {n_features} features, {len(common_subjects)} subjects")
 
     # Encode labels
     le = LabelEncoder()
@@ -163,10 +266,19 @@ def run_binary_classification(
 
     X_values = X.values
     for train_idx, test_idx in cv.split(X_values, y_encoded):
-        X_train = scaler.fit_transform(X_values[train_idx])
-        X_test = scaler.transform(X_values[test_idx])
+        X_train_raw = X_values[train_idx]
+        X_test_raw = X_values[test_idx]
         y_train = y_encoded[train_idx]
         y_test = y_encoded[test_idx]
+
+        if nested_da:
+            # Rank features on the training split only, then subset both splits.
+            top_cols = _select_top_by_ttest(X_train_raw, y_train, n_top_features)
+            X_train_raw = X_train_raw[:, top_cols]
+            X_test_raw = X_test_raw[:, top_cols]
+
+        X_train = scaler.fit_transform(X_train_raw)
+        X_test = scaler.transform(X_test_raw)
 
         clf = make_clf()
         clf.fit(X_train, y_train)
@@ -216,24 +328,36 @@ def run_binary_classification(
         auc_mean = auc_overall
         auc_std = 0.0
 
-    # Fit final model on all data for feature importances
-    X_scaled = scaler.fit_transform(X_values)
+    # Fit final model on all data for feature importances. For nested DA,
+    # select top features using the *full dataset* t-test; this is
+    # separate from the CV performance (which used per-fold selections)
+    # and is meant as a descriptive summary of which features the method
+    # prefers when fed the whole cohort.
+    if nested_da:
+        final_top_cols = _select_top_by_ttest(X_values, y_encoded, n_top_features)
+        final_feature_names = [feature_names[i] for i in final_top_cols]
+        X_final = X_values[:, final_top_cols]
+    else:
+        final_feature_names = feature_names
+        X_final = X_values
+
+    X_scaled = scaler.fit_transform(X_final)
     final_clf = make_clf()
     final_clf.fit(X_scaled, y_encoded)
 
     if method == "logistic_regression":
-        importances = pd.Series(final_clf.coef_[0], index=feature_names).abs()
+        importances = pd.Series(final_clf.coef_[0], index=final_feature_names).abs()
     elif method == "linear_svm":
         # CalibratedClassifierCV wraps the SVC; train a bare LinearSVC for coefficients
         from sklearn.svm import LinearSVC
 
         svm_for_coef = LinearSVC(C=0.01, random_state=42, max_iter=5000)
         svm_for_coef.fit(X_scaled, y_encoded)
-        importances = pd.Series(np.abs(svm_for_coef.coef_[0]), index=feature_names)
+        importances = pd.Series(np.abs(svm_for_coef.coef_[0]), index=final_feature_names)
     elif method == "xgboost":
-        importances = pd.Series(final_clf.feature_importances_, index=feature_names)
+        importances = pd.Series(final_clf.feature_importances_, index=final_feature_names)
     else:
-        importances = pd.Series(final_clf.feature_importances_, index=feature_names)
+        importances = pd.Series(final_clf.feature_importances_, index=final_feature_names)
     importances = importances.sort_values(ascending=False)
 
     # Build predictions DataFrame
@@ -278,7 +402,10 @@ def run_binary_classification(
         "feature_importances": importances,
         "classification_report": report,
         "n_features": n_features,
-        "feature_names": feature_names,
+        "feature_names": final_feature_names,
+        "feature_selection": (
+            "explicit" if feature_proteins is not None else feature_selection
+        ),
         "y_true": y_encoded,
         "y_prob": y_prob_all,
         "class_names": class_names,

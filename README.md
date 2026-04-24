@@ -136,7 +136,8 @@ All statistical analyses use `StatisticalConfig` + `run_comprehensive_statistica
 ```python
 config = ptk.StatisticalConfig()
 config.analysis_type = 'unpaired'
-config.statistical_test_method = 'welch_t'  # or 'mann_whitney'
+# Options: 'welch_t', 'mann_whitney', 'limma_like', 'deqms_like'
+config.statistical_test_method = 'welch_t'
 config.group_column = 'Group'
 config.group_labels = ['Control', 'Treatment']
 config.log_transform_before_stats = 'auto'
@@ -146,6 +147,12 @@ results = ptk.run_comprehensive_statistical_analysis(
     data, sample_metadata, config, protein_annotations=annot
 )
 ```
+
+For small sample sizes, prefer empirical Bayes variance shrinkage: set
+`config.statistical_test_method = 'limma_like'` (works on proteins or
+peptides), or `'deqms_like'` (protein-level only; uses the `n_peptides`
+column from PRISM output to build a peptide-count-conditioned variance
+prior). See [docs/06-statistical-analysis.md](docs/06-statistical-analysis.md#limma_like-and-deqms_like-empirical-bayes-variance-shrinkage) for details.
 
 ### Paired comparison (before/after per subject)
 ```python
@@ -306,5 +313,6 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 
 ## See Also
 
-- [Usage Guide](docs/guide.md) -- Detailed recipe book with usage patterns
+- [User Guide](docs/01-overview.md) -- Index of topic-focused recipe pages under `docs/`
+- [Tutorial notebook](docs/tutorial.ipynb) -- End-to-end workflow on the bundled example dataset
 - [CLAUDE.md](../CLAUDE.md) — Project conventions and data prep patterns

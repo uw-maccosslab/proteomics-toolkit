@@ -6,6 +6,7 @@ from sklearn.metrics import auc as sklearn_auc
 
 from proteomics_toolkit.classification import (
     run_binary_classification,
+    select_features_by_mad,
 )
 
 
@@ -112,3 +113,73 @@ class TestRunBinaryClassification:
             )
         # And the aggregated AUC must be >= 0.5 after the auto-flip correction.
         assert result["auc_roc"] >= 0.5
+
+
+# ---------------------------------------------------------------------------
+# Feature selection: MAD (unsupervised) and nested differential abundance
+# ---------------------------------------------------------------------------
+
+
+class TestSelectFeaturesByMad:
+    def test_returns_top_n_by_mad(self):
+        rng = np.random.default_rng(0)
+        df = pd.DataFrame(
+            {
+                "lowvar": rng.normal(0, 0.01, size=20),
+                "midvar": rng.normal(0, 0.5, size=20),
+                "hivar": rng.normal(0, 2.0, size=20),
+            }
+        )
+        top = select_features_by_mad(df, n_top_features=2)
+        assert top == ["hivar", "midvar"]
+
+    def test_default_classification_uses_mad(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix,
+            group_labels,
+            cv_method=3,
+        )
+        assert result["feature_selection"] == "mad"
+
+
+class TestNestedDifferentialAbundance:
+    def test_runs_and_returns_schema(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix,
+            group_labels,
+            feature_selection="differential_abundance",
+            n_top_features=10,
+            cv_method=3,
+        )
+        assert result["feature_selection"] == "differential_abundance"
+        assert result["n_features"] == 10
+        # Final-model feature names should be the 10 picked from full data
+        assert len(result["feature_names"]) == 10
+        assert "accuracy" in result
+        assert "auc_roc" in result
+
+
+class TestFoldChangeSelectionStillAvailable:
+    def test_explicit_fold_change_mode(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix,
+            group_labels,
+            feature_selection="fold_change",
+            n_top_features=5,
+            cv_method=3,
+        )
+        assert result["feature_selection"] == "fold_change"
+        assert result["n_features"] == 5
+
+
+class TestInvalidFeatureSelection:
+    def test_unknown_selection_raises(self, fold_change_matrix, group_labels):
+        import pytest
+
+        with pytest.raises(ValueError, match="feature_selection"):
+            run_binary_classification(
+                fold_change_matrix,
+                group_labels,
+                feature_selection="not_a_method",
+                cv_method=3,
+            )

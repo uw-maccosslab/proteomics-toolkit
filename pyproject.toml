@@ -51,7 +51,7 @@ dev = [
 packages = ["proteomics_toolkit", "proteomics_toolkit.datasets"]
 
 [tool.setuptools.package-data]
-"proteomics_toolkit.datasets" = ["*.parquet", "*.csv"]
+"proteomics_toolkit.datasets" = ["*.parquet", "*.csv", "*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

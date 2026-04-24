@@ -4,6 +4,7 @@ Visualization Module for Proteomics Analysis Toolkit
 Functions for creating plots and visualizations for proteomics data analysis.
 """
 
+import logging
 import warnings
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
@@ -14,6 +15,8 @@ import pandas as pd
 import seaborn as sns
 
 from .data_import import BATCH_SUFFIX_DELIMITER
+
+logger = logging.getLogger(__name__)
 
 
 def _make_display_labels(sample_columns: List[str]) -> List[str]:
@@ -2942,27 +2945,57 @@ def plot_cv_distribution(
     return fig
 
 
+def _assign_peptide_tracks(intervals: List[Tuple[int, int]]) -> List[int]:
+    """Greedy interval-to-track assignment.
+
+    Given a list of ``(start, end)`` intervals (both 1-based, inclusive on
+    start and exclusive on end), return a list of track indices such that
+    no two overlapping intervals share a track. Tracks are reused as soon
+    as they're free. Input order is preserved; for DIA data with mostly
+    non-overlapping peptides this typically returns all zeros.
+    """
+    track_ends: List[int] = []
+    tracks: List[int] = []
+    for start, end in intervals:
+        placed = False
+        for t, t_end in enumerate(track_ends):
+            if start >= t_end:
+                tracks.append(t)
+                track_ends[t] = end
+                placed = True
+                break
+        if not placed:
+            tracks.append(len(track_ends))
+            track_ends.append(end)
+    return tracks
+
+
 def plot_peptide_coverage_map(
     peptide_data: pd.DataFrame,
     protein_id: str,
+    protein_sequence: str,
     sample_columns: List[str],
     protein_column: str = "leading_protein",
     sequence_column: str = "peptide_sequence",
     start_column: Optional[str] = None,
-    protein_length: Optional[int] = None,
-    figsize: Tuple[float, float] = (12, 6),
+    color_by: str = "abundance",
+    value_column: Optional[str] = None,
+    sample_metadata: Optional[Dict[str, Dict]] = None,
+    group_column: Optional[str] = None,
+    group_labels: Optional[Tuple[str, str]] = None,
+    wrap_residues: int = 60,
+    cmap: Optional[str] = None,
+    figsize: Optional[Tuple[float, float]] = None,
 ) -> plt.Figure:
-    """Map detected peptides onto a protein's sequence coordinates.
+    """Sequence-aware peptide coverage map for a single protein.
 
-    Each peptide is drawn as a horizontal bar spanning its start-to-end
-    positions along the protein. Bar opacity encodes mean detection frequency
-    (fraction of samples in which the peptide was detected).
-
-    If ``start_column`` is provided, positions come directly from that column.
-    Otherwise, if the peptide sequence can be located within a parent protein
-    sequence passed via ``protein_length``, positions are estimated. In that
-    fallback case, peptides are laid out sequentially along 1..protein_length
-    and only relative positions matter.
+    Renders the protein amino-acid sequence as text along the top of each
+    row, with peptide bars drawn beneath at their true start/end
+    residue positions. Long proteins wrap to multiple rows at
+    ``wrap_residues`` (default 60). Peptide bars are coloured by
+    per-peptide **abundance**, **fold-change**, or **detection frequency**
+    depending on ``color_by``. Overlapping peptides (e.g. from missed
+    cleavages) stack vertically within a row.
 
     Parameters
     ----------
@@ -2971,18 +3004,407 @@ def plot_peptide_coverage_map(
         ``sequence_column``.
     protein_id : str
         Protein identifier to match in ``protein_column``.
+    protein_sequence : str
+        Amino-acid sequence of the parent protein. **Required.** Use
+        :func:`~proteomics_toolkit.data_import.load_fasta_sequences` to
+        read it from a FASTA file.
     sample_columns : list of str
-        Sample columns to use for the detection-frequency calculation.
+        Sample columns used to compute abundance / fold-change /
+        detection values (whichever ``color_by`` selects).
     protein_column : str
-        Column name holding the parent-protein identifier for each peptide.
+        Column holding the parent-protein identifier for each peptide.
     sequence_column : str
-        Column name holding the peptide amino-acid sequence.
+        Column holding the peptide amino-acid sequence.
     start_column : str, optional
-        Column name holding the 1-based start position of each peptide along
-        the protein. If None, peptides are drawn ordered by sequence.
-    protein_length : int, optional
-        Total length of the protein (in residues) for the x-axis scale.
-        If None, inferred from max start+len.
+        Column holding 1-based start positions along the parent protein.
+        If ``None``, each peptide is located by ``str.find`` in
+        ``protein_sequence``; peptides that don't match are skipped with
+        a warning.
+    color_by : str
+        One of ``"abundance"`` (default), ``"fold_change"``, or
+        ``"detection"``.
+    value_column : str, optional
+        When ``color_by="fold_change"``, a pre-computed per-peptide
+        log2 fold-change column in ``peptide_data`` to use directly.
+        If omitted, the fold-change is computed from
+        ``sample_metadata`` + ``group_column`` + ``group_labels``.
+    sample_metadata : dict, optional
+        Required for ``color_by="fold_change"`` when ``value_column``
+        is not supplied. Maps sample column name -> metadata dict.
+    group_column : str, optional
+        Key in ``sample_metadata`` entries to split samples for fold-change.
+    group_labels : tuple of (str, str), optional
+        ``(reference_group, study_group)`` labels for fold-change.
+    wrap_residues : int
+        Residues per sequence row. Default 60.
+    cmap : str, optional
+        Matplotlib colormap name. Defaults: ``"viridis"`` for abundance,
+        ``"coolwarm"`` for fold-change, ``"Blues"`` for detection.
+    figsize : tuple, optional
+        Figure size. If None, chosen based on the number of rows needed.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Raises
+    ------
+    ValueError
+        If ``protein_sequence`` is empty, if no peptides match
+        ``protein_id``, or if ``color_by`` is invalid / its required
+        extra inputs are missing.
+    """
+    import matplotlib as mpl
+    from matplotlib.colors import Normalize, TwoSlopeNorm
+    from matplotlib.patches import Rectangle
+
+    valid_color_by = {"abundance", "fold_change", "detection"}
+    if color_by not in valid_color_by:
+        raise ValueError(f"color_by must be one of {sorted(valid_color_by)}; got {color_by!r}")
+    if not isinstance(protein_sequence, str) or len(protein_sequence) == 0:
+        raise ValueError(
+            "protein_sequence is required and must be a non-empty amino-acid string. "
+            "Use ptk.load_fasta_sequences(path) to read it from a FASTA file."
+        )
+
+    subset = peptide_data[peptide_data[protein_column] == protein_id].copy()
+    if subset.empty:
+        raise ValueError(f"No peptides found matching {protein_column}={protein_id!r}")
+
+    protein_length = len(protein_sequence)
+    sequences = subset[sequence_column].astype(str).tolist()
+    lengths = [len(seq) for seq in sequences]
+
+    # Resolve start positions
+    if start_column is not None and start_column in subset.columns:
+        starts = [int(x) for x in subset[start_column].tolist()]
+    else:
+        starts = []
+        for seq in sequences:
+            pos = protein_sequence.find(seq)
+            starts.append(pos + 1 if pos >= 0 else -1)  # 1-based
+
+    # Drop peptides that couldn't be located
+    keep_mask = [s > 0 and (s - 1 + l_) <= protein_length for s, l_ in zip(starts, lengths)]
+    n_dropped = sum(1 for k in keep_mask if not k)
+    if n_dropped:
+        logger.warning(
+            "%d of %d peptides for %s could not be located in the protein sequence and were skipped.",
+            n_dropped,
+            len(sequences),
+            protein_id,
+        )
+    keep_idx = [i for i, k in enumerate(keep_mask) if k]
+    if not keep_idx:
+        raise ValueError(
+            f"No peptides for {protein_id!r} could be located in the supplied protein sequence."
+        )
+    sequences = [sequences[i] for i in keep_idx]
+    starts = [starts[i] for i in keep_idx]
+    lengths = [lengths[i] for i in keep_idx]
+    subset = subset.iloc[keep_idx]
+
+    # Compute per-peptide colour values
+    sample_frame = subset[sample_columns]
+    if color_by == "detection":
+        values = (~(sample_frame.isna() | (sample_frame == 0))).sum(axis=1).to_numpy() / len(sample_columns)
+        colour_label = "Detection frequency"
+        default_cmap = "Blues"
+        norm: "Normalize | TwoSlopeNorm" = Normalize(vmin=0.0, vmax=1.0)
+    elif color_by == "abundance":
+        mean_int = sample_frame.mean(axis=1).to_numpy(dtype=float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            values = np.log2(np.where(mean_int > 0, mean_int, np.nan))
+        colour_label = "log2(mean intensity)"
+        default_cmap = "viridis"
+        finite = values[np.isfinite(values)]
+        norm = Normalize(vmin=float(np.nanmin(finite)), vmax=float(np.nanmax(finite)))
+    else:  # fold_change
+        if value_column is not None:
+            if value_column not in subset.columns:
+                raise ValueError(f"value_column {value_column!r} not in peptide_data columns.")
+            values = subset[value_column].to_numpy(dtype=float)
+        else:
+            if not (sample_metadata and group_column and group_labels and len(group_labels) == 2):
+                raise ValueError(
+                    "color_by='fold_change' requires either value_column or "
+                    "(sample_metadata, group_column, group_labels=(ref, study))."
+                )
+            ref_label, study_label = group_labels[0], group_labels[1]
+            ref_cols = [c for c in sample_columns if sample_metadata.get(c, {}).get(group_column) == ref_label]
+            study_cols = [c for c in sample_columns if sample_metadata.get(c, {}).get(group_column) == study_label]
+            if not ref_cols or not study_cols:
+                raise ValueError(
+                    f"No samples found matching group_labels ref={ref_label!r} or study={study_label!r}."
+                )
+            ref_mean = subset[ref_cols].mean(axis=1).to_numpy(dtype=float)
+            study_mean = subset[study_cols].mean(axis=1).to_numpy(dtype=float)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                values = np.log2(np.where((ref_mean > 0) & (study_mean > 0), study_mean / ref_mean, np.nan))
+        colour_label = "log2 fold-change"
+        default_cmap = "coolwarm"
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            vmax = float(np.nanmax(np.abs(finite)))
+            vmax = vmax if vmax > 0 else 1.0
+        else:
+            vmax = 1.0
+        norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+
+    cmap_obj = mpl.colormaps.get_cmap(cmap or default_cmap)
+
+    # Figure out how many rows we need; compute per-row track counts for
+    # stacking height.
+    n_rows = int(np.ceil(protein_length / wrap_residues))
+    # For each peptide, figure out which rows it touches and register the
+    # sub-interval on each.
+    peptide_row_spans: List[List[Tuple[int, int, int]]] = [[] for _ in range(len(sequences))]
+    for pi, (start, length) in enumerate(zip(starts, lengths)):
+        end = start + length  # exclusive
+        first_row = (start - 1) // wrap_residues
+        last_row = (end - 2) // wrap_residues
+        for r in range(first_row, last_row + 1):
+            row_start_res = r * wrap_residues + 1
+            row_end_res = (r + 1) * wrap_residues + 1
+            seg_start = max(start, row_start_res)
+            seg_end = min(end, row_end_res)
+            peptide_row_spans[pi].append((r, seg_start, seg_end))
+
+    # Assign tracks per row. We process peptides in global start order so
+    # tracks assigned in one row are consistent with the next.
+    pep_order = sorted(range(len(sequences)), key=lambda i: starts[i])
+    row_track_assignments: List[Dict[int, int]] = [dict() for _ in range(n_rows)]
+    row_intervals_for_assign: List[List[Tuple[int, int]]] = [[] for _ in range(n_rows)]
+    row_peptides: List[List[int]] = [[] for _ in range(n_rows)]
+    for pi in pep_order:
+        for r, seg_start, seg_end in peptide_row_spans[pi]:
+            row_intervals_for_assign[r].append((seg_start, seg_end))
+            row_peptides[r].append(pi)
+
+    for r in range(n_rows):
+        tracks = _assign_peptide_tracks(row_intervals_for_assign[r])
+        for pep_idx, track in zip(row_peptides[r], tracks):
+            # Store the largest track used by this peptide on this row;
+            # different row segments may land on different tracks.
+            prev = row_track_assignments[r].get(pep_idx)
+            if prev is None or track > prev:
+                row_track_assignments[r][pep_idx] = track
+
+    max_tracks_per_row = [
+        max(row_track_assignments[r].values()) + 1 if row_track_assignments[r] else 1 for r in range(n_rows)
+    ]
+
+    # Layout: each row reserves 1 unit for the sequence text + n tracks
+    # worth of peptide bars + a small gap.
+    row_heights = [1 + max_tracks_per_row[r] * 0.9 + 0.6 for r in range(n_rows)]
+    total_height = sum(row_heights)
+    if figsize is None:
+        fig_h = max(3.0, 0.8 * total_height)
+        figsize = (max(12.0, wrap_residues * 0.18), fig_h)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Draw rows from top to bottom: top of figure = residues 1..wrap
+    row_top = total_height
+    row_tops = []
+    for r in range(n_rows):
+        row_top -= row_heights[r]
+        row_tops.append(row_top)
+
+    for r in range(n_rows):
+        row_start_res = r * wrap_residues + 1
+        row_end_res = min((r + 1) * wrap_residues, protein_length)
+        sequence_y = row_tops[r] + max_tracks_per_row[r] * 0.9 + 0.2
+
+        # Sequence text (one character per residue)
+        for res_pos in range(row_start_res, row_end_res + 1):
+            ax.text(
+                res_pos,
+                sequence_y,
+                protein_sequence[res_pos - 1],
+                ha="center",
+                va="center",
+                family="monospace",
+                fontsize=9,
+            )
+        # Residue-number ticks every 10 positions
+        tick_positions = [p for p in range(row_start_res, row_end_res + 1) if p % 10 == 0 or p == row_start_res]
+        for tp in tick_positions:
+            ax.text(tp, sequence_y + 0.6, str(tp), ha="center", va="center", fontsize=7, color="gray")
+
+        # Peptide bars on this row
+        for pep_idx, track in row_track_assignments[r].items():
+            # Find this peptide's segment on this row
+            seg_start, seg_end = None, None
+            for rr, s, e in peptide_row_spans[pep_idx]:
+                if rr == r:
+                    seg_start, seg_end = s, e
+                    break
+            if seg_start is None:
+                continue
+            val = values[pep_idx]
+            face = cmap_obj(norm(val)) if np.isfinite(val) else (0.8, 0.8, 0.8, 1.0)
+            y = row_tops[r] + (max_tracks_per_row[r] - 1 - track) * 0.9 + 0.1
+            ax.add_patch(
+                Rectangle(
+                    (seg_start, y),
+                    seg_end - seg_start,
+                    0.7,
+                    facecolor=face,
+                    edgecolor="black",
+                    linewidth=0.3,
+                )
+            )
+
+    ax.set_xlim(0, wrap_residues + 1)
+    ax.set_ylim(0, total_height)
+    ax.set_xlabel("Residue position (within row)")
+    ax.set_yticks([])
+    ax.set_title(f"Peptide coverage: {protein_id}")
+    # Hide the spines for a cleaner sequence-viewer look
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+
+    # Colourbar
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, orientation="vertical", fraction=0.02, pad=0.02)
+    cbar.set_label(colour_label)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_variance_vs_peptide_count(
+    results: pd.DataFrame,
+    count_column: str = "peptide_count_used",
+    variance_column: str = "residual_s2",
+    limma_prior_column: str = "limma_s0_sq",
+    figsize: Tuple[float, float] = (8, 6),
+    lowess_frac: float = 0.5,
+) -> plt.Figure:
+    """Diagnostic plot for the DEqMS peptide-count-conditioned variance prior.
+
+    Reproduces the standard DEqMS diagnostic (cf. Zhu et al. 2020 Fig. 1B
+    and Zhu et al. 2026 Nat. Protoc.): a scatter of per-protein pooled
+    within-group residual variance against peptide count, with both the
+    limma global prior (horizontal line) and the DEqMS
+    count-dependent prior (LOWESS curve) overlaid so the two priors can
+    be compared directly.
+
+    Axes follow the DEqMS convention: ``ln(variance)`` on Y and
+    ``log2(peptide count)`` on X. The variance being plotted is the
+    pooled within-group residual variance from the full-cohort linear
+    model (same quantity that both priors are fit against), so the
+    scatter uses all samples in all groups.
+
+    Expects the output of :func:`run_deqms_like_analysis`. Will also
+    work on a :func:`run_limma_like_analysis` result if a peptide-count
+    column is merged in; in that case the LOWESS curve is just a
+    smoothed trend and no DEqMS prior was actually applied.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        Must contain ``count_column`` and ``variance_column``. The
+        ``limma_prior_column`` is used for the horizontal reference line
+        if present; otherwise it is omitted.
+    count_column : str
+        Column of peptide counts. Default ``"peptide_count_used"``.
+    variance_column : str
+        Column of per-feature pooled within-group residual variances.
+        Default ``"residual_s2"``.
+    limma_prior_column : str
+        Column holding the limma global prior variance. Default
+        ``"limma_s0_sq"``.
+    figsize : tuple
+        Figure size.
+    lowess_frac : float
+        LOWESS smoothing parameter (fraction of points used per local fit).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Raises
+    ------
+    ValueError
+        If ``count_column`` or ``variance_column`` is missing.
+    """
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
+    missing = [c for c in (count_column, variance_column) if c not in results.columns]
+    if missing:
+        raise ValueError(
+            f"Results DataFrame missing required columns: {missing}. "
+            f"Pass the output of run_deqms_like_analysis (includes 'peptide_count_used' "
+            f"and 'residual_s2')."
+        )
+
+    counts = np.asarray(results[count_column], dtype=float)
+    variances = np.asarray(results[variance_column], dtype=float)
+    mask = np.isfinite(counts) & np.isfinite(variances) & (counts >= 1) & (variances > 0)
+    if mask.sum() < 3:
+        raise ValueError("Need at least 3 features with valid counts and variances to plot.")
+
+    log2_counts = np.log2(counts[mask])
+    ln_var = np.log(variances[mask])
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.scatter(log2_counts, ln_var, s=12, alpha=0.5, color="black", label="Proteins")
+
+    # DEqMS LOWESS prior
+    smoothed = lowess(ln_var, log2_counts, frac=lowess_frac, it=3, return_sorted=True)
+    ax.plot(smoothed[:, 0], smoothed[:, 1], color="crimson", linewidth=2.5, label="DEqMS prior (LOWESS)")
+
+    # Limma global prior (horizontal line) if available
+    if limma_prior_column in results.columns:
+        limma_vals = np.asarray(results[limma_prior_column], dtype=float)
+        limma_vals = limma_vals[np.isfinite(limma_vals) & (limma_vals > 0)]
+        if len(limma_vals) > 0:
+            limma_ln = float(np.log(limma_vals[0]))  # constant across proteins
+            ax.axhline(
+                limma_ln,
+                color="gray",
+                linewidth=2,
+                linestyle="-",
+                label="Limma prior (global)",
+            )
+
+    ax.set_xlabel("log2(peptide count)")
+    ax.set_ylabel("ln(variance)")
+    ax.set_title("Estimation of variance prior (DEqMS diagnostic)")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def plot_variance_vs_intensity(
+    results: pd.DataFrame,
+    figsize: Tuple[float, float] = (8, 6),
+) -> plt.Figure:
+    """Diagnostic for the ``intensity_trend`` moderation prior.
+
+    Renders one point per (feature, group) pair: Y = within-group
+    standard deviation across that group's samples, X = √(within-group
+    mean intensity). Under pure Poisson noise the points lie on a line
+    through the origin with slope `k`, so a straight linear cloud with
+    slope ≈ 1 suggests counting-noise-dominated data.
+
+    Overlays the LOWESS fit (same curve used by the prior) and a dashed
+    reference line ``sd = k·√intensity`` with `k` estimated from the
+    cloud.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        The output of :func:`~proteomics_toolkit.statistical_analysis.run_moderated_linear_model`
+        with ``moderation="intensity_trend"``. The per-(feature, group)
+        cloud is read from
+        ``results.attrs["intensity_trend_points"]`` (populated
+        automatically; also retrievable via
+        :func:`~proteomics_toolkit.statistical_analysis.get_intensity_trend_points`).
     figsize : tuple
         Figure size.
 
@@ -2993,49 +3415,64 @@ def plot_peptide_coverage_map(
     Raises
     ------
     ValueError
-        If no peptides are found for ``protein_id``.
+        If ``results`` does not carry the intensity-trend points (i.e.
+        was not produced with ``moderation="intensity_trend"``).
     """
-    subset = peptide_data[peptide_data[protein_column] == protein_id].copy()
-    if subset.empty:
-        raise ValueError(f"No peptides found matching {protein_column}={protein_id!r}")
+    pts = None
+    if hasattr(results, "attrs"):
+        pts = results.attrs.get("intensity_trend_points")
+    if pts is None:
+        raise ValueError(
+            "Results DataFrame does not carry intensity-trend points. "
+            "Run run_moderated_linear_model with config.moderation='intensity_trend' "
+            "first, or pass get_intensity_trend_points(results)."
+        )
 
-    sequences = subset[sequence_column].astype(str).tolist()
-    lengths = [len(seq) for seq in sequences]
+    mean_intensity = pts["mean_intensity"].to_numpy(dtype=float)
+    sd_intensity = pts["sd_intensity"].to_numpy(dtype=float)
+    predicted_sd = pts["predicted_sd"].to_numpy(dtype=float) if "predicted_sd" in pts.columns else None
 
-    if start_column is not None and start_column in subset.columns:
-        starts = subset[start_column].astype(int).tolist()
-    else:
-        # Fallback: order by sequence, lay out end-to-end along the protein
-        order = np.argsort(sequences)
-        sequences = [sequences[i] for i in order]
-        lengths = [lengths[i] for i in order]
-        subset = subset.iloc[order]
-        starts = []
-        pos = 1
-        for length in lengths:
-            starts.append(pos)
-            pos += length
+    mask = np.isfinite(mean_intensity) & np.isfinite(sd_intensity) & (mean_intensity > 0) & (sd_intensity > 0)
+    if mask.sum() < 3:
+        raise ValueError("Need at least 3 (feature, group) points with valid mean/SD to plot.")
 
-    if protein_length is None:
-        protein_length = max(s + length for s, length in zip(starts, lengths))
-
-    # Detection frequency per peptide: fraction of samples with nonzero / non-NA value
-    sample_values = subset[sample_columns]
-    detected = ~(sample_values.isna() | (sample_values == 0))
-    detection_freq = detected.sum(axis=1) / len(sample_columns)
+    sqrt_mean = np.sqrt(mean_intensity[mask])
+    sd = sd_intensity[mask]
 
     fig, ax = plt.subplots(figsize=figsize)
-    for i, (seq, start, length, freq) in enumerate(zip(sequences, starts, lengths, detection_freq)):
-        alpha = max(0.2, float(freq))
-        ax.broken_barh([(start, length)], (i - 0.4, 0.8), facecolors="steelblue", alpha=alpha)
+    ax.scatter(sqrt_mean, sd, s=10, alpha=0.4, color="black", label="(feature, group)")
 
-    ax.set_xlim(0, protein_length + 1)
-    ax.set_ylim(-1, len(sequences))
-    ax.set_xlabel("Residue position")
-    ax.set_ylabel("Peptide")
-    ax.set_yticks(range(len(sequences)))
-    ax.set_yticklabels(sequences, fontsize=7)
-    ax.set_title(f"Peptide coverage: {protein_id}")
-    ax.grid(axis="x", alpha=0.3)
+    # LOWESS curve from the stored predicted SD, sorted by sqrt(mean)
+    if predicted_sd is not None:
+        finite = np.isfinite(mean_intensity) & np.isfinite(predicted_sd) & (mean_intensity > 0)
+        if finite.sum() > 2:
+            order = np.argsort(np.sqrt(mean_intensity[finite]))
+            ax.plot(
+                np.sqrt(mean_intensity[finite])[order],
+                predicted_sd[finite][order],
+                color="crimson",
+                linewidth=2.5,
+                label="LOWESS prior",
+            )
+
+    # Poisson reference line sd = k·√intensity, k fit to the cloud
+    k = float(np.sum(sd * sqrt_mean) / np.sum(sqrt_mean * sqrt_mean))
+    x_ref = np.linspace(0, sqrt_mean.max() * 1.02, 100)
+    ax.plot(
+        x_ref,
+        k * x_ref,
+        color="gray",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"sd = {k:.3g}·√intensity (Poisson-like)",
+    )
+
+    ax.set_xlabel("√(mean intensity)")
+    ax.set_ylabel("Within-group standard deviation")
+    ax.set_title("Variance prior (intensity_trend diagnostic)")
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
     return fig

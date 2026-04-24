@@ -80,7 +80,11 @@ entries between releases.
   statistical_analysis, visualization, temporal_clustering, enrichment, validation,
   export, classification)
 - `tests/` -- pytest test suite
-- `docs/` -- user guide and documentation
+- `docs/` -- user guide (topic-focused markdown files + tutorial notebook).
+  Start at [docs/01-overview.md](docs/01-overview.md), which indexes the
+  per-topic pages (data import, metadata, QC plots, normalization,
+  statistical analysis, visualization, enrichment, classification,
+  export, pitfalls).
 - `release-notes/` -- per-version release notes
 
 ## Git

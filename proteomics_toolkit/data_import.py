@@ -428,7 +428,11 @@ def load_prism_data(
 
     # Auto-detect sample columns (float64 columns that are not protein annotation)
     if protein_cols is None:
-        # Known PRISM protein annotation column names
+        # Known PRISM protein annotation column names. ``low_confidence`` is
+        # retained for backwards compatibility with older PRISM parquets;
+        # current PRISM versions no longer emit this column and it should not
+        # be used to filter proteins (it flagged shared-peptide inference, not
+        # identification confidence).
         known_annotation_cols = {
             "protein_group",
             "leading_protein",
@@ -1015,3 +1019,68 @@ def identify_and_classify_controls(
     }
 
     return updated_metadata, summary
+
+
+def load_fasta_sequences(path: str) -> Dict[str, str]:
+    """Parse a FASTA file into a `{accession -> sequence}` dict.
+
+    Accepts UniProt-style headers of the form ``>sp|P02768|ALBU_HUMAN ...``
+    or ``>tr|Q9ABC1|Q9ABC1_MOUSE ...``. For those records, the middle
+    field (accession) becomes the primary key. The last field (entry
+    name) is also added as an alias pointing to the same sequence so
+    either form can be used for lookups. For non-UniProt headers, the
+    first whitespace-delimited token after ``>`` is used as the key.
+
+    Parameters
+    ----------
+    path : str
+        Path to a FASTA file.
+
+    Returns
+    -------
+    Dict[str, str]
+        Mapping from accession (and entry name where available) to
+        the amino-acid sequence as a single uppercase string.
+
+    Examples
+    --------
+    >>> seqs = load_fasta_sequences("uniprot_human.fasta")
+    >>> seqs["P02768"][:10]
+    'MKWVTFISLL'
+    >>> seqs["ALBU_HUMAN"] is seqs["P02768"]
+    True
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"FASTA file not found: {path}")
+
+    sequences: Dict[str, str] = {}
+    current_keys: List[str] = []
+    current_parts: List[str] = []
+
+    def _flush():
+        if current_keys:
+            seq = "".join(current_parts).upper().replace(" ", "")
+            for key in current_keys:
+                sequences[key] = seq
+
+    with open(path) as fh:
+        for raw_line in fh:
+            line = raw_line.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            if line.startswith(">"):
+                _flush()
+                header = line[1:].split(None, 1)[0]
+                fields = header.split("|")
+                if len(fields) >= 3 and fields[0] in ("sp", "tr"):
+                    accession = fields[1]
+                    entry_name = fields[2]
+                    current_keys = [accession, entry_name]
+                else:
+                    current_keys = [header]
+                current_parts = []
+            else:
+                current_parts.append(line)
+        _flush()
+
+    return sequences

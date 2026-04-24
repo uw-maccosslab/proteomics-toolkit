@@ -213,6 +213,23 @@ class StatisticalConfig:
         # Normalization method (used for auto log transformation)
         self.normalization_method = None  # Set this to the normalization method used
 
+        # Peptide-count column for ``moderation="deqms"`` variance shrinkage.
+        # PRISM's protein parquet emits "n_peptides" by default.
+        self.peptide_count_column = "n_peptides"
+
+        # Moderated linear-model settings (used when
+        # ``statistical_test_method="moderated_linear_model"``).
+        # ``moderation`` selects the variance prior:
+        #   - "limma"             : global prior (Smyth 2004)
+        #   - "deqms"             : per-feature prior conditioned on peptide count (Zhu 2020)
+        #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend;
+        #                           equivalent to limma's ``trend=TRUE`` and the recommended
+        #                           default for DIA/DDA MS data.
+        # ``robust`` enables Huber-style Winsorization of per-feature log(s^2) when
+        # estimating the prior hyperparameters, matching limma's ``robust=TRUE``.
+        self.moderation = "intensity_trend"
+        self.robust = False
+
     def validate(self):
         """Validate that required parameters are set for the chosen analysis type"""
         if not self.analysis_type:
@@ -1047,6 +1064,679 @@ def run_mann_whitney_test(protein_data, metadata_df, config):
     return pd.DataFrame(results)
 
 
+# ---------------------------------------------------------------------------
+# limma / DEqMS-style moderated t-statistics
+#
+# Native NumPy/SciPy implementation of empirical Bayes variance shrinkage,
+# following Smyth (2004) for limma and Zhu et al. (2020) for DEqMS. These
+# are reimplementations with the same statistical intent as the R packages,
+# not bit-for-bit ports - hence the ``_like`` suffix on the public names.
+# ---------------------------------------------------------------------------
+
+
+def _trigamma_inverse(x, max_iter=50, tol=1e-8):
+    """Inverse of the trigamma function ψ'(·) for x > 0.
+
+    Used in limma to recover the prior degrees of freedom d0 from the
+    excess variance of log(s^2) across features. Uses Newton-Raphson
+    with a stable starting guess (Smyth 2004 eq. 5).
+    """
+    from scipy.special import polygamma
+
+    x = float(x)
+    if not np.isfinite(x) or x <= 0:
+        return np.inf
+    # Starting value - from Smyth's limma source
+    if x > 1e7:
+        y = 1.0 / np.sqrt(x)
+    else:
+        y = 0.5 + 1.0 / x
+    for _ in range(max_iter):
+        tri = polygamma(1, y)
+        tetra = polygamma(2, y)
+        delta = tri * (1 - tri / x) / tetra
+        y = y + delta
+        if np.abs(delta / y) < tol:
+            break
+    return y
+
+
+def _fit_moderated_t(feature_data, metadata_df, config):
+    """Fit per-feature linear model and compute moderated t-statistics.
+
+    This is the shared workhorse behind :func:`run_moderated_linear_model`.
+    It handles the design-matrix construction,
+    per-feature OLS fit, and the empirical Bayes shrinkage of residual
+    variances toward a global prior (s0^2, d0). DEqMS replaces the single
+    prior with a peptide-count-conditioned prior after this function
+    returns.
+
+    Parameters
+    ----------
+    feature_data : pd.DataFrame
+        Protein- or peptide-level intensity matrix (rows = features,
+        columns = sample names). The row index is used as the feature
+        identifier in the returned DataFrame.
+    metadata_df : pd.DataFrame
+        Sample metadata with a ``Sample`` column whose values match
+        ``feature_data`` columns, plus the group/subject/paired columns
+        referenced by ``config``.
+    config : StatisticalConfig
+        Needs ``analysis_type``, ``group_column``, ``group_labels`` (for
+        unpaired), ``subject_column`` + ``paired_column`` +
+        ``paired_label1``/``paired_label2`` (for paired).
+
+    Returns
+    -------
+    dict with keys:
+        ``features`` - list of feature IDs (row indices) in fit order
+        ``beta``    - array of contrast estimates (logFC) per feature
+        ``s2``      - array of residual variances per feature
+        ``df``      - array of residual degrees of freedom per feature
+        ``v_c``     - array of contrast variances (one per feature; varies
+                      because of missing-value patterns)
+        ``ave_expr``- array of mean expression per feature
+        ``n_samples_used`` - array of sample counts per feature
+        ``s0_sq``   - global prior variance (scalar)
+        ``d0``      - global prior degrees of freedom (scalar)
+    """
+    analysis_type = config.analysis_type
+    if analysis_type not in ("unpaired", "paired"):
+        raise ValueError(
+            f"moderated_linear_model currently supports analysis_type in "
+            f"('unpaired', 'paired'); got {analysis_type!r}."
+        )
+
+    # Identify samples that are in both the feature matrix and the metadata
+    sample_cols = [c for c in feature_data.columns if c in set(metadata_df["Sample"])]
+    if len(sample_cols) < 4:
+        raise ValueError(
+            f"Need at least 4 samples present in both feature_data and metadata_df; "
+            f"found {len(sample_cols)}."
+        )
+
+    # Order metadata to match feature_data column order
+    meta = metadata_df.set_index("Sample").loc[sample_cols].copy()
+
+    # Build design matrix and contrast vector
+    group_col = config.group_column
+    group_labels = config.group_labels
+
+    if analysis_type == "unpaired":
+        if not group_col or len(group_labels or []) < 2:
+            raise ValueError("unpaired moderated_linear_model requires group_column and two group_labels")
+        # Restrict to the two requested groups
+        keep = meta[group_col].isin(group_labels[:2])
+        meta = meta.loc[keep]
+        sample_cols = meta.index.tolist()
+        if len(sample_cols) < 4:
+            raise ValueError(
+                f"After restricting to groups {group_labels[:2]}, only {len(sample_cols)} samples remain."
+            )
+        # Design: intercept + treatment indicator (1 if group == group_labels[1])
+        treat = (meta[group_col].astype(str) == str(group_labels[1])).astype(float).values
+        X = np.column_stack([np.ones_like(treat), treat])
+        contrast = np.array([0.0, 1.0])
+
+    else:  # paired
+        subj_col = config.subject_column
+        paired_col = config.paired_column
+        if not (subj_col and paired_col and config.paired_label1 and config.paired_label2):
+            raise ValueError(
+                "paired moderated_linear_model requires subject_column, paired_column, "
+                "paired_label1, and paired_label2"
+            )
+        keep = meta[paired_col].astype(str).isin([str(config.paired_label1), str(config.paired_label2)])
+        meta = meta.loc[keep]
+        sample_cols = meta.index.tolist()
+        if len(sample_cols) < 4:
+            raise ValueError(
+                f"After restricting to paired labels, only {len(sample_cols)} samples remain."
+            )
+        # Design: treatment indicator + subject factors (block)
+        treat = (meta[paired_col].astype(str) == str(config.paired_label2)).astype(float).values
+        subjects = meta[subj_col].astype(str).values
+        unique_subjects = sorted(set(subjects))
+        # One-hot subject factor with first subject as the reference -> intercept absorbs it
+        subj_mat = np.zeros((len(subjects), len(unique_subjects) - 1))
+        for j, s in enumerate(unique_subjects[1:]):
+            subj_mat[:, j] = (subjects == s).astype(float)
+        X = np.column_stack([np.ones_like(treat), treat, subj_mat])
+        contrast = np.zeros(X.shape[1])
+        contrast[1] = 1.0
+
+    # Subset feature_data to the design-matrix samples
+    Y_all = feature_data[sample_cols]
+    features = list(Y_all.index)
+
+    # Per-feature OLS loop (stays robust to NaN patterns)
+    n_features = len(features)
+    beta_out = np.full(n_features, np.nan)
+    s2_out = np.full(n_features, np.nan)
+    df_out = np.full(n_features, np.nan)
+    vc_out = np.full(n_features, np.nan)
+    ave_out = np.full(n_features, np.nan)
+    nsamp_out = np.full(n_features, 0, dtype=int)
+
+    for i, feat in enumerate(features):
+        y = Y_all.loc[feat].to_numpy(dtype=float)
+        mask = np.isfinite(y)
+        if mask.sum() <= X.shape[1]:
+            continue
+        y_i = y[mask]
+        X_i = X[mask, :]
+        try:
+            XtX = X_i.T @ X_i
+            XtX_inv = np.linalg.inv(XtX)
+        except np.linalg.LinAlgError:
+            continue
+        beta = XtX_inv @ X_i.T @ y_i
+        resid = y_i - X_i @ beta
+        d_i = len(y_i) - X.shape[1]
+        if d_i <= 0:
+            continue
+        s2_i = float(resid @ resid / d_i)
+        v_c_i = float(contrast @ XtX_inv @ contrast)
+        beta_out[i] = float(contrast @ beta)
+        s2_out[i] = s2_i
+        df_out[i] = d_i
+        vc_out[i] = v_c_i
+        ave_out[i] = float(np.nanmean(y_i))
+        nsamp_out[i] = len(y_i)
+
+    # Empirical Bayes prior (Smyth 2004)
+    valid = np.isfinite(s2_out) & (s2_out > 0) & (df_out > 0)
+    if valid.sum() < 2:
+        raise ValueError("Not enough features with valid residual variances to fit empirical Bayes prior.")
+
+    robust = bool(getattr(config, "robust", False))
+    s0_sq, d0 = _fit_limma_prior(
+        s2_out[valid], df_out[valid], robust=robust
+    )
+
+    return {
+        "features": features,
+        "beta": beta_out,
+        "s2": s2_out,
+        "df": df_out,
+        "v_c": vc_out,
+        "ave_expr": ave_out,
+        "n_samples_used": nsamp_out,
+        "s0_sq": s0_sq,
+        "d0": d0,
+    }
+
+
+def _fit_limma_prior(s2_valid, d_valid, robust=False, winsor_sigma=4.0):
+    """Fit Smyth's (s0^2, d0) hyperparameters from residual variances.
+
+    Implements Smyth (2004) method-of-moments on ``log(s^2)``. When
+    ``robust=True``, Winsorizes the centred z-statistic at ``±winsor_sigma``
+    standard deviations before the moment fit so a handful of extreme
+    features don't inflate the prior. Matches the intent (but not the
+    precise Fisher-scoring algorithm) of limma's ``robust=TRUE``.
+
+    Returns a ``(s0_sq, d0)`` tuple. Returns ``(mean(s^2), inf)`` when no
+    excess variance is detected.
+    """
+    from scipy.special import polygamma
+
+    log_s2 = np.log(s2_valid)
+    d = np.asarray(d_valid, dtype=float)
+    z = log_s2 - polygamma(0, d / 2.0) + np.log(d / 2.0)
+    z_mean = float(np.mean(z))
+    e_var = float(np.var(z, ddof=1) - np.mean(polygamma(1, d / 2.0)))
+
+    if robust:
+        # Use median/MAD (not mean/sd) to set the Winsorization threshold,
+        # so a handful of outliers can't widen the window that's supposed
+        # to exclude them. 1.4826 converts MAD into a sigma-equivalent for
+        # a normal distribution.
+        z_median = float(np.median(z))
+        mad = float(np.median(np.abs(z - z_median)))
+        if mad > 0:
+            threshold = winsor_sigma * 1.4826 * mad
+            z_wins = np.clip(z, z_median - threshold, z_median + threshold)
+            z_mean = float(np.mean(z_wins))
+            e_var = float(np.var(z_wins, ddof=1) - np.mean(polygamma(1, d / 2.0)))
+
+    if not np.isfinite(e_var) or e_var <= 0:
+        return float(np.mean(s2_valid)), float(np.inf)
+
+    d0_half = _trigamma_inverse(e_var)
+    d0 = 2.0 * d0_half
+    s0_sq = float(np.exp(z_mean + polygamma(0, d0_half) - np.log(d0_half)))
+    return s0_sq, d0
+
+
+def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
+    """Convert a ``_fit_moderated_t`` result + per-feature prior into a
+    DataFrame in the project's standard schema."""
+    from scipy.stats import t as student_t
+
+    features = fit["features"]
+    beta = fit["beta"]
+    s2 = fit["s2"]
+    df_resid = fit["df"]
+    v_c = fit["v_c"]
+    ave_expr = fit["ave_expr"]
+    n_samples = fit["n_samples_used"]
+
+    d0_arr = np.broadcast_to(d0, np.shape(s0_sq_per_feature)).astype(float)
+
+    # Posterior variance s~^2 = (d0 s0^2 + d s^2) / (d0 + d)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s2_post = np.where(
+            np.isfinite(d0_arr),
+            (d0_arr * s0_sq_per_feature + df_resid * s2) / (d0_arr + df_resid),
+            s0_sq_per_feature,  # limit d0 -> inf
+        )
+        df_post = np.where(np.isfinite(d0_arr), df_resid + d0_arr, np.inf)
+        se = np.sqrt(s2_post * v_c)
+        t_mod = beta / se
+        # Two-sided p-value
+        p_mod = np.where(
+            np.isfinite(t_mod),
+            2.0 * student_t.sf(np.abs(t_mod), df=df_post),
+            np.nan,
+        )
+
+    # In unpaired analysis we can report per-group counts for transparency;
+    # for the paired case this is redundant (each subject has both) so we
+    # split naively by contrast sign.
+    n_group1 = np.where(beta < 0, n_samples, n_samples // 2)
+    n_group2 = n_samples - n_group1
+
+    moderation = getattr(config, "moderation", "limma")
+    method_label = f"moderated_linear_model[{moderation}]"
+
+    # Global limma prior variance (broadcast for column storage). For
+    # ``deqms_like``, ``s0_sq_per_feature`` is the peptide-count-dependent
+    # prior and this column is the constant-across-proteins limma prior
+    # that deqms_like would have used without peptide counts.
+    limma_s0_sq_col = np.full(len(features), np.nan)
+    try:
+        # s0_sq from the limma fit is exposed via _fit_moderated_t but we
+        # don't have it here; _moderated_results_df receives the per-feature
+        # prior in ``s0_sq_per_feature``. For limma_like the per-feature
+        # array is constant, so take any finite value.
+        if np.ndim(s0_sq_per_feature) == 0 or len(np.unique(s0_sq_per_feature)) == 1:
+            limma_s0_sq_col[:] = float(np.asarray(s0_sq_per_feature).ravel()[0])
+    except (TypeError, ValueError):
+        pass
+
+    result = pd.DataFrame(
+        {
+            "Protein": features,
+            "logFC": beta,
+            "AveExpr": ave_expr,
+            "t": t_mod,
+            "P.Value": p_mod,
+            "B": np.nan,
+            "n_group1": n_group1,
+            "n_group2": n_group2,
+            "residual_s2": s2,
+            "residual_df": df_resid,
+            "posterior_s2": s2_post,
+            "posterior_df": df_post,
+            "limma_s0_sq": limma_s0_sq_col,
+            "test_method": method_label,
+        }
+    )
+    return result
+
+
+def _fit_count_dependent_prior(fit, counts):
+    """LOWESS prior on log(s^2) vs log(peptide count).
+
+    Used by the ``deqms`` moderation mode. Returns a per-feature array
+    of prior variances aligned to ``fit["features"]``, plus the aligned
+    count array for diagnostics.
+    """
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
+    s2 = fit["s2"]
+    counts = np.asarray(counts, dtype=float)
+    valid = np.isfinite(s2) & (s2 > 0) & np.isfinite(counts) & (counts >= 1)
+    if valid.sum() < 5:
+        raise ValueError(
+            "deqms moderation needs at least 5 features with positive peptide counts "
+            "and finite residual variance to fit the count-dependent variance prior."
+        )
+
+    log_counts_valid = np.log(counts[valid])
+    log_s2_valid = np.log(s2[valid])
+    smoothed = lowess(log_s2_valid, log_counts_valid, frac=0.5, it=3, return_sorted=True)
+    xs, ys = smoothed[:, 0], smoothed[:, 1]
+
+    with np.errstate(invalid="ignore"):
+        all_log_counts = np.log(np.where(counts >= 1, counts, np.nan))
+    per_feature_log_s0 = np.interp(all_log_counts, xs, ys, left=ys[0], right=ys[-1])
+    global_log_s0 = float(np.mean(log_s2_valid))
+    per_feature_log_s0 = np.where(np.isfinite(per_feature_log_s0), per_feature_log_s0, global_log_s0)
+    return np.exp(per_feature_log_s0), counts
+
+
+def _per_feature_group_stats(feature_data, metadata_df, config):
+    """Compute per-(feature, group) mean intensity and SD (raw-scale).
+
+    Returns a dict with parallel arrays keyed by feature index:
+      - ``feature_idx``: position of the feature in ``feature_data.index``
+      - ``feature_id``: the feature identifier
+      - ``group``: group label
+      - ``n_samples``: number of non-missing samples in this group
+      - ``mean_intensity``: arithmetic mean across samples in this group
+      - ``sd_intensity``: standard deviation (ddof=1) across samples in this group
+
+    Operates on raw (pre-log) intensities so that the Poisson mean-variance
+    relationship is expressed in its natural units. The caller is
+    responsible for ensuring ``feature_data`` contains raw intensities
+    (the dispatcher preserves this separately from the log-transformed
+    view passed to the moderated-t fit).
+    """
+    analysis_type = config.analysis_type
+    if analysis_type not in ("unpaired", "paired"):
+        raise ValueError(
+            "intensity_trend moderation requires analysis_type in "
+            f"('unpaired', 'paired'); got {analysis_type!r}."
+        )
+
+    sample_cols = [c for c in feature_data.columns if c in set(metadata_df["Sample"])]
+    meta = metadata_df.set_index("Sample").loc[sample_cols].copy()
+
+    if analysis_type == "unpaired":
+        group_col = config.group_column
+        labels = list(config.group_labels[:2])
+        keep = meta[group_col].astype(str).isin([str(g) for g in labels])
+        meta = meta.loc[keep]
+        sample_cols = meta.index.tolist()
+        group_labels_by_sample = meta[group_col].astype(str).tolist()
+    else:  # paired
+        paired_col = config.paired_column
+        labels = [str(config.paired_label1), str(config.paired_label2)]
+        keep = meta[paired_col].astype(str).isin(labels)
+        meta = meta.loc[keep]
+        sample_cols = meta.index.tolist()
+        group_labels_by_sample = meta[paired_col].astype(str).tolist()
+
+    feature_ids = list(feature_data.index)
+    rows = []
+    for g_label in sorted(set(group_labels_by_sample)):
+        cols_g = [c for c, gl in zip(sample_cols, group_labels_by_sample) if gl == g_label]
+        if len(cols_g) < 2:
+            continue
+        sub = feature_data[cols_g].to_numpy(dtype=float)
+        means = np.nanmean(sub, axis=1)
+        sds = np.nanstd(sub, axis=1, ddof=1)
+        n_eff = np.sum(~np.isnan(sub), axis=1)
+        for i, fid in enumerate(feature_ids):
+            rows.append(
+                {
+                    "feature_idx": i,
+                    "feature_id": fid,
+                    "group": g_label,
+                    "n_samples": int(n_eff[i]),
+                    "mean_intensity": float(means[i]) if np.isfinite(means[i]) else np.nan,
+                    "sd_intensity": float(sds[i]) if np.isfinite(sds[i]) else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
+    """LOWESS prior on log(variance) vs log(mean intensity), per (feature, group).
+
+    This is the Python equivalent of limma's ``trend=TRUE``. Each
+    (feature, group) pair contributes one point to the LOWESS fit:
+    Y = log(within-group variance on raw intensities),
+    X = log(within-group mean intensity).
+
+    Returns a tuple ``(s0_sq_per_feature, fg_points)`` where:
+      - ``s0_sq_per_feature`` is a per-feature prior variance **in the
+        log-intensity space used by the moderated-t fit**. The LOWESS
+        gives us a variance in raw-intensity space; we convert to
+        log-space via the delta-method approximation
+        ``var_log = var_raw / mean_raw^2``, then combine across groups
+        as a sample-size-weighted mean per feature.
+      - ``fg_points`` is the long-form DataFrame produced by
+        :func:`_per_feature_group_stats`, enriched with the per-point
+        LOWESS predictions for plotting.
+    """
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
+    fg = _per_feature_group_stats(raw_feature_data, metadata_df, config)
+    mask = (
+        np.isfinite(fg["mean_intensity"].to_numpy())
+        & np.isfinite(fg["sd_intensity"].to_numpy())
+        & (fg["mean_intensity"].to_numpy() > 0)
+        & (fg["sd_intensity"].to_numpy() > 0)
+        & (fg["n_samples"].to_numpy() >= 2)
+    )
+    if mask.sum() < 5:
+        raise ValueError(
+            "intensity_trend moderation needs at least 5 (feature, group) points "
+            "with positive finite mean and SD to fit the trend."
+        )
+
+    fg_valid = fg[mask].copy()
+    log_mean = np.log(fg_valid["mean_intensity"].to_numpy())
+    log_var_raw = 2.0 * np.log(fg_valid["sd_intensity"].to_numpy())
+    smoothed = lowess(log_var_raw, log_mean, frac=0.5, it=3, return_sorted=True)
+    xs, ys = smoothed[:, 0], smoothed[:, 1]
+
+    # Per (feature, group) predicted log(raw variance) from the LOWESS.
+    all_log_mean = np.log(fg["mean_intensity"].to_numpy(dtype=float))
+    log_var_hat = np.interp(all_log_mean, xs, ys, left=ys[0], right=ys[-1])
+    fg["predicted_sd"] = np.exp(0.5 * log_var_hat)
+    fg["predicted_variance_raw"] = np.exp(log_var_hat)
+
+    # Convert the raw-space predicted variance into the log-space variance
+    # used by the moderated-t machinery:
+    #   var_log_x ≈ var_raw_x / mean_raw_x^2   (delta method for x -> log x,
+    # or more precisely log base e; if the upstream log-transform used
+    # log2, divide again by (ln 2)^2.)
+    # Upstream `_fit_moderated_t` operates on whatever log base was chosen
+    # in `_apply_log_transformation_if_needed`. We convert to the same base
+    # by dividing by (ln base)^2.
+    log_base = str(getattr(config, "log_base", "log2")).lower()
+    base_factor = {"log2": np.log(2.0) ** 2, "log10": np.log(10.0) ** 2, "ln": 1.0}.get(
+        log_base, np.log(2.0) ** 2
+    )
+    with np.errstate(invalid="ignore", divide="ignore"):
+        predicted_var_logspace = (
+            fg["predicted_variance_raw"].to_numpy()
+            / (fg["mean_intensity"].to_numpy() ** 2)
+            / base_factor
+        )
+    fg["predicted_variance_logspace"] = predicted_var_logspace
+
+    # Combine across groups for each feature: sample-size-weighted mean
+    # of the per-group predicted log-space variance.
+    n_features = len(fit["features"])
+    s0_sq = np.full(n_features, np.nan)
+    for feat_idx, grp in fg.groupby("feature_idx", sort=False):
+        finite = np.isfinite(grp["predicted_variance_logspace"].to_numpy()) & (
+            grp["n_samples"].to_numpy() > 0
+        )
+        if finite.sum() == 0:
+            continue
+        w = grp["n_samples"].to_numpy()[finite].astype(float)
+        v = grp["predicted_variance_logspace"].to_numpy()[finite]
+        s0_sq[int(feat_idx)] = float(np.average(v, weights=w))
+
+    # Fallback: features with no valid groups get the global mean
+    global_mean = np.nanmean(s0_sq)
+    s0_sq = np.where(np.isfinite(s0_sq) & (s0_sq > 0), s0_sq, global_mean)
+    return s0_sq, fg
+
+
+def run_moderated_linear_model(feature_data, metadata_df, config):
+    """Per-feature linear model with empirical-Bayes variance moderation.
+
+    Unified entry point for limma-/DEqMS-style moderated differential
+    analysis. ``config.moderation`` selects the prior shape:
+
+    - ``"limma"`` - global prior (Smyth 2004). Works on protein- or
+      peptide-level input; no extra columns needed.
+    - ``"deqms"`` - per-feature prior conditioned on peptide count
+      (Zhu et al. 2020). Protein-level only; reads
+      ``config.peptide_count_column`` (default ``"n_peptides"``).
+    - ``"intensity_trend"`` *(default)* - per-feature prior conditioned
+      on the intensity trend. Python equivalent of limma's
+      ``trend=TRUE``; recommended for MS data because variance is
+      clearly intensity-dependent.
+
+    When ``config.robust`` is True, the prior hyperparameters
+    ``(s0^2, d0)`` are estimated with Huber-style Winsorization so a
+    handful of genuinely high-variance features don't inflate the prior
+    and blunt every test.
+
+    Parameters
+    ----------
+    feature_data : pd.DataFrame
+        Rows = features (proteins or peptides), columns = sample names.
+        For ``moderation="deqms"``, must also contain
+        ``config.peptide_count_column``. For
+        ``moderation="intensity_trend"``, intensities must be on the
+        raw (pre-log) scale (the dispatcher handles this automatically
+        by preserving a raw-scale copy before applying any log transform).
+    metadata_df : pd.DataFrame
+        Must contain a ``Sample`` column matching ``feature_data``
+        columns and the group/paired columns referenced by ``config``.
+    config : StatisticalConfig
+        ``analysis_type`` must be ``"unpaired"`` or ``"paired"``. Reads
+        ``config.moderation``, ``config.robust``,
+        ``config.peptide_count_column``, and the intensity-trend settings.
+
+    Returns
+    -------
+    pd.DataFrame
+        Per-feature results with columns: Protein, logFC, AveExpr, t,
+        P.Value, B, n_group1, n_group2, residual_s2, residual_df,
+        posterior_s2, posterior_df, limma_s0_sq, test_method. Plus one
+        of the following depending on moderation:
+
+        - deqms: ``peptide_count_used``, ``deqms_s0_sq``
+        - intensity_trend: ``intensity_s0_sq``, ``intensity_used``
+
+    Raises
+    ------
+    ValueError
+        If ``config.moderation`` is unrecognized or a required column is
+        missing.
+    """
+    moderation = str(getattr(config, "moderation", "intensity_trend")).lower()
+    valid_modes = {"limma", "deqms", "intensity_trend"}
+    if moderation not in valid_modes:
+        raise ValueError(
+            f"config.moderation must be one of {sorted(valid_modes)}; got {moderation!r}."
+        )
+
+    if moderation == "deqms":
+        count_col = getattr(config, "peptide_count_column", "n_peptides")
+        if count_col not in feature_data.columns:
+            raise ValueError(
+                f"moderation='deqms' requires a peptide-count column ({count_col!r}) "
+                f"in feature_data. Either supply protein-level data with that column, "
+                f"set config.peptide_count_column to an existing column, or use "
+                f"moderation='intensity_trend' or 'limma'."
+            )
+        counts_per_feature = feature_data[count_col].copy()
+        intensity_data = feature_data.drop(columns=[count_col])
+        print(f"Running moderated linear model (moderation='deqms', robust={bool(config.robust)})...")
+        fit = _fit_moderated_t(intensity_data, metadata_df, config)
+        counts_aligned = counts_per_feature.reindex(fit["features"]).to_numpy(dtype=float)
+        s0_sq_per_feature, counts_aligned = _fit_count_dependent_prior(fit, counts_aligned)
+        df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
+        df["peptide_count_used"] = counts_aligned
+        df["limma_s0_sq"] = fit["s0_sq"]
+        df["deqms_s0_sq"] = s0_sq_per_feature
+        print(f"Done: deqms-mode moderated t completed for {len(df)} features; d0={fit['d0']:.3g}")
+        return df
+
+    if moderation == "intensity_trend":
+        raw_data = _raw_feature_data_for_fit(feature_data, config)
+        print(
+            f"Running moderated linear model (moderation='intensity_trend', "
+            f"robust={bool(config.robust)})..."
+        )
+        fit = _fit_moderated_t(feature_data, metadata_df, config)
+        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(
+            fit, raw_data, metadata_df, config
+        )
+        df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
+        # Summary intensity per feature: mean of per-group means (raw scale).
+        per_feature_intensity = (
+            fg_points.groupby("feature_idx", sort=True)["mean_intensity"]
+            .mean()
+            .reindex(range(len(fit["features"])))
+            .to_numpy()
+        )
+        df["intensity_used"] = per_feature_intensity
+        df["intensity_s0_sq"] = s0_sq_per_feature
+        df["limma_s0_sq"] = fit["s0_sq"]
+        # Stash the per-(feature, group) points for the diagnostic plot.
+        df.attrs["intensity_trend_points"] = fg_points
+        print(
+            f"Done: intensity_trend-mode moderated t completed for {len(df)} features; "
+            f"d0={fit['d0']:.3g}, limma s0^2={fit['s0_sq']:.3g}"
+        )
+        return df
+
+    # moderation == "limma"
+    print(f"Running moderated linear model (moderation='limma', robust={bool(config.robust)})...")
+    fit = _fit_moderated_t(feature_data, metadata_df, config)
+    s0_sq = np.full(len(fit["features"]), fit["s0_sq"])
+    df = _moderated_results_df(fit, s0_sq, fit["d0"], config)
+    print(
+        f"Done: limma-mode moderated t completed for {len(df)} features; "
+        f"d0={fit['d0']:.3g}, s0^2={fit['s0_sq']:.3g}"
+    )
+    return df
+
+
+def _raw_feature_data_for_fit(feature_data, config):
+    """Return raw-intensity feature data for the intensity_trend prior fit.
+
+    When the dispatcher log-transforms upstream, it stashes the raw
+    sample columns on a module-level attribute so we can read them back
+    here. If no stash is available, assume ``feature_data`` is already
+    raw and return it unchanged. This is defensive for direct callers
+    who bypass the dispatcher.
+    """
+    stash = getattr(config, "_raw_feature_data", None)
+    if stash is not None:
+        return stash
+    return feature_data
+
+
+def get_intensity_trend_points(results_df):
+    """Return the per-(feature, group) long-form DataFrame used by the
+    intensity-trend diagnostic plot.
+
+    This DataFrame is produced by :func:`run_moderated_linear_model` when
+    ``moderation="intensity_trend"`` and stashed on
+    ``results_df.attrs["intensity_trend_points"]``. It has columns
+    ``feature_idx``, ``feature_id``, ``group``, ``n_samples``,
+    ``mean_intensity``, ``sd_intensity``, ``predicted_sd``,
+    ``predicted_variance_raw``, and ``predicted_variance_logspace``.
+
+    Raises
+    ------
+    ValueError
+        If ``results_df`` was not produced with intensity_trend moderation.
+    """
+    pts = None
+    if hasattr(results_df, "attrs"):
+        pts = results_df.attrs.get("intensity_trend_points")
+    if pts is None:
+        raise ValueError(
+            "Results DataFrame does not carry intensity-trend points. "
+            "Run run_moderated_linear_model with config.moderation='intensity_trend'."
+        )
+    return pts
+
+
 def _create_empty_result(protein_idx, reason):
     """Create empty result for failed analysis"""
     return {
@@ -1348,7 +2038,29 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
 
     # Filter protein data to samples with metadata
     available_samples = metadata_df["Sample"].tolist()
+    # Preserve peptide-count column for the DEqMS moderation path (otherwise
+    # only sample columns are kept). Pull the raw counts from the pre-log
+    # ``normalized_data`` so the log-transform step doesn't alter them.
+    extra_cols = []
+    is_moderated = config.statistical_test_method == "moderated_linear_model"
+    moderation = getattr(config, "moderation", "intensity_trend")
+    if is_moderated and moderation == "deqms":
+        count_col = getattr(config, "peptide_count_column", "n_peptides")
+        if count_col in statistical_data.columns:
+            extra_cols.append(count_col)
     filtered_protein_data = statistical_data[available_samples].copy()
+    if extra_cols and count_col in normalized_data.columns:
+        filtered_protein_data[count_col] = normalized_data[count_col].values
+
+    # For the intensity_trend moderation, stash the **raw (pre-log)** sample
+    # intensities on the config object so the prior can be fit in raw space.
+    if is_moderated and moderation == "intensity_trend":
+        raw_sample_view = normalized_data[available_samples].copy()
+        if "Protein" in normalized_data.columns:
+            raw_sample_view.index = normalized_data["Protein"].values
+        config._raw_feature_data = raw_sample_view
+    else:
+        config._raw_feature_data = None
 
     # Ensure the index contains actual protein identifiers (not integer row numbers)
     # so that iterrows() in test functions yields meaningful Protein values
@@ -1391,10 +2103,24 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
         results_df = run_wilcoxon_test(filtered_protein_data, metadata_df, config)
     elif config.statistical_test_method == "mann_whitney":
         results_df = run_mann_whitney_test(filtered_protein_data, metadata_df, config)
+    elif config.statistical_test_method == "moderated_linear_model":
+        results_df = run_moderated_linear_model(filtered_protein_data, metadata_df, config)
+        # Preserve the intensity-trend points across later post-processing
+        # (FDR correction + annotation merges often drop DataFrame .attrs).
+        _intensity_trend_points_stash = results_df.attrs.get("intensity_trend_points")
+    elif config.statistical_test_method in ("limma_like", "deqms_like"):
+        raise ValueError(
+            f"statistical_test_method={config.statistical_test_method!r} is no longer supported. "
+            f"Use statistical_test_method='moderated_linear_model' with "
+            f"config.moderation='limma' (for the former limma_like behaviour), "
+            f"'deqms' (for the former deqms_like behaviour), or "
+            f"'intensity_trend' (new default; Python equivalent of limma's trend=TRUE)."
+        )
     else:
         raise ValueError(
             f"Unknown statistical method: {config.statistical_test_method}. "
-            f"Supported methods: mixed_effects, paired_t, paired_welch, welch_t, student_t, wilcoxon, mann_whitney"
+            f"Supported methods: mixed_effects, paired_t, paired_welch, welch_t, student_t, "
+            f"wilcoxon, mann_whitney, moderated_linear_model"
         )
 
     # Apply multiple testing correction
@@ -1433,6 +2159,13 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
 
     # Sort by p-value
     results_df = results_df.sort_values("P.Value")
+
+    # Re-attach per-(feature, group) intensity-trend points if the
+    # moderated-linear-model path produced them (FDR correction and
+    # annotation merges often strip DataFrame.attrs).
+    _stashed_points = locals().get("_intensity_trend_points_stash")
+    if _stashed_points is not None:
+        results_df.attrs["intensity_trend_points"] = _stashed_points
 
     print("\nDone: Statistical analysis completed!")
     print(f"  Total proteins analyzed: {len(results_df)}")

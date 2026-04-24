@@ -119,6 +119,7 @@ from .classification import (
     plot_roc_comparison,  # Overlay ROC curves from multiple methods
     plot_roc_curve,  # ROC curve from classification results
     run_binary_classification,  # LOO/k-fold CV binary classification
+    select_features_by_mad,  # Unsupervised feature ranking by MAD
 )
 from .data_import import (
     BATCH_SUFFIX_DELIMITER,  # The batch suffix delimiter: __@__
@@ -126,6 +127,7 @@ from .data_import import (
     create_sample_column_mapping,  # Map metadata sample names to data columns
     detect_batch_suffix,  # Detect skyline-prism batch suffix in column names
     load_diann_data,  # Load DIA-NN report.pg_matrix.tsv protein-group matrix
+    load_fasta_sequences,  # Parse a FASTA file into {accession -> sequence}
     load_prism_data,  # Load PRISM parquet output (corrected_proteins.parquet)
     load_prism_peptide_data,  # Load PRISM peptide parquet (corrected_peptides.parquet)
     load_skyline_data,  # Main function: Load protein/peptide data + metadata
@@ -181,7 +183,9 @@ from .statistical_analysis import (
     StatisticalConfig,  # Configuration class for analysis parameters
     compute_paired_fold_changes,  # Per-subject fold-change matrix for paired designs
     display_analysis_summary,  # Display analysis results summary
+    get_intensity_trend_points,  # Long-form (feature, group) points from intensity_trend fit
     run_comprehensive_statistical_analysis,  # Main function: Complete statistical analysis
+    run_moderated_linear_model,  # Per-feature linear model + empirical Bayes moderation
     run_statistical_analysis,  # Lower-level statistical analysis function
 )
 
@@ -228,6 +232,8 @@ from .visualization import (
     plot_pca,  # QC plot: Principal component analysis
     plot_peptide_coverage_map,  # QC plot: Peptide positions along a protein sequence
     plot_protein_profile,  # Single protein profile plot
+    plot_variance_vs_intensity,  # Diagnostic for intensity_trend moderation prior
+    plot_variance_vs_peptide_count,  # Diagnostic for DEqMS variance prior
     plot_volcano,  # Main results plot: Volcano plot for differential analysis
 )
 
@@ -253,6 +259,7 @@ __all__ = [
     "load_prism_data",  # Load PRISM parquet output (corrected_proteins.parquet)
     "load_prism_peptide_data",  # Load PRISM peptide parquet (corrected_peptides.parquet)
     "load_diann_data",  # Load DIA-NN report.pg_matrix.tsv protein-group matrix
+    "load_fasta_sequences",  # Parse a FASTA file into {accession -> sequence}
     "clean_sample_names",  # Clean and standardize sample column names
     "detect_batch_suffix",  # Detect skyline-prism batch suffix in column names
     "strip_batch_suffix",  # Strip batch suffix to get short sample names
@@ -277,6 +284,8 @@ __all__ = [
     "display_analysis_summary",  # Show results summary
     "StatisticalConfig",  # Configuration for statistical analysis
     "run_statistical_analysis",  # Lower-level analysis function
+    "run_moderated_linear_model",  # Per-feature linear model + empirical Bayes moderation
+    "get_intensity_trend_points",  # Long-form (feature, group) points for intensity_trend plot
     "compute_paired_fold_changes",  # Per-subject fold-change matrix
     # VALIDATION - Catch errors early, get helpful diagnostics
     "validate_metadata_data_consistency",  # RECOMMENDED: Validate before analysis
@@ -309,6 +318,8 @@ __all__ = [
     "plot_intensity_distributions",  # QC: density overlay of intensity per sample
     "plot_cv_distribution",  # QC: CV distribution across all samples (or by group)
     "plot_peptide_coverage_map",  # QC: peptide positions along a protein sequence
+    "plot_variance_vs_peptide_count",  # Diagnostic for DEqMS variance prior
+    "plot_variance_vs_intensity",  # Diagnostic for intensity_trend moderation prior
     # TEMPORAL CLUSTERING - Longitudinal trend analysis
     "TemporalClusteringConfig",  # Configuration for temporal analysis
     "run_temporal_analysis",  # MAIN FUNCTION: Complete temporal analysis pipeline
@@ -334,6 +345,7 @@ __all__ = [
     "merge_enrichment_results",  # Merge multiple enrichment DataFrames
     # CLASSIFICATION - Binary group discrimination
     "run_binary_classification",  # LOO/k-fold CV binary classification
+    "select_features_by_mad",  # Unsupervised feature ranking by MAD
     "plot_fold_change_pca",  # PCA of per-subject fold-changes by group
     "plot_roc_curve",  # ROC curve from classification results
     "plot_roc_comparison",  # Overlay ROC curves from multiple methods

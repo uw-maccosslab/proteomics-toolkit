@@ -4,16 +4,21 @@ Run manually (once) to produce:
     - example_proteins.parquet
     - example_peptides.parquet
     - example_metadata.csv
+    - example_sequences.json
 
 The generated data is deterministic (fixed seed) and simulates a small
 PRISM-style proteomics experiment with two groups (Control, Treatment),
 six samples per group, one batch, 80 proteins, and 60 peptides across
-the 20 most abundant proteins.
+the 20 most abundant proteins. Parent protein sequences are generated
+synthetically, and peptides are sampled *from within* each parent
+sequence at real start positions so the coverage-map visualization can
+locate peptides directly.
 
 Usage:
     python -m proteomics_toolkit.datasets._generate
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -73,7 +78,6 @@ def _make_protein_annotations(n: int, rng: np.random.Generator) -> pd.DataFrame:
                 "protein_group": acc,
                 "n_peptides": int(rng.integers(2, 20)),
                 "n_unique_peptides": int(rng.integers(2, 15)),
-                "low_confidence": False,
             }
         )
     return pd.DataFrame(rows)
@@ -116,18 +120,69 @@ def generate(output_dir: Path) -> None:
         protein_df[col] = values.astype("float64")
 
     # ------------------------------------------------------------------
-    # Peptide-level table (top 20 proteins, 3 peptides each)
+    # Parent protein sequences (top 20 proteins) + peptides drawn from them
     # ------------------------------------------------------------------
-    peptide_rows = []
+    # Amino-acid probabilities approximately match Swiss-Prot abundance.
     alphabet = list("ACDEFGHIKLMNPQRSTVWY")
+    aa_probs = np.array(
+        [
+            0.083,  # A
+            0.014,  # C
+            0.055,  # D
+            0.068,  # E
+            0.040,  # F
+            0.071,  # G
+            0.023,  # H
+            0.060,  # I
+            0.058,  # K
+            0.096,  # L
+            0.024,  # M
+            0.040,  # N
+            0.047,  # P
+            0.039,  # Q
+            0.057,  # R
+            0.069,  # S
+            0.053,  # T
+            0.066,  # V
+            0.011,  # W
+            0.030,  # Y
+        ]
+    )
+    aa_probs = aa_probs / aa_probs.sum()
+
+    protein_sequences = {}
+    for pi in range(N_PEPTIDE_PROTEINS):
+        seq_len = int(rng.integers(200, 450))
+        seq = "".join(rng.choice(alphabet, size=seq_len, p=aa_probs))
+        protein_sequences[str(protein_annot.loc[pi, "leading_protein"])] = seq
+        # Also register under the bare UniProt accession for alias lookups.
+        protein_sequences[str(protein_annot.loc[pi, "leading_uniprot_id"])] = seq
+
+    peptide_rows = []
     for pi in range(N_PEPTIDE_PROTEINS):
         leading_protein = protein_annot.loc[pi, "leading_protein"]
         leading_description = protein_annot.loc[pi, "leading_description"]
         leading_gene = protein_annot.loc[pi, "leading_gene_name"]
-        for pj in range(PEPTIDES_PER_PROTEIN):
-            length = int(rng.integers(7, 20))
-            sequence = "".join(rng.choice(alphabet, size=length))
-            start = int(rng.integers(1, 500))
+        parent_seq = protein_sequences[leading_protein]
+        parent_len = len(parent_seq)
+        # Sample non-overlapping peptides in DIA style (most peptides do
+        # not overlap except for missed cleavages - we don't model those
+        # here).
+        starts_used: list[tuple[int, int]] = []
+        for _ in range(PEPTIDES_PER_PROTEIN):
+            for _attempt in range(50):
+                length = int(rng.integers(7, 20))
+                start = int(rng.integers(1, parent_len - length))  # 1-based
+                # Reject if it overlaps an already-placed peptide
+                if all(start + length <= s0 or s0 + l0 <= start for s0, l0 in starts_used):
+                    starts_used.append((start, length))
+                    break
+            else:
+                # Fallback: accept even if overlapping
+                length = int(rng.integers(7, 20))
+                start = int(rng.integers(1, parent_len - length))
+                starts_used.append((start, length))
+            sequence = parent_seq[start - 1 : start - 1 + length]
             peptide_rows.append(
                 {
                     "peptide_sequence": sequence,
@@ -177,11 +232,17 @@ def generate(output_dir: Path) -> None:
     protein_df.to_parquet(output_dir / "example_proteins.parquet", index=False)
     peptide_df.to_parquet(output_dir / "example_peptides.parquet", index=False)
     metadata_df.to_csv(output_dir / "example_metadata.csv", index=False)
+    with open(output_dir / "example_sequences.json", "w") as fh:
+        json.dump(protein_sequences, fh, indent=2)
 
-    print(f"Wrote {len(protein_df)} proteins, {len(peptide_df)} peptides, {len(metadata_df)} samples")
+    print(
+        f"Wrote {len(protein_df)} proteins, {len(peptide_df)} peptides, "
+        f"{len(metadata_df)} samples, {len(protein_sequences)} sequence entries"
+    )
     print(f"  -> {output_dir / 'example_proteins.parquet'}")
     print(f"  -> {output_dir / 'example_peptides.parquet'}")
     print(f"  -> {output_dir / 'example_metadata.csv'}")
+    print(f"  -> {output_dir / 'example_sequences.json'}")
 
 
 if __name__ == "__main__":

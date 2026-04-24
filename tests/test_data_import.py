@@ -10,6 +10,7 @@ from proteomics_toolkit.data_import import (
     detect_batch_suffix,
     identify_sample_columns,
     load_diann_data,
+    load_fasta_sequences,
     load_prism_peptide_data,
     load_skyline_data,
     parse_gene_from_description,
@@ -247,3 +248,39 @@ class TestLoadPrismPeptideData:
     def test_preserves_peptide_sequence_column(self, tmp_prism_peptide_parquet):
         peptide_data, _, _ = load_prism_peptide_data(tmp_prism_peptide_parquet)
         assert "peptide_sequence" in peptide_data.columns
+
+
+# ---------------------------------------------------------------------------
+# load_fasta_sequences
+# ---------------------------------------------------------------------------
+
+
+class TestLoadFastaSequences:
+    def test_parses_uniprot_style_headers(self, tmp_path):
+        fasta = tmp_path / "mini.fasta"
+        fasta.write_text(
+            ">sp|P02768|ALBU_HUMAN Serum albumin OS=Homo sapiens\n"
+            "MKWVTFISLLLLFSSAYSRGVFRRDAHKSEVAHRFKDLGEENFKAL\n"
+            "VLIAFAQYLQQCPFEDHVKLVNEVTEFAKT\n"
+            ">tr|Q9ABC1|Q9ABC1_MOUSE Hypothetical\n"
+            "MSEQUENCEFORAMOUSEPROTEINVAKT\n"
+        )
+        seqs = load_fasta_sequences(str(fasta))
+        assert "P02768" in seqs
+        assert "ALBU_HUMAN" in seqs
+        assert seqs["P02768"] == seqs["ALBU_HUMAN"]
+        assert seqs["P02768"].startswith("MKWVTFISLL")
+        # Multi-line sequence concatenates without spaces/newlines
+        assert "\n" not in seqs["P02768"]
+        # Second record parsed independently
+        assert seqs["Q9ABC1"].startswith("MSEQUENCE")
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_fasta_sequences(str(tmp_path / "does-not-exist.fasta"))
+
+    def test_non_uniprot_header_uses_first_token(self, tmp_path):
+        fasta = tmp_path / "plain.fasta"
+        fasta.write_text(">MyProtein extra notes here\nACDEFGHIK\n")
+        seqs = load_fasta_sequences(str(fasta))
+        assert seqs["MyProtein"] == "ACDEFGHIK"
