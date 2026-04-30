@@ -22,12 +22,44 @@ A Python toolkit for analyzing mass spectrometry-based proteomics data, supporti
 
 ## Installation
 
+### With `uv` (recommended)
+
+[`uv`](https://docs.astral.sh/uv/) is a fast Python package and project
+manager. Install it once with:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then, from a clone of this repository:
+
+```bash
+git clone https://github.com/uw-maccosslab/proteomics-toolkit.git
+cd proteomics-toolkit
+uv sync                  # creates .venv and installs runtime deps from uv.lock
+uv sync --extra dev      # also installs pytest + pytest-cov for running tests
+uv sync --extra umap     # also installs umap-learn for plot_umap
+
+# Run commands inside the managed venv
+uv run pytest tests/ -v
+uv run python -c "import proteomics_toolkit as ptk; print(ptk.__version__)"
+```
+
+Or add it to an existing `uv`-managed project:
+
+```bash
+uv add proteomics-toolkit
+uv add 'proteomics-toolkit[umap]'   # with optional UMAP support
+```
+
+### With `pip`
+
 ```bash
 # Install from PyPI
 pip install proteomics-toolkit
 
-# With XGBoost support (for classification module)
-pip install proteomics-toolkit[xgboost]
+# With optional UMAP support (for plot_umap)
+pip install proteomics-toolkit[umap]
 
 # Install from GitHub (latest development version)
 pip install git+https://github.com/uw-maccosslab/proteomics-toolkit.git
@@ -35,7 +67,7 @@ pip install git+https://github.com/uw-maccosslab/proteomics-toolkit.git
 # For development (editable install from local clone)
 git clone https://github.com/uw-maccosslab/proteomics-toolkit.git
 cd proteomics-toolkit
-pip install -e .
+pip install -e '.[dev]'
 ```
 
 ## Quick Start

@@ -137,9 +137,13 @@ def plot_box_plot(
         colors = plt.cm.tab10(np.linspace(0, 1, len(unique_groups)))
         group_colors = {group: colors[i] for i, group in enumerate(unique_groups)}
 
-    # Build display labels (strip batch suffix)
-    display_label_list = _make_display_labels(sample_columns)
-    display_labels = dict(zip(sample_columns, display_label_list))
+    # Build display labels: use Replicate field from sample_metadata when available,
+    # otherwise fall back to stripping the batch suffix from the column name.
+    fallback_labels = _make_display_labels(sample_columns)
+    display_labels = {
+        col: (sample_metadata.get(col, {}).get("Replicate") or fallback)
+        for col, fallback in zip(sample_columns, fallback_labels)
+    }
 
     # Create plot
     fig, ax = plt.subplots(figsize=figsize)
@@ -3473,6 +3477,213 @@ def plot_variance_vs_intensity(
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
     ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def plot_pca_loadings(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    pc1: int = 0,
+    pc2: int = 1,
+    top_n: int = 20,
+    annotation_column: str = "leading_gene_name",
+    log_transform: bool = True,
+    figsize: Tuple[int, int] = (10, 8),
+    title: str = "PCA Loadings",
+) -> plt.Figure:
+    """PCA loadings biplot showing the top-N proteins driving two PCs.
+
+    Computes PCA on the protein abundance matrix (samples as rows,
+    proteins as columns), then plots each protein's loading on the two
+    requested principal components. The top-N proteins by Euclidean
+    norm of their (pc1, pc2) loading vector are labeled.
+
+    This complements ``plot_pca`` (which shows samples in PC space) by
+    showing which proteins drive the structure.
+
+    Args:
+        data: Wide protein DataFrame with annotation columns followed by
+            sample columns.
+        sample_columns: Sample column names to include.
+        pc1: Index (0-based) of the principal component for the x-axis.
+        pc2: Index (0-based) of the principal component for the y-axis.
+        top_n: Number of proteins to label.
+        annotation_column: Column in ``data`` to use for protein labels.
+            Falls back to a numeric index if absent.
+        log_transform: log2-transform abundance before PCA. Pass False if
+            the input is already log-transformed.
+        figsize: Figure size tuple.
+        title: Plot title.
+
+    Returns:
+        matplotlib Figure object.
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    abundance = data[sample_columns].apply(pd.to_numeric, errors="coerce")
+    if log_transform:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            abundance = np.log2(abundance.where(abundance > 0))
+    abundance = abundance.dropna(axis=0, how="any")
+    if abundance.empty:
+        raise ValueError("No proteins remain after dropping rows with NaN values.")
+
+    n_components = max(pc1, pc2) + 1
+    # After mean-centering, the rank of the data matrix is at most n_samples - 1,
+    # so PCA needs strictly more samples than the number of components requested.
+    if abundance.shape[1] <= n_components:
+        raise ValueError(
+            f"Need at least {n_components + 1} samples for PC{pc1 + 1}/PC{pc2 + 1}; "
+            f"have {abundance.shape[1]}."
+        )
+
+    # Samples as rows -> PCA components are loadings on proteins.
+    sample_matrix = abundance.to_numpy(dtype=float).T
+    sample_matrix = StandardScaler().fit_transform(sample_matrix)
+    pca = PCA(n_components=n_components)
+    pca.fit(sample_matrix)
+    var = pca.explained_variance_ratio_ * 100
+
+    # Loadings: rows of components_ are eigenvectors over proteins.
+    loadings = pca.components_  # (n_components, n_proteins)
+    x = loadings[pc1]
+    y = loadings[pc2]
+    norms = np.sqrt(x**2 + y**2)
+    top_idx = np.argsort(-norms)[:top_n]
+
+    if annotation_column in data.columns:
+        labels_all = data.loc[abundance.index, annotation_column].astype(str).tolist()
+    else:
+        logger.info("annotation_column %r not in data; using numeric labels.", annotation_column)
+        labels_all = [str(i) for i in abundance.index]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.scatter(x, y, s=10, alpha=0.3, color="#888888", linewidth=0)
+    ax.scatter(x[top_idx], y[top_idx], s=40, alpha=0.9, color="#d62728", linewidth=0.5, edgecolor="white")
+
+    for i in top_idx:
+        ax.annotate(
+            labels_all[i],
+            xy=(x[i], y[i]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=9,
+        )
+
+    ax.axhline(0, color="black", linewidth=0.5, alpha=0.5)
+    ax.axvline(0, color="black", linewidth=0.5, alpha=0.5)
+    ax.set_xlabel(f"PC{pc1 + 1} loading ({var[pc1]:.1f}% variance)")
+    ax.set_ylabel(f"PC{pc2 + 1} loading ({var[pc2]:.1f}% variance)")
+    ax.set_title(f"{title} (top {top_n} proteins labeled)")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def plot_umap(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    sample_metadata: Dict[str, Dict],
+    group_column: str,
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+    metric: str = "euclidean",
+    log_transform: bool = True,
+    group_colors: Optional[Dict[str, str]] = None,
+    random_state: int = 0,
+    figsize: Tuple[int, int] = (10, 8),
+    title: str = "UMAP projection",
+) -> plt.Figure:
+    """UMAP projection of samples colored by a metadata group.
+
+    Useful as a non-linear complement to ``plot_pca`` when the dominant
+    structure is not captured by the first two principal components.
+    Imports umap-learn lazily; install with ``pip install umap-learn``.
+
+    Args:
+        data: Wide protein DataFrame with annotation columns followed by
+            sample columns.
+        sample_columns: Sample column names to include.
+        sample_metadata: Dict-of-dicts keyed by sample column name.
+        group_column: Metadata field naming each sample's group label
+            for coloring.
+        n_neighbors: UMAP n_neighbors parameter (controls local-vs-global
+            tradeoff). Default 15.
+        min_dist: UMAP min_dist parameter (cluster compactness). Default 0.1.
+        metric: Distance metric passed to umap.UMAP. Default "euclidean".
+        log_transform: log2-transform abundance before UMAP. Pass False
+            if the input is already log-transformed.
+        group_colors: Optional dict mapping group label to color string.
+            Auto-generated from the seaborn palette if None.
+        random_state: Seed for reproducibility.
+        figsize: Figure size tuple.
+        title: Plot title.
+
+    Returns:
+        matplotlib Figure object.
+    """
+    try:
+        import umap  # type: ignore
+    except ImportError as e:  # pragma: no cover - environment-specific
+        raise ImportError(
+            "plot_umap requires the umap-learn package. "
+            "Install with: pip install umap-learn"
+        ) from e
+
+    abundance = data[sample_columns].apply(pd.to_numeric, errors="coerce")
+    if log_transform:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            abundance = np.log2(abundance.where(abundance > 0))
+    abundance = abundance.dropna(axis=0, how="any")
+    if abundance.empty:
+        raise ValueError("No proteins remain after dropping rows with NaN values.")
+
+    sample_matrix = abundance.to_numpy(dtype=float).T
+    n_samples = sample_matrix.shape[0]
+    if n_samples < 4:
+        raise ValueError(f"UMAP needs >=4 samples; got {n_samples}.")
+
+    # Resolve group labels in the same order as keep_cols
+    labels = []
+    for col in sample_columns:
+        meta = sample_metadata.get(col, {})
+        labels.append(str(meta.get(group_column, "Unknown")))
+
+    effective_n_neighbors = min(n_neighbors, max(2, n_samples - 1))
+    reducer = umap.UMAP(
+        n_neighbors=effective_n_neighbors,
+        min_dist=min_dist,
+        metric=metric,
+        random_state=random_state,
+    )
+    coords = reducer.fit_transform(sample_matrix)
+
+    if group_colors is None:
+        unique = sorted(set(labels))
+        palette = sns.color_palette("tab10", n_colors=len(unique))
+        group_colors = {g: palette[i] for i, g in enumerate(unique)}
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for g in sorted(set(labels)):
+        mask = np.array([lbl == g for lbl in labels])
+        ax.scatter(
+            coords[mask, 0],
+            coords[mask, 1],
+            s=80,
+            alpha=0.85,
+            color=group_colors.get(g, "#999999"),
+            edgecolors="white",
+            linewidths=0.5,
+            label=f"{g} (n={int(mask.sum())})",
+        )
+
+    ax.set_xlabel("UMAP-1")
+    ax.set_ylabel("UMAP-2")
+    ax.set_title(title)
+    ax.legend(loc="best", fontsize=10, framealpha=0.9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     return fig

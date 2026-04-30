@@ -1,9 +1,14 @@
 """
-Binary Classification Module for Proteomics Data
+Classification and Feature-Importance Module for Proteomics Data
 
-Provides tools for classifying subjects into binary groups (e.g., responder
-vs non-responder) based on protein expression profiles, with cross-validated
-performance metrics and PCA visualization.
+Provides:
+
+- Binary classification (logistic regression / RF / SVM / XGBoost) with
+  cross-validated performance metrics, ROC plotting, and per-fold
+  diagnostics. Designed for paired-fold-change designs.
+- Multi-class permutation-importance ranking with bootstrap stability
+  scoring, for descriptive feature discovery in low-replication designs
+  where per-protein hypothesis tests are underpowered.
 """
 
 import logging
@@ -709,3 +714,204 @@ def plot_roc_comparison(
     plt.show()
     plt.close(fig)
     return fig
+
+
+def multiclass_feature_importance(
+    data,
+    sample_columns,
+    sample_metadata,
+    group_column,
+    method="random_forest",
+    n_repeats=30,
+    n_estimators=500,
+    bootstrap_iters=200,
+    top_k_for_stability=50,
+    log_transform=True,
+    random_state=0,
+    annotation_columns=None,
+):
+    """Multi-class feature importance with bootstrap stability scoring.
+
+    Trains a multi-class classifier on protein abundances (samples as rows,
+    proteins as columns), then computes sklearn permutation importance for
+    each protein. Bootstrapping over samples (with replacement) gives a
+    stability score per protein: the fraction of bootstrap resamples in
+    which the protein lands in the top-K importance ranks.
+
+    Designed for descriptive marker discovery, *not* hypothesis testing.
+    Permutation importance with a tuned RF can reveal proteins that jointly
+    discriminate groups even when no single per-protein test would survive
+    multiple-testing correction. The bootstrap stability score is the
+    appropriate uncertainty metric in this setting (see Meinshausen &
+    Buhlmann 2010).
+
+    Args:
+        data: Wide protein DataFrame with annotation columns followed by
+            sample columns.
+        sample_columns: List of sample column names to include.
+        sample_metadata: Dict-of-dicts keyed by sample column name; each
+            value must contain ``group_column``.
+        group_column: Metadata field naming each sample's class label.
+        method: ``"random_forest"`` (default) or ``"xgboost"``.
+        n_repeats: Permutation-importance repeat count for each fit.
+        n_estimators: Trees per forest.
+        bootstrap_iters: Number of bootstrap resamples for the stability
+            score. Set to 0 to skip bootstrapping (returns NaN stability).
+        top_k_for_stability: A protein contributes to the stability score
+            on a given bootstrap if its importance rank that bootstrap is
+            <= top_k_for_stability.
+        log_transform: log2-transform abundance before fitting. Pass
+            False if the input is already log-transformed.
+        random_state: Seed for reproducibility.
+        annotation_columns: Optional list of annotation columns to carry
+            through. Defaults to the standard 5-column annotation set
+            plus skyline-prism leading_* columns.
+
+    Returns:
+        DataFrame with one row per protein, sorted by ``importance_mean``
+        descending. Columns: annotation columns, ``importance_mean``,
+        ``importance_std``, ``stability``. The OOB score (RF only) and
+        class labels are attached via ``df.attrs``.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.inspection import permutation_importance
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+    if method not in ("random_forest", "xgboost"):
+        raise ValueError(f"method must be 'random_forest' or 'xgboost'; got {method!r}")
+
+    labels = []
+    keep_cols = []
+    for col in sample_columns:
+        meta = sample_metadata.get(col)
+        if meta is None:
+            continue
+        val = meta.get(group_column)
+        if val is None or (isinstance(val, float) and np.isnan(val)) or val == "":
+            continue
+        labels.append(str(val))
+        keep_cols.append(col)
+    if len(keep_cols) < 6:
+        raise ValueError(
+            f"Need >=6 samples with non-empty {group_column!r}; got {len(keep_cols)}."
+        )
+    classes = sorted(set(labels))
+    if len(classes) < 2:
+        raise ValueError(f"Need >=2 distinct classes for {group_column!r}; got {len(classes)}.")
+
+    default_annot = (
+        "Protein", "Description", "Protein Gene", "UniProt_Accession", "UniProt_Entry_Name",
+        "leading_gene_name", "leading_uniprot_id", "leading_protein", "leading_name",
+        "leading_description", "protein_group",
+    )
+    sample_set = set(keep_cols)
+    if annotation_columns is not None:
+        annot_cols = [c for c in annotation_columns if c in data.columns and c not in sample_set]
+    else:
+        annot_cols = [c for c in default_annot if c in data.columns and c not in sample_set]
+
+    abundance = data[keep_cols].apply(pd.to_numeric, errors="coerce")
+    if log_transform:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            abundance = np.log2(abundance.where(abundance > 0))
+    abundance = abundance.dropna(axis=0, how="any")
+    if abundance.empty:
+        raise ValueError("No proteins remain after dropping rows with NaN values.")
+
+    X = abundance.to_numpy(dtype=float).T  # (n_samples, n_proteins)
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+
+    rng = np.random.default_rng(random_state)
+
+    def make_clf(seed):
+        if method == "random_forest":
+            return RandomForestClassifier(
+                n_estimators=n_estimators,
+                max_depth=None,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                random_state=int(seed),
+                n_jobs=-1,
+                oob_score=True,
+            )
+        from xgboost import XGBClassifier
+
+        return XGBClassifier(
+            n_estimators=n_estimators,
+            max_depth=4,
+            learning_rate=0.1,
+            random_state=int(seed),
+            eval_metric="mlogloss",
+        )
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    clf = make_clf(random_state)
+    clf.fit(X_scaled, y)
+    oob = float(getattr(clf, "oob_score_", float("nan"))) if method == "random_forest" else float("nan")
+
+    perm = permutation_importance(
+        clf, X_scaled, y, n_repeats=n_repeats, random_state=int(random_state), n_jobs=-1
+    )
+    importance_mean = perm.importances_mean
+    importance_std = perm.importances_std
+
+    n_features = X.shape[1]
+    if bootstrap_iters > 0:
+        in_top_count = np.zeros(n_features, dtype=int)
+        n_samples = X.shape[0]
+        completed = 0
+        max_attempts = bootstrap_iters * 3
+        for _ in range(max_attempts):
+            if completed >= bootstrap_iters:
+                break
+            seed_b = int(rng.integers(0, 2**31 - 1))
+            idx = rng.integers(0, n_samples, size=n_samples)
+            if len(np.unique(y[idx])) < 2:
+                continue
+            scaler_b = StandardScaler()
+            X_b = scaler_b.fit_transform(X[idx])
+            clf_b = make_clf(seed_b)
+            clf_b.fit(X_b, y[idx])
+            perm_b = permutation_importance(
+                clf_b, X_b, y[idx], n_repeats=max(5, n_repeats // 3),
+                random_state=seed_b, n_jobs=-1,
+            )
+            order_b = np.argsort(-perm_b.importances_mean, kind="stable")
+            top_b = order_b[:top_k_for_stability]
+            in_top_count[top_b] += 1
+            completed += 1
+        stability = in_top_count / float(max(completed, 1))
+    else:
+        stability = np.full(n_features, np.nan)
+
+    out = pd.DataFrame(
+        {
+            "importance_mean": importance_mean,
+            "importance_std": importance_std,
+            "stability": stability,
+        }
+    )
+    if annot_cols:
+        annot_df = data.loc[abundance.index, annot_cols].reset_index(drop=True)
+        out = pd.concat([annot_df, out], axis=1)
+    else:
+        out.insert(0, "Protein", [f"Protein_{i}" for i in abundance.index])
+
+    out = out.sort_values("importance_mean", ascending=False).reset_index(drop=True)
+    out.attrs["oob_score"] = oob
+    out.attrs["classes"] = list(le.classes_)
+    out.attrs["n_samples"] = int(X.shape[0])
+    out.attrs["n_features"] = int(n_features)
+
+    logger.info(
+        "multiclass_feature_importance: method=%s n_samples=%d n_features=%d classes=%s oob=%.3f",
+        method,
+        X.shape[0],
+        n_features,
+        list(le.classes_),
+        oob,
+    )
+    return out
+

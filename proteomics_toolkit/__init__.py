@@ -97,6 +97,8 @@ from . import (
     datasets,  # Bundled example datasets
     enrichment,  # Gene set enrichment analysis
     export,  # Results export and configuration management
+    marker_discovery,  # Descriptive marker-discovery metrics for low-n designs
+    multivariate,  # Multivariate variance partitioning (PERMANOVA)
     normalization,  # Normalization methods
     preprocessing,  # Data cleaning and quality assessment
     statistical_analysis,  # Statistical testing and modeling
@@ -105,7 +107,7 @@ from . import (
     visualization,  # Plotting and visualization
 )
 
-__version__ = "26.2.1"
+__version__ = "26.3.0"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================
@@ -115,6 +117,7 @@ __author__ = "Michael MacCoss Lab, University of Washington"
 # DATA LOADING - Essential functions for starting any analysis
 # CLASSIFICATION - Binary classification and fold-change PCA
 from .classification import (
+    multiclass_feature_importance,  # Multi-class RF/XGBoost permutation importance with bootstrap
     plot_fold_change_pca,  # PCA of per-subject fold-changes by group
     plot_roc_comparison,  # Overlay ROC curves from multiple methods
     plot_roc_curve,  # ROC curve from classification results
@@ -156,6 +159,13 @@ from .export import (
     export_results,  # General results export function
     export_significant_proteins_summary,  # Export summary of significant results
     export_timestamped_config,  # Export configuration with timestamp
+)
+from .marker_discovery import (
+    inter_vs_intra_group_variance,  # Variance ratio: var(group means) / mean(within-group var)
+    method_specificity_score,  # Per-(protein, group) descriptive marker score
+)
+from .multivariate import (
+    permanova,  # PERMANOVA on a metadata factor (Anderson 2001)
 )
 
 # NORMALIZATION - All normalization methods for reducing technical variation
@@ -230,8 +240,10 @@ from .visualization import (
     plot_missing_value_heatmap,  # QC plot: Missing-value pattern across samples x features
     plot_normalization_comparison,  # QC plot: Before/after normalization comparison
     plot_pca,  # QC plot: Principal component analysis
+    plot_pca_loadings,  # PCA loadings biplot with top-N protein labels
     plot_peptide_coverage_map,  # QC plot: Peptide positions along a protein sequence
     plot_protein_profile,  # Single protein profile plot
+    plot_umap,  # UMAP projection of samples colored by metadata group
     plot_variance_vs_intensity,  # Diagnostic for intensity_trend moderation prior
     plot_variance_vs_peptide_count,  # Diagnostic for DEqMS variance prior
     plot_volcano,  # Main results plot: Volcano plot for differential analysis
@@ -320,6 +332,8 @@ __all__ = [
     "plot_peptide_coverage_map",  # QC: peptide positions along a protein sequence
     "plot_variance_vs_peptide_count",  # Diagnostic for DEqMS variance prior
     "plot_variance_vs_intensity",  # Diagnostic for intensity_trend moderation prior
+    "plot_pca_loadings",  # PCA loadings biplot with top-N protein labels
+    "plot_umap",  # UMAP projection of samples colored by metadata group
     # TEMPORAL CLUSTERING - Longitudinal trend analysis
     "TemporalClusteringConfig",  # Configuration for temporal analysis
     "run_temporal_analysis",  # MAIN FUNCTION: Complete temporal analysis pipeline
@@ -343,10 +357,18 @@ __all__ = [
     "plot_enrichment_comparison",  # Compare enrichment across groups
     "get_available_libraries",  # List available Enrichr libraries
     "merge_enrichment_results",  # Merge multiple enrichment DataFrames
-    # CLASSIFICATION - Binary group discrimination
+    # CLASSIFICATION - Binary group discrimination and multi-class importance
     "run_binary_classification",  # LOO/k-fold CV binary classification
     "select_features_by_mad",  # Unsupervised feature ranking by MAD
     "plot_fold_change_pca",  # PCA of per-subject fold-changes by group
     "plot_roc_curve",  # ROC curve from classification results
     "plot_roc_comparison",  # Overlay ROC curves from multiple methods
+    "multiclass_feature_importance",  # Multi-class RF/XGBoost importance with bootstrap stability
+    # MARKER DISCOVERY - Descriptive ranking metrics for low-n designs
+    "marker_discovery",  # Module access
+    "method_specificity_score",  # Per-(protein, group) marker score
+    "inter_vs_intra_group_variance",  # Variance ratio for group discrimination
+    # MULTIVARIATE - Variance partitioning and ordination tests
+    "multivariate",  # Module access
+    "permanova",  # PERMANOVA on a metadata factor
 ]

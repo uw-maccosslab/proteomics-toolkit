@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proteomics-toolkit"
-version = "26.2.1"
+version = "26.3.0"
 description = "Proteomics analysis toolkit for mass spectrometry data"
 readme = "README.md"
 license = "Apache-2.0"
@@ -44,6 +44,9 @@ Issues = "https://github.com/uw-maccosslab/proteomics-toolkit/issues"
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+]
+umap = [
+    "umap-learn>=0.5",
 ]
 
 [tool.setuptools]
