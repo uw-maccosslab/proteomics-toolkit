@@ -2,13 +2,10 @@
 Descriptive Marker-Discovery Metrics
 ====================================
 
-Per-protein ranking metrics that summarize how strongly each protein
-distinguishes one group from the others. These metrics are descriptive
-effect sizes only; they do not produce p-values and are appropriate for
-small-n exploratory designs (e.g., a single replicate per group) where
-classical hypothesis testing is underpowered.
-
-Two complementary metrics are provided:
+Per-protein ranking and clustering helpers for marker discovery. The
+metrics here are descriptive effect sizes (no p-values) and are
+appropriate for small-n exploratory designs where classical hypothesis
+testing is underpowered.
 
 - ``method_specificity_score``: per (protein, group) pair, computes how
   much higher the group mean is than the next-best group, the ratio of
@@ -19,8 +16,12 @@ Two complementary metrics are provided:
   variance across group means to the mean within-group variance. High
   ratio = group-discriminating. Useful as an unsupervised sort when n
   per group is too small for ANOVA but exceeds 1.
+- ``cluster_proteins_kmeans``: k-means clustering of proteins over
+  samples, with optional silhouette-driven selection of k. Returns a
+  per-protein cluster assignment plus the silhouette curve so callers
+  can document the chosen k.
 
-Both functions accept the standard ``proteomics_toolkit`` data layout:
+All functions accept the standard ``proteomics_toolkit`` data layout:
 a wide protein DataFrame with annotation columns followed by sample
 columns, plus a dict-of-dicts ``sample_metadata`` keyed by sample
 column name.
@@ -345,3 +346,141 @@ def inter_vs_intra_group_variance(
         float(out["ratio"].iloc[0]) if len(out) and np.isfinite(out["ratio"].iloc[0]) else float("nan"),
     )
     return out
+
+
+def cluster_proteins_kmeans(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+    k: int | None = None,
+    k_range: tuple[int, int] = (2, 10),
+    log_transform: bool = True,
+    standardize: bool = True,
+    annotation_columns: list[str] | None = None,
+    random_state: int = 0,
+    n_init: int = 20,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """K-means clustering of proteins over samples, with silhouette-driven k selection.
+
+    Each protein is treated as a point in sample space (vector of length
+    ``len(sample_columns)``), so clustering groups proteins that follow
+    similar abundance patterns across samples. Useful for identifying
+    sets of proteins that vary together (e.g., proteins enriched by a
+    particular EV method).
+
+    If ``k`` is None, scans ``k_range`` and selects the value with the
+    highest mean silhouette score. The full silhouette curve is returned
+    so callers can record the choice.
+
+    Args:
+        data: Wide protein DataFrame with annotation columns followed
+            by sample columns. Proteins with any NaN across the requested
+            samples are dropped before clustering.
+        sample_columns: Sample column names to use as features.
+        k: Number of clusters. If None, selected via silhouette.
+        k_range: Inclusive (k_min, k_max) range to scan when ``k`` is
+            None. Each value of k must satisfy 2 <= k < n_proteins.
+        log_transform: log2-transform abundances before clustering.
+            Pass False if the input is already log-transformed.
+        standardize: Per-protein z-score (subtract the protein's own
+            mean, divide by its own std) before clustering. This is
+            standard for "shape" clustering, where proteins are grouped
+            by the *pattern* of variation across samples rather than by
+            absolute abundance. Set False to cluster by raw abundance
+            shape.
+        annotation_columns: Optional annotation columns to carry through
+            to the per-protein output. Defaults to standard annotation
+            columns present in the data.
+        random_state: Seed for KMeans initialization.
+        n_init: Number of KMeans random initializations.
+
+    Returns:
+        Tuple ``(assignments, silhouette_scan)``:
+
+        - ``assignments``: DataFrame with one row per non-NaN protein,
+          containing the requested annotation columns plus a ``cluster``
+          column (integer cluster id, 0-indexed) and a ``silhouette``
+          column (per-protein silhouette score for the chosen k).
+        - ``silhouette_scan``: DataFrame with columns ``k`` and
+          ``mean_silhouette``. If ``k`` was passed in explicitly, this
+          contains a single row.
+    """
+    if not sample_columns:
+        raise ValueError("sample_columns must be non-empty.")
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_samples, silhouette_score
+
+    abundance = data[sample_columns].apply(pd.to_numeric, errors="coerce")
+    if log_transform:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            abundance = np.log2(abundance.where(abundance > 0))
+    abundance = abundance.dropna(axis=0, how="any")
+    if abundance.empty:
+        raise ValueError(
+            "No proteins remain after dropping rows with NaN values. "
+            "Filter or impute before calling cluster_proteins_kmeans."
+        )
+
+    matrix = abundance.to_numpy(dtype=float)  # rows = proteins, cols = samples
+    if standardize:
+        # Per-protein z-score: cluster by shape, not by absolute level
+        means = matrix.mean(axis=1, keepdims=True)
+        stds = matrix.std(axis=1, ddof=0, keepdims=True)
+        stds = np.where(stds > 0, stds, 1.0)
+        matrix = (matrix - means) / stds
+
+    n_proteins = matrix.shape[0]
+    annot_cols = _resolve_annotation_columns(data, sample_columns, annotation_columns)
+
+    if k is None:
+        k_min, k_max = k_range
+        if k_min < 2:
+            raise ValueError("k_range[0] must be >= 2.")
+        if k_max >= n_proteins:
+            k_max = max(k_min, n_proteins - 1)
+        scan_rows = []
+        best_k = None
+        best_score = -np.inf
+        for k_candidate in range(k_min, k_max + 1):
+            km = KMeans(n_clusters=k_candidate, random_state=random_state, n_init=n_init)
+            labels_k = km.fit_predict(matrix)
+            score = silhouette_score(matrix, labels_k)
+            scan_rows.append({"k": k_candidate, "mean_silhouette": float(score)})
+            if score > best_score:
+                best_score = score
+                best_k = k_candidate
+        silhouette_scan = pd.DataFrame(scan_rows)
+        chosen_k = best_k
+        logger.info("cluster_proteins_kmeans: silhouette-selected k=%d (score=%.3f)", chosen_k, best_score)
+    else:
+        if k < 2 or k >= n_proteins:
+            raise ValueError(f"k must satisfy 2 <= k < n_proteins ({n_proteins}); got {k}.")
+        chosen_k = k
+        silhouette_scan = pd.DataFrame(columns=["k", "mean_silhouette"])
+
+    km = KMeans(n_clusters=chosen_k, random_state=random_state, n_init=n_init)
+    labels = km.fit_predict(matrix)
+    per_point_silhouette = silhouette_samples(matrix, labels)
+    if k is None:
+        silhouette_scan = silhouette_scan.assign(
+            chosen=lambda d: d["k"] == chosen_k,
+        )
+    else:
+        silhouette_scan = pd.DataFrame(
+            [{"k": chosen_k, "mean_silhouette": float(per_point_silhouette.mean()), "chosen": True}]
+        )
+
+    assignments = pd.DataFrame(
+        {
+            "cluster": labels.astype(int),
+            "silhouette": per_point_silhouette.astype(float),
+        },
+        index=abundance.index,
+    )
+    if annot_cols:
+        annot_df = data.loc[abundance.index, annot_cols].reset_index(drop=True)
+        assignments = pd.concat([annot_df, assignments.reset_index(drop=True)], axis=1)
+    else:
+        assignments = assignments.reset_index(drop=True)
+
+    return assignments, silhouette_scan
+

@@ -161,6 +161,7 @@ from .export import (
     export_timestamped_config,  # Export configuration with timestamp
 )
 from .marker_discovery import (
+    cluster_proteins_kmeans,  # K-means clustering of proteins with silhouette-driven k
     inter_vs_intra_group_variance,  # Variance ratio: var(group means) / mean(within-group var)
     method_specificity_score,  # Per-(protein, group) descriptive marker score
 )
@@ -368,6 +369,7 @@ __all__ = [
     "marker_discovery",  # Module access
     "method_specificity_score",  # Per-(protein, group) marker score
     "inter_vs_intra_group_variance",  # Variance ratio for group discrimination
+    "cluster_proteins_kmeans",  # K-means protein clustering with silhouette-selected k
     # MULTIVARIATE - Variance partitioning and ordination tests
     "multivariate",  # Module access
     "permanova",  # PERMANOVA on a metadata factor

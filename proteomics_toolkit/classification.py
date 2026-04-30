@@ -851,8 +851,11 @@ def multiclass_feature_importance(
     clf.fit(X_scaled, y)
     oob = float(getattr(clf, "oob_score_", float("nan"))) if method == "random_forest" else float("nan")
 
+    # Use n_jobs=1 for permutation_importance to avoid memory blowup: with -1
+    # each worker copies the full (n_samples, n_features) matrix, which OOM-kills
+    # at large feature counts on small machines.
     perm = permutation_importance(
-        clf, X_scaled, y, n_repeats=n_repeats, random_state=int(random_state), n_jobs=-1
+        clf, X_scaled, y, n_repeats=n_repeats, random_state=int(random_state), n_jobs=1
     )
     importance_mean = perm.importances_mean
     importance_std = perm.importances_std
@@ -876,7 +879,7 @@ def multiclass_feature_importance(
             clf_b.fit(X_b, y[idx])
             perm_b = permutation_importance(
                 clf_b, X_b, y[idx], n_repeats=max(5, n_repeats // 3),
-                random_state=seed_b, n_jobs=-1,
+                random_state=seed_b, n_jobs=1,
             )
             order_b = np.argsort(-perm_b.importances_mean, kind="stable")
             top_b = order_b[:top_k_for_stability]
