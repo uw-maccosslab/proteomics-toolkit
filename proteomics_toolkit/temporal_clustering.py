@@ -106,7 +106,7 @@ class TemporalClusteringConfig:
     linewidth: float = 2.0
     alpha: float = 0.4
     cmap: str = "RdBu_r"
-    max_proteins_per_cluster_heatmap: int = 30  # Limit proteins shown per cluster
+    max_proteins_per_cluster_heatmap: Optional[int] = None  # None = show all proteins per cluster
 
     # Cluster colors
     cluster_colors: Dict[int, str] = field(
@@ -983,7 +983,7 @@ def plot_cluster_heatmap(
     title: str = "Temporal Protein Expression by Cluster",
     config: Optional[TemporalClusteringConfig] = None,
     show_genes: bool = True,
-    max_proteins_per_cluster: int = 50,
+    max_proteins_per_cluster: Optional[int] = None,
 ) -> Figure:
     """
     Create a heatmap of protein expression organized by cluster.
@@ -1002,8 +1002,10 @@ def plot_cluster_heatmap(
         Configuration object
     show_genes : bool
         Whether to show gene names on y-axis
-    max_proteins_per_cluster : int
-        Maximum proteins to show per cluster
+    max_proteins_per_cluster : int or None, optional
+        Maximum proteins to display per cluster. ``None`` (the default)
+        shows every protein. Cluster-size labels always reflect the TRUE
+        cluster size, regardless of any per-cluster row cap applied here.
 
     Returns
     -------
@@ -1020,6 +1022,11 @@ def plot_cluster_heatmap(
     X_stds[X_stds == 0] = 1
     X_z = (X - X_means) / X_stds
 
+    # Record TRUE cluster sizes from the full DataFrame, BEFORE any truncation.
+    # The label on each cluster band should reflect the real cluster size, not
+    # how many rows we happen to be rendering.
+    true_cluster_sizes = merged_df.groupby(cluster_column, sort=False).size().to_dict()
+
     # Sort by cluster, then by p-value (most significant first)
     sorted_df = merged_df.copy()
     sorted_df["_z_data"] = list(X_z)
@@ -1035,12 +1042,14 @@ def plot_cluster_heatmap(
 
     sorted_df = sorted_df.sort_values(sort_cols, ascending=ascending)
 
-    # Limit proteins per cluster
-    limited_dfs = []
-    for cluster in sorted_df[cluster_column].unique():
-        cluster_subset = sorted_df[sorted_df[cluster_column] == cluster].head(max_proteins_per_cluster)
-        limited_dfs.append(cluster_subset)
-    sorted_df = pd.concat(limited_dfs)
+    # Optionally truncate proteins per cluster for display height; if
+    # ``max_proteins_per_cluster`` is None we keep every row.
+    if max_proteins_per_cluster is not None:
+        limited_dfs = []
+        for cluster in sorted_df[cluster_column].unique():
+            cluster_subset = sorted_df[sorted_df[cluster_column] == cluster].head(max_proteins_per_cluster)
+            limited_dfs.append(cluster_subset)
+        sorted_df = pd.concat(limited_dfs)
 
     # Create heatmap data
     heatmap_data = np.vstack(sorted_df["_z_data"].values)
@@ -1051,16 +1060,20 @@ def plot_cluster_heatmap(
     # Gene labels
     gene_labels = sorted_df["Gene"].tolist() if show_genes else None
 
-    # Create figure with better layout for colorbar
-    # Limit height to be more readable (max ~15 inches)
-    fig_height = min(12, max(6, len(sorted_df) * 0.12))
+    # Create figure with better layout for colorbar.
+    # Scale height with the number of rendered rows so individual cluster
+    # bands stay visually distinct (each row ~0.025"; this gives 8" minimum
+    # and avoids the visual blur of compressing 500+ rows into 12 inches).
+    fig_height = max(8.0, min(24.0, len(sorted_df) * 0.025 + 3.0))
     fig, ax = plt.subplots(figsize=(12, fig_height))
 
     # Leave space on right for cluster labels and colorbar
     plt.subplots_adjust(right=0.75, left=0.15)
 
-    # Plot heatmap
-    im = ax.imshow(heatmap_data, aspect="auto", cmap=config.cmap, vmin=-2, vmax=2)
+    # Plot heatmap. Force ``interpolation="nearest"`` so dense heatmaps don't
+    # blur adjacent rows together; the toolkit relies on the row banding to
+    # delineate cluster boundaries, which nearest-neighbor preserves.
+    im = ax.imshow(heatmap_data, aspect="auto", cmap=config.cmap, vmin=-2, vmax=2, interpolation="nearest")
 
     # Labels
     ax.set_xticks(range(len(week_labels)))
@@ -1071,24 +1084,27 @@ def plot_cluster_heatmap(
         ax.set_yticks(range(len(gene_labels)))
         ax.set_yticklabels(gene_labels, fontsize=8)
     else:
-        ax.set_ylabel(f"Proteins (n={len(sorted_df)})", fontsize=12)
+        ax.set_ylabel(f"Proteins (n={len(merged_df)})", fontsize=12)
         ax.set_yticks([])
 
     # Add cluster separators
     cluster_bounds = []
     current_idx = 0
     for cluster in sorted_df[cluster_column].unique():
-        n_in_cluster = (sorted_df[cluster_column] == cluster).sum()
-        cluster_bounds.append((current_idx, cluster, n_in_cluster))
+        # Count rows in the truncated display so the separators line up
+        displayed_in_cluster = (sorted_df[cluster_column] == cluster).sum()
+        # but label with the TRUE size from the full input.
+        true_size = int(true_cluster_sizes.get(cluster, displayed_in_cluster))
+        cluster_bounds.append((current_idx, cluster, true_size, displayed_in_cluster))
         if current_idx > 0:
             ax.axhline(y=current_idx - 0.5, color="white", linewidth=2)
-        current_idx += n_in_cluster
+        current_idx += displayed_in_cluster
 
-    # Add cluster labels on right side
+    # Add cluster labels on right side -- always use the true cluster size.
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
-    cluster_mids = [start + n / 2 for start, _, n in cluster_bounds]
-    cluster_labels_text = [f"{name}\n(n={n})" for _, name, n in cluster_bounds]
+    cluster_mids = [start + displayed / 2 for start, _, _, displayed in cluster_bounds]
+    cluster_labels_text = [f"{name}\n(n={true_n})" for _, name, true_n, _ in cluster_bounds]
     ax2.set_yticks(cluster_mids)
     ax2.set_yticklabels(cluster_labels_text, fontsize=10, fontweight="bold")
 
@@ -1516,6 +1532,7 @@ def run_temporal_analysis(
             week_columns,
             title=f"{treatment_name}: Significant Proteins by Cluster ({pval_label}<{config.p_value_threshold})",
             config=config,
+            max_proteins_per_cluster=getattr(config, "max_proteins_per_cluster_heatmap", None),
         )
         results["fig_heatmap"] = fig_heatmap
 
