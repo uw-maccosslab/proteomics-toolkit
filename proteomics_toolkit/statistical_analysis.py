@@ -259,7 +259,7 @@ class StatisticalConfig:
         elif self.analysis_type == "paired":
             if not self.group_column or not self.group_labels:
                 raise ValueError("paired analysis requires group_column and group_labels")
-            if not self.paired_label1 or not self.paired_label2:
+            if self.paired_label1 is None or self.paired_label2 is None:
                 raise ValueError("paired analysis requires paired_label1 and paired_label2")
             if self.statistical_test_method == "mixed_effects" and not self.subject_column:
                 raise ValueError("Mixed-effects paired analysis requires subject_column")
@@ -1148,18 +1148,17 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         ``d0``      - global prior degrees of freedom (scalar)
     """
     analysis_type = config.analysis_type
-    if analysis_type not in ("unpaired", "paired"):
+    if analysis_type not in ("unpaired", "paired", "linear_trend"):
         raise ValueError(
             f"moderated_linear_model currently supports analysis_type in "
-            f"('unpaired', 'paired'); got {analysis_type!r}."
+            f"('unpaired', 'paired', 'linear_trend'); got {analysis_type!r}."
         )
 
     # Identify samples that are in both the feature matrix and the metadata
     sample_cols = [c for c in feature_data.columns if c in set(metadata_df["Sample"])]
     if len(sample_cols) < 4:
         raise ValueError(
-            f"Need at least 4 samples present in both feature_data and metadata_df; "
-            f"found {len(sample_cols)}."
+            f"Need at least 4 samples present in both feature_data and metadata_df; found {len(sample_cols)}."
         )
 
     # Order metadata to match feature_data column order
@@ -1177,29 +1176,24 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         meta = meta.loc[keep]
         sample_cols = meta.index.tolist()
         if len(sample_cols) < 4:
-            raise ValueError(
-                f"After restricting to groups {group_labels[:2]}, only {len(sample_cols)} samples remain."
-            )
+            raise ValueError(f"After restricting to groups {group_labels[:2]}, only {len(sample_cols)} samples remain.")
         # Design: intercept + treatment indicator (1 if group == group_labels[1])
         treat = (meta[group_col].astype(str) == str(group_labels[1])).astype(float).values
         X = np.column_stack([np.ones_like(treat), treat])
         contrast = np.array([0.0, 1.0])
 
-    else:  # paired
+    elif analysis_type == "paired":
         subj_col = config.subject_column
         paired_col = config.paired_column
-        if not (subj_col and paired_col and config.paired_label1 and config.paired_label2):
+        if not subj_col or not paired_col or config.paired_label1 is None or config.paired_label2 is None:
             raise ValueError(
-                "paired moderated_linear_model requires subject_column, paired_column, "
-                "paired_label1, and paired_label2"
+                "paired moderated_linear_model requires subject_column, paired_column, paired_label1, and paired_label2"
             )
         keep = meta[paired_col].astype(str).isin([str(config.paired_label1), str(config.paired_label2)])
         meta = meta.loc[keep]
         sample_cols = meta.index.tolist()
         if len(sample_cols) < 4:
-            raise ValueError(
-                f"After restricting to paired labels, only {len(sample_cols)} samples remain."
-            )
+            raise ValueError(f"After restricting to paired labels, only {len(sample_cols)} samples remain.")
         # Design: treatment indicator + subject factors (block)
         treat = (meta[paired_col].astype(str) == str(config.paired_label2)).astype(float).values
         subjects = meta[subj_col].astype(str).values
@@ -1211,6 +1205,50 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         X = np.column_stack([np.ones_like(treat), treat, subj_mat])
         contrast = np.zeros(X.shape[1])
         contrast[1] = 1.0
+
+    else:  # linear_trend
+        time_col = config.time_column or config.dose_column
+        if not time_col:
+            raise ValueError(
+                "linear_trend moderated_linear_model requires config.time_column (or legacy config.dose_column)"
+            )
+        if time_col not in meta.columns:
+            raise ValueError(f"time_column {time_col!r} not present in metadata columns")
+        # Coerce to numeric; refuse if any sample has a missing/non-numeric time value.
+        try:
+            time_vec = pd.to_numeric(meta[time_col], errors="raise").to_numpy(dtype=float)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"linear_trend requires numeric values in time_column {time_col!r}; failed to coerce: {e}"
+            ) from e
+        if not np.all(np.isfinite(time_vec)):
+            raise ValueError(
+                f"linear_trend requires every sample to have a finite numeric {time_col!r} value; found NaN/inf"
+            )
+        if len(np.unique(time_vec)) < 2:
+            raise ValueError(
+                f"linear_trend requires at least 2 unique values in {time_col!r}; found {len(np.unique(time_vec))}"
+            )
+        # Optional subject one-hot block for repeated-measures designs.
+        subj_col = config.subject_column
+        if subj_col and subj_col in meta.columns:
+            subjects = meta[subj_col].astype(str).values
+            unique_subjects = sorted(set(subjects))
+            # k - 1 columns; first subject absorbed into the intercept.
+            subj_mat = np.zeros((len(subjects), max(len(unique_subjects) - 1, 0)))
+            for j, s in enumerate(unique_subjects[1:]):
+                subj_mat[:, j] = (subjects == s).astype(float)
+            X = np.column_stack([np.ones_like(time_vec), time_vec, subj_mat])
+        else:
+            X = np.column_stack([np.ones_like(time_vec), time_vec])
+        # Need enough samples to fit the design plus leave residual df > 0.
+        if X.shape[0] < X.shape[1] + 2:
+            raise ValueError(
+                f"linear_trend needs at least {X.shape[1] + 2} samples for the "
+                f"design [{X.shape[1]} cols] + residual df; got {X.shape[0]}."
+            )
+        contrast = np.zeros(X.shape[1])
+        contrast[1] = 1.0  # test the slope coefficient
 
     # Subset feature_data to the design-matrix samples
     Y_all = feature_data[sample_cols]
@@ -1257,9 +1295,7 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         raise ValueError("Not enough features with valid residual variances to fit empirical Bayes prior.")
 
     robust = bool(getattr(config, "robust", False))
-    s0_sq, d0 = _fit_limma_prior(
-        s2_out[valid], df_out[valid], robust=robust
-    )
+    s0_sq, d0 = _fit_limma_prior(s2_out[valid], df_out[valid], robust=robust)
 
     return {
         "features": features,
@@ -1442,10 +1478,10 @@ def _per_feature_group_stats(feature_data, metadata_df, config):
     view passed to the moderated-t fit).
     """
     analysis_type = config.analysis_type
-    if analysis_type not in ("unpaired", "paired"):
+    if analysis_type not in ("unpaired", "paired", "linear_trend"):
         raise ValueError(
             "intensity_trend moderation requires analysis_type in "
-            f"('unpaired', 'paired'); got {analysis_type!r}."
+            f"('unpaired', 'paired', 'linear_trend'); got {analysis_type!r}."
         )
 
     sample_cols = [c for c in feature_data.columns if c in set(metadata_df["Sample"])]
@@ -1458,13 +1494,22 @@ def _per_feature_group_stats(feature_data, metadata_df, config):
         meta = meta.loc[keep]
         sample_cols = meta.index.tolist()
         group_labels_by_sample = meta[group_col].astype(str).tolist()
-    else:  # paired
+    elif analysis_type == "paired":
         paired_col = config.paired_column
         labels = [str(config.paired_label1), str(config.paired_label2)]
         keep = meta[paired_col].astype(str).isin(labels)
         meta = meta.loc[keep]
         sample_cols = meta.index.tolist()
         group_labels_by_sample = meta[paired_col].astype(str).tolist()
+    else:  # linear_trend: one "group" per unique time value
+        time_col = config.time_column or config.dose_column
+        # Validation was already done by `_fit_moderated_t`; defensive check here too.
+        if not time_col or time_col not in meta.columns:
+            raise ValueError(
+                "linear_trend intensity_trend prior requires a time_column "
+                "(or legacy dose_column) present in the metadata."
+            )
+        group_labels_by_sample = meta[time_col].astype(str).tolist()
 
     feature_ids = list(feature_data.index)
     rows = []
@@ -1546,14 +1591,10 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
     # in `_apply_log_transformation_if_needed`. We convert to the same base
     # by dividing by (ln base)^2.
     log_base = str(getattr(config, "log_base", "log2")).lower()
-    base_factor = {"log2": np.log(2.0) ** 2, "log10": np.log(10.0) ** 2, "ln": 1.0}.get(
-        log_base, np.log(2.0) ** 2
-    )
+    base_factor = {"log2": np.log(2.0) ** 2, "log10": np.log(10.0) ** 2, "ln": 1.0}.get(log_base, np.log(2.0) ** 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         predicted_var_logspace = (
-            fg["predicted_variance_raw"].to_numpy()
-            / (fg["mean_intensity"].to_numpy() ** 2)
-            / base_factor
+            fg["predicted_variance_raw"].to_numpy() / (fg["mean_intensity"].to_numpy() ** 2) / base_factor
         )
     fg["predicted_variance_logspace"] = predicted_var_logspace
 
@@ -1562,9 +1603,7 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
     n_features = len(fit["features"])
     s0_sq = np.full(n_features, np.nan)
     for feat_idx, grp in fg.groupby("feature_idx", sort=False):
-        finite = np.isfinite(grp["predicted_variance_logspace"].to_numpy()) & (
-            grp["n_samples"].to_numpy() > 0
-        )
+        finite = np.isfinite(grp["predicted_variance_logspace"].to_numpy()) & (grp["n_samples"].to_numpy() > 0)
         if finite.sum() == 0:
             continue
         w = grp["n_samples"].to_numpy()[finite].astype(float)
@@ -1598,6 +1637,19 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     handful of genuinely high-variance features don't inflate the prior
     and blunt every test.
 
+    Linear-trend mode
+    ~~~~~~~~~~~~~~~~~
+    Set ``config.analysis_type='linear_trend'`` with
+    ``config.time_column`` (numeric) and optional
+    ``config.subject_column`` to fit
+    ``feature ~ intercept + time + (optional subject one-hot block)``
+    per feature, and test the slope coefficient with the chosen
+    variance moderation. ``logFC`` in the output is the slope per
+    unit time (so values are small; use a small ``fc_threshold`` in
+    volcano plots). When ``moderation='intensity_trend'``, every
+    unique value of ``time_column`` contributes an anchor point per
+    feature to the LOWESS variance trend.
+
     Parameters
     ----------
     feature_data : pd.DataFrame
@@ -1609,11 +1661,14 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         by preserving a raw-scale copy before applying any log transform).
     metadata_df : pd.DataFrame
         Must contain a ``Sample`` column matching ``feature_data``
-        columns and the group/paired columns referenced by ``config``.
+        columns and the group/paired/time columns referenced by ``config``.
     config : StatisticalConfig
-        ``analysis_type`` must be ``"unpaired"`` or ``"paired"``. Reads
-        ``config.moderation``, ``config.robust``,
-        ``config.peptide_count_column``, and the intensity-trend settings.
+        ``analysis_type`` must be ``"unpaired"``, ``"paired"``, or
+        ``"linear_trend"``. Reads ``config.moderation``,
+        ``config.robust``, ``config.peptide_count_column``, and the
+        intensity-trend settings. ``"linear_trend"`` additionally
+        requires ``config.time_column`` and (optionally for
+        repeated-measures) ``config.subject_column``.
 
     Returns
     -------
@@ -1635,9 +1690,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     moderation = str(getattr(config, "moderation", "intensity_trend")).lower()
     valid_modes = {"limma", "deqms", "intensity_trend"}
     if moderation not in valid_modes:
-        raise ValueError(
-            f"config.moderation must be one of {sorted(valid_modes)}; got {moderation!r}."
-        )
+        raise ValueError(f"config.moderation must be one of {sorted(valid_modes)}; got {moderation!r}.")
 
     if moderation == "deqms":
         count_col = getattr(config, "peptide_count_column", "n_peptides")
@@ -1663,14 +1716,9 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
 
     if moderation == "intensity_trend":
         raw_data = _raw_feature_data_for_fit(feature_data, config)
-        print(
-            f"Running moderated linear model (moderation='intensity_trend', "
-            f"robust={bool(config.robust)})..."
-        )
+        print(f"Running moderated linear model (moderation='intensity_trend', robust={bool(config.robust)})...")
         fit = _fit_moderated_t(feature_data, metadata_df, config)
-        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(
-            fit, raw_data, metadata_df, config
-        )
+        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(fit, raw_data, metadata_df, config)
         df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
         # Summary intensity per feature: mean of per-group means (raw scale).
         per_feature_intensity = (
@@ -1695,10 +1743,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     fit = _fit_moderated_t(feature_data, metadata_df, config)
     s0_sq = np.full(len(fit["features"]), fit["s0_sq"])
     df = _moderated_results_df(fit, s0_sq, fit["d0"], config)
-    print(
-        f"Done: limma-mode moderated t completed for {len(df)} features; "
-        f"d0={fit['d0']:.3g}, s0^2={fit['s0_sq']:.3g}"
-    )
+    print(f"Done: limma-mode moderated t completed for {len(df)} features; d0={fit['d0']:.3g}, s0^2={fit['s0_sq']:.3g}")
     return df
 
 

@@ -203,25 +203,52 @@ Output DataFrames include extra columns: `residual_s2`, `residual_df`,
 DataFrame on `results.attrs["intensity_trend_points"]`, accessible via
 `ptk.get_intensity_trend_points(results)`.
 
-### Migration from `limma_like` / `deqms_like`
+### Linear-trend mode (moderated slope test)
 
-The previous `run_limma_like_analysis` / `run_deqms_like_analysis`
-functions and the `statistical_test_method` string values `"limma_like"`
-/ `"deqms_like"` have been **removed**. Migrate as follows:
+**Use case:** Longitudinal designs with three or more timepoints where
+a 2-group paired comparison wastes data, but the categorical F-test
+(`mixed_effects` + `longitudinal`) is over-conservative with many
+timepoints. Fits a 1-df slope test per protein with the same limma /
+deqms / intensity_trend variance moderation.
+
+The design is `feature ~ intercept + Time + (optional subject one-hot block)`.
+`logFC` in the output is the slope **per unit time**, so use a small
+`fc_threshold` in volcano plots. When `moderation='intensity_trend'`,
+every unique value of `time_column` contributes an anchor point per
+feature to the LOWESS trend — five timepoints give 5× the leverage of
+a 2-group paired fit.
 
 ```python
-# Before
-config.statistical_test_method = 'limma_like'
-# After
+config = ptk.StatisticalConfig()
 config.statistical_test_method = 'moderated_linear_model'
-config.moderation = 'limma'
+config.analysis_type           = 'linear_trend'
+config.moderation              = 'intensity_trend'    # default; or 'limma' / 'deqms'
 
-# Before
-config.statistical_test_method = 'deqms_like'
-# After
-config.statistical_test_method = 'moderated_linear_model'
-config.moderation = 'deqms'
+config.time_column    = 'Week'        # numeric column in metadata
+config.subject_column = 'Subject'     # optional; enables limma-style
+                                      # within-subject fixed-effect block
+                                      # for repeated-measures designs
+
+config.log_transform_before_stats = 'auto'
+config.validate()
+
+results = ptk.run_comprehensive_statistical_analysis(
+    data, sample_meta_dict, config, protein_annotations=annot,
+)
+
+# Volcano with a slope-appropriate FC threshold
+ptk.plot_volcano(results, fc_threshold=0.01, p_threshold=0.05, label_top_n=15)
+
+# Intensity-trend diagnostic shows one point per (feature, unique time value)
+ptk.plot_variance_vs_intensity(results)
 ```
+
+When to pick this over the mixed-effects `linear_trend` route (below):
+the moderated path replaces REML inference with limma's empirical-Bayes
+variance shrinkage, which is the dominant power gain on small-n MS data
+when the variance prior is the bottleneck. The mixed-effects route is
+preferable when subject variance is the primary nuisance of interest
+or when the slope structure is more complex than a fixed effect.
 
 ## Mixed-effects model (repeated measures)
 

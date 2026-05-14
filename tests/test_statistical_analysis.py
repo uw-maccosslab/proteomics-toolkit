@@ -127,6 +127,19 @@ class TestStatisticalConfig:
         with pytest.raises(ValueError, match="time_column"):
             config.validate()
 
+    def test_validate_paired_accepts_zero_label(self):
+        # Regression: a paired_label of 0 (e.g. "Week 0" stored as int) used
+        # to be rejected because the validator checked truthiness instead of
+        # `is None`.
+        config = StatisticalConfig()
+        config.analysis_type = "paired"
+        config.statistical_test_method = "paired_t"  # avoid mixed_effects subject requirement
+        config.group_column = "Week"
+        config.group_labels = [0, 12]
+        config.paired_label1 = 0
+        config.paired_label2 = 12
+        assert config.validate() is True
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_formula_term
@@ -479,6 +492,194 @@ class TestModeratedLinearModelIntensityTrend:
         assert top10 == expected
 
 
+def _make_linear_trend_fixture(
+    n_features=200,
+    n_planted=20,
+    timepoints=(0.0, 2.0, 4.0, 6.0, 12.0),
+    n_subjects=10,
+    slope=0.05,
+    subject_sigma=0.4,
+    noise_sigma=0.3,
+    seed=11,
+):
+    """Build a longitudinal fixture for moderated linear-trend tests.
+
+    Generates ``n_subjects`` × len(timepoints) samples. The first
+    ``n_planted`` features get a real slope of ``slope`` per unit time
+    plus a per-subject random intercept; remaining features are pure
+    noise plus the same subject intercepts.
+
+    Returns
+    -------
+    feature_data_raw : pd.DataFrame
+        Raw (linear-scale) feature intensities. Suitable for the
+        intensity_trend moderation path which expects raw values.
+    feature_data_log : pd.DataFrame
+        Log2 of feature_data_raw. Used directly with
+        ``config.log_transform_before_stats = False`` for limma/deqms
+        moderation tests.
+    metadata_df : pd.DataFrame
+        Long-format metadata with Sample / Subject / Week columns.
+    config : StatisticalConfig
+        Pre-populated for linear_trend with subject blocking.
+    planted_features : list[str]
+        IDs of the features with a planted slope.
+    """
+    rng = np.random.default_rng(seed)
+    n_t = len(timepoints)
+    n_samples = n_subjects * n_t
+
+    samples = [f"S{s:02d}_W{int(t)}" for s in range(n_subjects) for t in timepoints]
+    weeks = np.array([t for _ in range(n_subjects) for t in timepoints], dtype=float)
+    subjects = [f"S{s:02d}" for s in range(n_subjects) for _ in timepoints]
+
+    # Subject random intercepts shared across all features (mean expression centred at 10).
+    subj_intercepts = rng.normal(0.0, subject_sigma, size=n_subjects)
+    subj_intercept_per_sample = np.array([subj_intercepts[s] for s in range(n_subjects) for _ in timepoints])
+
+    # Log-space feature matrix
+    log_values = rng.normal(loc=10.0, scale=noise_sigma, size=(n_features, n_samples))
+    log_values += subj_intercept_per_sample[np.newaxis, :]
+    log_values[:n_planted, :] += slope * weeks[np.newaxis, :]
+
+    features = [f"P{i:04d}" for i in range(n_features)]
+    feature_data_log = pd.DataFrame(log_values, index=features, columns=samples)
+    # Raw scale (intensity_trend expects raw / pre-log).
+    feature_data_raw = pd.DataFrame(np.exp(log_values * np.log(2.0)), index=features, columns=samples)
+
+    metadata_df = pd.DataFrame({"Sample": samples, "Subject": subjects, "Week": weeks})
+
+    config = StatisticalConfig()
+    config.analysis_type = "linear_trend"
+    config.statistical_test_method = "moderated_linear_model"
+    config.time_column = "Week"
+    config.subject_column = "Subject"
+    config.log_transform_before_stats = False
+    config.moderation = "intensity_trend"
+
+    planted_features = features[:n_planted]
+    return feature_data_log, feature_data_raw, metadata_df, config, planted_features
+
+
+class TestModeratedLinearTrend:
+    """Tests for moderated linear-trend (slope) analysis.
+
+    Direct callers of ``run_moderated_linear_model`` bypass the dispatcher's
+    log-transform + raw-data stash. We pass log-space data as feature_data
+    so the slope is on the natural ``log2/week`` scale, and stash a raw
+    view on ``config._raw_feature_data`` for the intensity_trend prior.
+    """
+
+    def test_returns_standard_schema_linear_trend(self):
+        log_data, raw, meta, config, _ = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        result = run_moderated_linear_model(log_data, meta, config)
+        for col in (
+            "Protein",
+            "logFC",
+            "AveExpr",
+            "t",
+            "P.Value",
+            "residual_s2",
+            "posterior_s2",
+            "residual_df",
+            "posterior_df",
+            "limma_s0_sq",
+            "test_method",
+            "intensity_s0_sq",
+            "intensity_used",
+        ):
+            assert col in result.columns, f"missing column {col!r}"
+
+    def test_recovers_planted_slope(self):
+        log_data, raw, meta, config, planted = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        result = run_moderated_linear_model(log_data, meta, config)
+        planted_set = set(planted)
+        # Slope is in log2 units per week. logFC for planted features should
+        # be near the planted slope (0.05). Null features should sit near 0.
+        planted_logfc = result.loc[result["Protein"].isin(planted_set), "logFC"]
+        null_logfc = result.loc[~result["Protein"].isin(planted_set), "logFC"]
+        assert abs(planted_logfc.median() - 0.05) < 0.02
+        assert abs(null_logfc.median()) < 0.01
+
+    def test_ranks_differential_features_first(self):
+        log_data, raw, meta, config, planted = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        result = run_moderated_linear_model(log_data, meta, config)
+        top20 = set(result.sort_values("P.Value").head(20)["Protein"])
+        # All 20 planted features should rank in the top 20 by P.Value with
+        # this much signal vs noise; require at least 15 to remain robust
+        # against the LOWESS prior occasionally upweighting borderline nulls.
+        assert len(top20 & set(planted)) >= 15
+
+    def test_intensity_trend_points_one_row_per_feature_per_time(self):
+        log_data, raw, meta, config, _ = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        result = run_moderated_linear_model(log_data, meta, config)
+        pts = result.attrs.get("intensity_trend_points")
+        assert pts is not None
+        # 5 unique weeks in the fixture
+        assert pts["group"].nunique() == 5
+        # 200 features x 5 groups = 1000 rows
+        assert len(pts) == 200 * 5
+
+    def test_subject_blocking_changes_posterior_df(self):
+        log_data, _, meta, config, _ = _make_linear_trend_fixture()
+        config.moderation = "limma"  # design check; not testing variance prior here
+        # With subject blocking
+        config.subject_column = "Subject"
+        with_subj = run_moderated_linear_model(log_data, meta, config)
+        # Without subject blocking
+        config.subject_column = None
+        no_subj = run_moderated_linear_model(log_data, meta, config)
+        # With 10 subjects in the design, residual_df shrinks by ~9 when
+        # subject is included as a fixed-effect block.
+        assert with_subj["residual_df"].median() < no_subj["residual_df"].median()
+        diff = no_subj["residual_df"].median() - with_subj["residual_df"].median()
+        assert 8 <= diff <= 10  # n_subjects - 1 = 9
+
+    def test_all_three_moderation_modes_run(self):
+        for moderation in ("limma", "deqms", "intensity_trend"):
+            log_data, raw, meta, config, _ = _make_linear_trend_fixture()
+            config.moderation = moderation
+            if moderation == "deqms":
+                # Attach a peptide-count column for deqms moderation.
+                log_data = log_data.copy()
+                log_data["n_peptides"] = np.random.default_rng(1).integers(1, 20, size=len(log_data))
+                result = run_moderated_linear_model(log_data, meta, config)
+                assert "deqms_s0_sq" in result.columns
+                assert "peptide_count_used" in result.columns
+            elif moderation == "intensity_trend":
+                config._raw_feature_data = raw
+                result = run_moderated_linear_model(log_data, meta, config)
+                assert "intensity_s0_sq" in result.columns
+                assert "intensity_used" in result.columns
+            else:  # limma
+                result = run_moderated_linear_model(log_data, meta, config)
+                assert "limma_s0_sq" in result.columns
+            # Common columns across all moderation modes:
+            for col in ("Protein", "logFC", "P.Value", "posterior_s2", "test_method"):
+                assert col in result.columns
+
+    def test_requires_time_column(self):
+        log_data, raw, meta, config, _ = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        config.time_column = None
+        config.dose_column = None
+        with pytest.raises(ValueError, match="time_column"):
+            run_moderated_linear_model(log_data, meta, config)
+
+    def test_requires_at_least_two_unique_times(self):
+        log_data, raw, meta, config, _ = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        # Collapse all timepoints to a single value
+        meta = meta.copy()
+        meta["Week"] = 0.0
+        with pytest.raises(ValueError, match="unique"):
+            run_moderated_linear_model(log_data, meta, config)
+
+
 class TestModerationOptionValidation:
     def test_invalid_moderation_raises(self):
         feature_data, metadata_df, config = _make_limma_fixture()
@@ -506,7 +707,6 @@ class TestLimmaPriorRobust:
         # Outliers inflate e_var under plain fit, so d0_plain is pulled
         # low. Robust fit should give a larger d0 (stronger prior).
         assert d0_robust > d0_plain
-
 
 
 class TestMixedEffectsProteinNameLookup:
@@ -553,16 +753,13 @@ class TestMixedEffectsProteinNameLookup:
         config.correction_method = "fdr_bh"
 
         sample_metadata = {
-            row["Sample"]: {k: row[k] for k in ("BRI Subject ID", "Week")}
-            for _, row in metadata_df.iterrows()
+            row["Sample"]: {k: row[k] for k in ("BRI Subject ID", "Week")} for _, row in metadata_df.iterrows()
         }
 
         return normalized_data, sample_metadata, config, annotations, proteins
 
     def test_dose_response_with_annotations_does_not_keyerror(self):
-        normalized_data, sample_metadata, config, annotations, expected_proteins = (
-            self._make_longitudinal_fixture()
-        )
+        normalized_data, sample_metadata, config, annotations, expected_proteins = self._make_longitudinal_fixture()
 
         results = run_comprehensive_statistical_analysis(
             normalized_data=normalized_data,
