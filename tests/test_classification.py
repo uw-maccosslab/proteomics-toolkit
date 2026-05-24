@@ -11,6 +11,7 @@ from sklearn.metrics import auc as sklearn_auc
 from proteomics_toolkit.classification import (
     compute_shap_values,
     plot_shap_summary,
+    relabel_features_with_genes,
     run_binary_classification,
     select_features_by_mad,
 )
@@ -269,3 +270,85 @@ class TestShap:
         )
         with pytest.raises(ValueError, match="plot_type"):
             plot_shap_summary(explanation, plot_type="violin")
+
+
+class TestRelabelFeaturesWithGenes:
+    def _annot_df(self):
+        return pd.DataFrame({
+            "protein_group": ["PG0001", "PG0002", "PG0003", "PG0004"],
+            "leading_gene_name": ["PIGR", "CHGA", "", None],  # PG0003 empty, PG0004 NaN
+        })
+
+    def test_id_fallback_uses_pg_when_gene_empty(self):
+        labels = relabel_features_with_genes(
+            ["PG0001", "PG0002", "PG0003", "PG0004", "PG0099"],
+            self._annot_df(),
+        )
+        # PG0003 has empty gene -> id fallback; PG0004 has NaN -> id fallback;
+        # PG0099 not in annotation_df -> id fallback (gene_map.get default).
+        assert labels == ["PIGR", "CHGA", "PG0003", "PG0004", "PG0099"]
+
+    def test_empty_fallback_uses_blank(self):
+        labels = relabel_features_with_genes(
+            ["PG0001", "PG0003", "PG0099"],
+            self._annot_df(),
+            fallback="empty",
+        )
+        assert labels == ["PIGR", "", ""]
+
+    def test_custom_column_names(self):
+        annot = pd.DataFrame({"my_id": ["A", "B"], "my_gene": ["GENE_A", "GENE_B"]})
+        labels = relabel_features_with_genes(
+            ["A", "B"], annot, id_col="my_id", gene_col="my_gene",
+        )
+        assert labels == ["GENE_A", "GENE_B"]
+
+    def test_invalid_fallback_raises(self):
+        with pytest.raises(ValueError, match="fallback"):
+            relabel_features_with_genes(["PG0001"], self._annot_df(), fallback="bogus")
+
+
+class TestRunBinaryClassificationAnnotations:
+    def test_annotations_relabels_feature_names_and_importances(self, fold_change_matrix, group_labels):
+        # Build an annotation DF that maps the fixture's feature IDs to gene-like names
+        annot = pd.DataFrame({
+            "protein_group": list(fold_change_matrix.columns),
+            "leading_gene_name": [f"GENE_{c}" for c in fold_change_matrix.columns],
+        })
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, annotations=annot, return_model=True,
+        )
+        # feature_names should now all be GENE_*
+        assert all(n.startswith("GENE_") for n in result["feature_names"])
+        # feature_importances.index uses the same gene labels
+        assert all(idx.startswith("GENE_") for idx in result["feature_importances"].index)
+        # Original IDs preserved under feature_ids when return_model=True
+        assert all(not fid.startswith("GENE_") for fid in result["feature_ids"])
+
+    def test_no_annotations_keeps_original_ids(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest", cv_method=3,
+        )
+        assert all(not n.startswith("GENE_") for n in result["feature_names"])
+        # feature_ids only present when return_model=True
+        assert "feature_ids" not in result
+
+
+@requires_shap
+class TestShapAnnotations:
+    def test_compute_shap_with_annotations_uses_gene_labels(self, fold_change_matrix, group_labels):
+        annot = pd.DataFrame({
+            "protein_group": list(fold_change_matrix.columns),
+            "leading_gene_name": [f"GENE_{c}" for c in fold_change_matrix.columns],
+        })
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        explanation = compute_shap_values(
+            result["final_model"], result["X_scaled"],
+            feature_names=result["feature_names"], annotations=annot,
+        )
+        # All labels in the Explanation are gene-prefixed
+        assert all(n.startswith("GENE_") for n in explanation.feature_names)

@@ -77,6 +77,9 @@ def run_binary_classification(
     method="logistic_regression",
     cv_method=5,
     return_model=False,
+    annotations=None,
+    id_col="protein_group",
+    gene_col="leading_gene_name",
 ):
     """Run binary classification with feature selection and cross-validation.
 
@@ -128,6 +131,20 @@ def run_binary_classification(
             ``scaler``, ``X_scaled``, ``y_encoded``). Use this when
             you need the trained model for downstream interpretability
             (e.g., :func:`compute_shap_values`).
+        annotations: Optional DataFrame containing ``id_col`` and
+            ``gene_col``. When provided, the returned ``feature_names``
+            list and ``feature_importances`` Series are relabeled from
+            pipeline IDs to gene symbols via
+            :func:`relabel_features_with_genes`. This keeps plots and
+            tables interpretable without the caller having to remap
+            ``protein_group`` -> gene every time. The model is still
+            trained on the original feature IDs internally; only the
+            return values are relabeled.
+        id_col: Identifier column in ``annotations`` matching the
+            columns of ``fold_change_matrix``. Ignored if
+            ``annotations`` is None.
+        gene_col: Gene-name column in ``annotations``. Ignored if
+            ``annotations`` is None.
 
     Returns:
         Dict with keys:
@@ -404,6 +421,20 @@ def run_binary_classification(
         print(f"  {label:>10}  {cm[i, 0]:>6}  {cm[i, 1]:>6}")
     print(f"\n{report}")
 
+    # If annotations are provided, relabel the returned feature_names list
+    # and feature_importances Series index from pipeline IDs (e.g. PG####)
+    # to gene symbols, so downstream plots and tables are interpretable
+    # without the caller having to remap.
+    if annotations is not None:
+        gene_labels = relabel_features_with_genes(
+            final_feature_names, annotations, id_col=id_col, gene_col=gene_col,
+        )
+        feature_names_out = gene_labels
+        importances_out = pd.Series(importances.values, index=gene_labels).sort_values(ascending=False)
+    else:
+        feature_names_out = final_feature_names
+        importances_out = importances
+
     result = {
         "accuracy": acc,
         "balanced_accuracy": bal_acc,
@@ -411,10 +442,10 @@ def run_binary_classification(
         "auc_std": auc_std,
         "confusion_matrix": cm,
         "cv_predictions": cv_predictions,
-        "feature_importances": importances,
+        "feature_importances": importances_out,
         "classification_report": report,
         "n_features": n_features,
-        "feature_names": final_feature_names,
+        "feature_names": feature_names_out,
         "feature_selection": (
             "explicit" if feature_proteins is not None else feature_selection
         ),
@@ -428,10 +459,62 @@ def run_binary_classification(
         result["scaler"] = scaler
         result["X_scaled"] = X_scaled
         result["y_encoded"] = y_encoded
+        # Keep the original (pre-relabel) feature IDs so SHAP can map
+        # gene labels back if the caller needs to look up which raw
+        # column drove each importance.
+        result["feature_ids"] = final_feature_names
     return result
 
 
-def compute_shap_values(model, X, feature_names=None):
+def relabel_features_with_genes(
+    feature_ids,
+    annotation_df,
+    id_col="protein_group",
+    gene_col="leading_gene_name",
+    fallback="id",
+):
+    """Map protein-level feature IDs to gene-name labels for plotting.
+
+    Pipeline-internal identifiers (e.g. PRISM ``protein_group`` values like
+    ``"PG0833"``) are uninterpretable to most readers; gene symbols are not.
+    This helper produces a parallel list of human-readable labels suitable
+    for any plot that takes feature names, by looking up each ID in an
+    annotation table.
+
+    Args:
+        feature_ids: Iterable of feature identifiers (e.g. ``protein_group``
+            values) in the order they appear as columns in the model's
+            feature matrix.
+        annotation_df: DataFrame containing at least ``id_col`` and ``gene_col``.
+            Typically the protein-level data table.
+        id_col: Column in ``annotation_df`` whose values match the
+            entries in ``feature_ids``. Default ``"protein_group"``.
+        gene_col: Column in ``annotation_df`` holding the human-readable
+            gene symbol. Default ``"leading_gene_name"``.
+        fallback: Behavior when ``gene_col`` is missing or empty for a
+            given ID:
+
+            - ``"id"`` *(default)*: use the original feature ID. Safer for
+              traceability; always produces a non-empty label.
+            - ``"empty"``: emit an empty string. Useful if you want to
+              hide unannotated features in dense plots.
+
+    Returns:
+        list[str]: Labels in the same order as ``feature_ids``.
+
+    Raises:
+        ValueError: If ``fallback`` is not ``"id"`` or ``"empty"``.
+    """
+    if fallback not in ("id", "empty"):
+        raise ValueError(f"fallback must be 'id' or 'empty'; got {fallback!r}")
+    gene_map = annotation_df.set_index(id_col)[gene_col].fillna("").to_dict()
+    if fallback == "id":
+        return [gene_map.get(fid, fid) or fid for fid in feature_ids]
+    return [gene_map.get(fid, "") for fid in feature_ids]
+
+
+def compute_shap_values(model, X, feature_names=None, annotations=None,
+                        id_col="protein_group", gene_col="leading_gene_name"):
     """Compute SHAP values for a fitted tree-based binary classifier.
 
     Thin wrapper around :class:`shap.TreeExplainer` for
@@ -457,6 +540,16 @@ def compute_shap_values(model, X, feature_names=None):
         feature_names: Optional list of column names to attach to the
             returned Explanation. Inferred from ``X.columns`` when ``X``
             is a DataFrame.
+        annotations: Optional DataFrame containing ``id_col`` and
+            ``gene_col``. When provided alongside ``feature_names``, the
+            feature labels attached to the Explanation are remapped from
+            pipeline IDs to gene symbols via
+            :func:`relabel_features_with_genes`. Strongly recommended for
+            any SHAP plot intended for a non-bioinformatician audience.
+        id_col: Identifier column in ``annotations`` matching
+            ``feature_names``. Ignored if ``annotations`` is None.
+        gene_col: Gene-name column in ``annotations``. Ignored if
+            ``annotations`` is None.
 
     Returns:
         :class:`shap.Explanation` (2-D) for the positive class, with
@@ -490,6 +583,10 @@ def compute_shap_values(model, X, feature_names=None):
         explanation = explanation[:, :, 1]
 
     if feature_names is not None:
+        if annotations is not None:
+            feature_names = relabel_features_with_genes(
+                feature_names, annotations, id_col=id_col, gene_col=gene_col,
+            )
         explanation.feature_names = list(feature_names)
     return explanation
 

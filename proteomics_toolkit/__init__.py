@@ -123,6 +123,7 @@ from .classification import (
     plot_roc_comparison,  # Overlay ROC curves from multiple methods
     plot_roc_curve,  # ROC curve from classification results
     plot_shap_summary,  # Beeswarm / bar summary of SHAP values
+    relabel_features_with_genes,  # Map pipeline IDs -> gene names for plot labels
     run_binary_classification,  # LOO/k-fold CV binary classification
     select_features_by_mad,  # Unsupervised feature ranking by MAD
 )
@@ -369,6 +370,7 @@ __all__ = [
     "multiclass_feature_importance",  # Multi-class RF/XGBoost importance with bootstrap stability
     "compute_shap_values",  # TreeExplainer SHAP for RF/XGBoost binary classifiers
     "plot_shap_summary",  # Beeswarm / bar summary of SHAP values
+    "relabel_features_with_genes",  # Map pipeline IDs -> gene names for plot labels
     # MARKER DISCOVERY - Descriptive ranking metrics for low-n designs
     "marker_discovery",  # Module access
     "method_specificity_score",  # Per-(protein, group) marker score
