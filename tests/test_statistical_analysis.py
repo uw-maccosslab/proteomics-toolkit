@@ -492,6 +492,159 @@ class TestModeratedLinearModelIntensityTrend:
         assert top10 == expected
 
 
+def _make_confounded_fixture(
+    n_features=60,
+    n_planted=10,
+    treatment_effect=1.5,
+    age_effect=0.05,
+    seed=7,
+):
+    """Build a fixture where treatment is confounded with a continuous
+    covariate (age) and shares variance with a categorical covariate (sex).
+
+    Without covariate adjustment, the estimated treatment effect on the
+    planted features is inflated by ``age_effect * (mean_age_treat -
+    mean_age_control)``. After adjustment, the estimate should recover
+    ``treatment_effect``.
+    """
+    rng = np.random.default_rng(seed)
+    n_control = 8
+    n_treatment = 8
+    samples_a = [f"A_{i}" for i in range(n_control)]
+    samples_b = [f"B_{i}" for i in range(n_treatment)]
+    all_samples = samples_a + samples_b
+    n_samples = len(all_samples)
+
+    age = np.concatenate(
+        [rng.normal(30.0, 2.0, size=n_control), rng.normal(40.0, 2.0, size=n_treatment)]
+    )
+    sex = np.array(["F", "M"] * (n_samples // 2))
+    rng.shuffle(sex)
+    treat = np.array([0] * n_control + [1] * n_treatment, dtype=float)
+
+    values = rng.normal(loc=10.0, scale=0.4, size=(n_features, n_samples))
+    # Plant treatment + age effects on the first n_planted features
+    values[:n_planted, :] += treatment_effect * treat[np.newaxis, :]
+    values[:n_planted, :] += age_effect * age[np.newaxis, :]
+
+    features = [f"P{i:04d}" for i in range(n_features)]
+    feature_data = pd.DataFrame(values, index=features, columns=all_samples)
+    metadata_df = pd.DataFrame(
+        {
+            "Sample": all_samples,
+            "Group": ["Control"] * n_control + ["Treatment"] * n_treatment,
+            "Age": age,
+            "Sex": sex,
+        }
+    )
+
+    config = StatisticalConfig()
+    config.analysis_type = "unpaired"
+    config.group_column = "Group"
+    config.group_labels = ["Control", "Treatment"]
+    config.log_transform_before_stats = False
+    config.statistical_test_method = "moderated_linear_model"
+    config.moderation = "limma"
+    return feature_data, metadata_df, config, treatment_effect
+
+
+class TestModeratedLinearModelCovariates:
+    """Covariate adjustment in the unpaired moderated-linear-model path."""
+
+    def test_covariate_adjustment_recovers_true_effect(self):
+        feature_data, metadata_df, config, true_effect = _make_confounded_fixture()
+        config.covariates = ["Age"]
+        adjusted = run_moderated_linear_model(feature_data, metadata_df, config)
+        config_no_cov = StatisticalConfig()
+        config_no_cov.analysis_type = "unpaired"
+        config_no_cov.group_column = "Group"
+        config_no_cov.group_labels = ["Control", "Treatment"]
+        config_no_cov.log_transform_before_stats = False
+        config_no_cov.statistical_test_method = "moderated_linear_model"
+        config_no_cov.moderation = "limma"
+        config_no_cov.covariates = []
+        unadjusted = run_moderated_linear_model(feature_data, metadata_df, config_no_cov)
+
+        planted = [f"P{i:04d}" for i in range(10)]
+        adj_fc = adjusted.set_index("Protein").loc[planted, "logFC"].mean()
+        unadj_fc = unadjusted.set_index("Protein").loc[planted, "logFC"].mean()
+
+        # Unadjusted is inflated by ~age_effect * delta_age = 0.05 * 10 = 0.5
+        assert unadj_fc > true_effect + 0.2, (
+            f"unadjusted mean logFC was {unadj_fc:.3f}; expected > {true_effect + 0.2}"
+        )
+        # Adjusted should be close to the true effect (within 0.25)
+        assert abs(adj_fc - true_effect) < 0.25, (
+            f"adjusted mean logFC was {adj_fc:.3f}; expected close to {true_effect}"
+        )
+
+    def test_categorical_covariate_dummy_encoded(self):
+        feature_data, metadata_df, config, _ = _make_confounded_fixture()
+        config.covariates = ["Sex"]
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        # Schema is preserved
+        for col in ("Protein", "logFC", "P.Value", "n_group1", "n_group2"):
+            assert col in result.columns
+        assert len(result) == len(feature_data)
+        # Planted features still rank near the top despite the extra (uninformative) covariate
+        top20 = set(result.sort_values("P.Value").head(20)["Protein"])
+        planted = {f"P{i:04d}" for i in range(10)}
+        assert len(top20 & planted) >= 8
+
+    def test_multiple_covariates(self):
+        feature_data, metadata_df, config, true_effect = _make_confounded_fixture()
+        config.covariates = ["Age", "Sex"]
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        planted = [f"P{i:04d}" for i in range(10)]
+        adj_fc = result.set_index("Protein").loc[planted, "logFC"].mean()
+        assert abs(adj_fc - true_effect) < 0.25
+
+    def test_missing_covariate_listwise_deletion(self):
+        feature_data, metadata_df, config, _ = _make_confounded_fixture()
+        # Drop Age for two samples (one per group) -> they should be excluded
+        metadata_df = metadata_df.copy()
+        metadata_df.loc[metadata_df["Sample"] == "A_0", "Age"] = np.nan
+        metadata_df.loc[metadata_df["Sample"] == "B_0", "Age"] = np.nan
+        config.covariates = ["Age"]
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        # We started with 8 + 8 = 16 samples; expect 14 after listwise deletion
+        # n_group1 + n_group2 reflects per-feature counts; AveExpr-supported features should use 14
+        n_total = (result["n_group1"] + result["n_group2"]).max()
+        assert n_total == 14
+
+    def test_missing_covariate_column_raises(self):
+        feature_data, metadata_df, config, _ = _make_confounded_fixture()
+        config.covariates = ["NotAColumn"]
+        with pytest.raises(ValueError, match="Covariate columns not present"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_empty_covariate_list_preserves_baseline(self):
+        feature_data, metadata_df, config, _ = _make_confounded_fixture()
+        config.covariates = []
+        baseline = run_moderated_linear_model(feature_data, metadata_df, config)
+        config.covariates = None
+        none_variant = run_moderated_linear_model(feature_data, metadata_df, config)
+        # Both empty-covariate paths should produce identical logFC
+        pd.testing.assert_series_equal(
+            baseline.set_index("Protein")["logFC"],
+            none_variant.set_index("Protein")["logFC"],
+            check_names=False,
+        )
+
+    def test_covariates_compose_with_intensity_trend(self):
+        feature_data, metadata_df, config, true_effect = _make_confounded_fixture()
+        config.moderation = "intensity_trend"
+        config.covariates = ["Age"]
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        # Intensity-trend output columns present
+        for col in ("intensity_s0_sq", "intensity_used"):
+            assert col in result.columns
+        # Effect still recovered after covariate adjustment + intensity_trend prior
+        planted = [f"P{i:04d}" for i in range(10)]
+        adj_fc = result.set_index("Protein").loc[planted, "logFC"].mean()
+        assert abs(adj_fc - true_effect) < 0.25
+
+
 def _make_linear_trend_fixture(
     n_features=200,
     n_planted=20,

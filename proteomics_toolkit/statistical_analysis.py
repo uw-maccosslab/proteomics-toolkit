@@ -1108,6 +1108,79 @@ def _trigamma_inverse(x, max_iter=50, tol=1e-8):
     return y
 
 
+def _build_covariate_design(meta, covariates):
+    """Build a covariate sub-design matrix and listwise-delete incomplete rows.
+
+    Numeric covariates contribute one column each; non-numeric (object /
+    category) covariates are dummy-encoded via patsy with the first level
+    as the reference (absorbed by the intercept the caller adds).
+
+    Parameters
+    ----------
+    meta : pd.DataFrame
+        Metadata indexed by sample name (already restricted to the rows
+        considered for the model).
+    covariates : list[str]
+        Column names in ``meta`` to include as covariates. Empty list
+        is a no-op.
+
+    Returns
+    -------
+    meta_kept : pd.DataFrame
+        ``meta`` with rows missing any covariate value dropped.
+    cov_matrix : np.ndarray
+        Shape ``(n_kept_samples, n_design_cols)``. Empty (0-column)
+        array when ``covariates`` is empty.
+    cov_col_names : list[str]
+        Human-readable design-column names with placeholder substitution
+        reversed, for logging and diagnostics.
+    """
+    if not covariates:
+        return meta, np.empty((len(meta), 0)), []
+
+    missing = [c for c in covariates if c not in meta.columns]
+    if missing:
+        raise ValueError(f"Covariate columns not present in metadata: {missing}")
+
+    keep_mask = meta[covariates].notna().all(axis=1)
+    n_dropped = int((~keep_mask).sum())
+    if n_dropped:
+        print(f"  Dropping {n_dropped} samples missing one or more covariates ({covariates})")
+    meta_kept = meta.loc[keep_mask].copy()
+    if len(meta_kept) == 0:
+        return meta_kept, np.empty((0, 0)), []
+
+    import patsy  # local import to avoid hard dependency at module import
+
+    # Patsy chokes on column names with spaces, parens, etc., so use placeholders.
+    placeholders = [f"_cov_{i}" for i in range(len(covariates))]
+    cov_df = meta_kept[covariates].copy()
+    cov_df.columns = placeholders
+    formula_terms = []
+    for name in placeholders:
+        if pd.api.types.is_numeric_dtype(cov_df[name]):
+            formula_terms.append(name)
+        else:
+            formula_terms.append(f"C({name})")
+    # Build with patsy's implicit intercept so categoricals are
+    # reference-coded (k-1 dummies), then drop the intercept column so
+    # the caller's manually added intercept doesn't collide.
+    formula = "1 + " + " + ".join(formula_terms)
+    design_df = patsy.dmatrix(formula, data=cov_df, return_type="dataframe")
+    if "Intercept" in design_df.columns:
+        design_df = design_df.drop(columns=["Intercept"])
+
+    # Map placeholder names back to original column names for readability.
+    cov_col_names = []
+    for col in design_df.columns:
+        readable = col
+        for ph, orig in zip(placeholders, covariates):
+            readable = readable.replace(ph, orig)
+        cov_col_names.append(readable)
+
+    return meta_kept, design_df.to_numpy(dtype=float), cov_col_names
+
+
 def _fit_moderated_t(feature_data, metadata_df, config):
     """Fit per-feature linear model and compute moderated t-statistics.
 
@@ -1174,13 +1247,24 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         # Restrict to the two requested groups
         keep = meta[group_col].isin(group_labels[:2])
         meta = meta.loc[keep]
+        # Listwise-delete samples that lack any requested covariate value,
+        # then build a covariate sub-design (categoricals dummy-encoded).
+        meta, cov_matrix, cov_col_names = _build_covariate_design(meta, list(getattr(config, "covariates", []) or []))
         sample_cols = meta.index.tolist()
         if len(sample_cols) < 4:
-            raise ValueError(f"After restricting to groups {group_labels[:2]}, only {len(sample_cols)} samples remain.")
-        # Design: intercept + treatment indicator (1 if group == group_labels[1])
+            raise ValueError(
+                f"After restricting to groups {group_labels[:2]} and covariate completeness, "
+                f"only {len(sample_cols)} samples remain."
+            )
+        # Design: intercept + treatment indicator (1 if group == group_labels[1]) + optional covariates
         treat = (meta[group_col].astype(str) == str(group_labels[1])).astype(float).values
-        X = np.column_stack([np.ones_like(treat), treat])
-        contrast = np.array([0.0, 1.0])
+        if cov_matrix.shape[1] > 0:
+            X = np.column_stack([np.ones_like(treat), treat, cov_matrix])
+            print(f"  Adjusting for covariates: {cov_col_names}")
+        else:
+            X = np.column_stack([np.ones_like(treat), treat])
+        contrast = np.zeros(X.shape[1])
+        contrast[1] = 1.0
 
     elif analysis_type == "paired":
         subj_col = config.subject_column
@@ -1307,6 +1391,7 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         "n_samples_used": nsamp_out,
         "s0_sq": s0_sq,
         "d0": d0,
+        "kept_samples": sample_cols,
     }
 
 
@@ -1637,6 +1722,17 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     handful of genuinely high-variance features don't inflate the prior
     and blunt every test.
 
+    Covariate adjustment
+    ~~~~~~~~~~~~~~~~~~~~
+    For ``analysis_type='unpaired'``, ``config.covariates`` (a list of
+    metadata column names) extends the per-feature design matrix to
+    ``[intercept, treatment, covariate_1, ...]`` and the reported
+    statistics on the treatment coefficient are adjusted for those
+    covariates. Categorical covariates (non-numeric dtype) are
+    dummy-encoded via patsy. Samples missing any covariate value are
+    listwise-deleted before the fit. ``analysis_type='paired'`` and
+    ``'linear_trend'`` do not yet apply covariates in this function.
+
     Linear-trend mode
     ~~~~~~~~~~~~~~~~~
     Set ``config.analysis_type='linear_trend'`` with
@@ -1718,7 +1814,11 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         raw_data = _raw_feature_data_for_fit(feature_data, config)
         print(f"Running moderated linear model (moderation='intensity_trend', robust={bool(config.robust)})...")
         fit = _fit_moderated_t(feature_data, metadata_df, config)
-        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(fit, raw_data, metadata_df, config)
+        # Restrict the metadata used for the intensity-trend prior to the
+        # same samples kept by _fit_moderated_t (covariate listwise deletion
+        # may have dropped some samples).
+        metadata_for_trend = metadata_df[metadata_df["Sample"].isin(fit["kept_samples"])]
+        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(fit, raw_data, metadata_for_trend, config)
         df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
         # Summary intensity per feature: mean of per-group means (raw scale).
         per_feature_intensity = (
@@ -2143,6 +2243,15 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
         print(f"  Interaction terms: {config.interaction_terms + config.additional_interactions}")
         if config.covariates:
             print(f"  Covariates: {config.covariates}")
+    elif config.statistical_test_method == "moderated_linear_model" and config.covariates:
+        if config.analysis_type == "unpaired":
+            print(f"  Covariates: {config.covariates}")
+        else:
+            print(
+                f"  Warning: covariates ignored - moderated_linear_model "
+                f"only applies covariates for analysis_type='unpaired' "
+                f"(got {config.analysis_type!r})."
+            )
 
     # Run appropriate analysis
     if config.statistical_test_method == "mixed_effects":
