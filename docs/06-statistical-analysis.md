@@ -13,6 +13,7 @@ Recipes:
 - [Unpaired comparison](#unpaired-comparison) (two independent groups)
 - [PRISM data — unpaired](#prism-data--unpaired-comparison)
 - [Moderated linear model](#moderated-linear-model--limma-deqms-or-intensity_trend) (empirical Bayes variance shrinkage; limma / deqms / intensity_trend)
+  - [Covariate adjustment](#covariate-adjustment) (unpaired only)
 - [Mixed-effects model](#mixed-effects-model-repeated-measures) (repeated measures)
 - [Linear trend over time](#linear-trend--dose-response) (dose-response)
 
@@ -203,6 +204,43 @@ Output DataFrames include extra columns: `residual_s2`, `residual_df`,
 DataFrame on `results.attrs["intensity_trend_points"]`, accessible via
 `ptk.get_intensity_trend_points(results)`.
 
+### Covariate adjustment
+
+**Use case:** Control for nuisance variables (age, sex, batch, BMI,
+etc.) when comparing two groups. The treatment statistics (`logFC`,
+`t`, `P.Value`, `adj.P.Val`) are reported on the treatment coefficient
+after adjusting for the supplied covariates.
+
+Currently supported for `analysis_type='unpaired'` only. Setting
+`config.covariates` with `paired` or `linear_trend` emits a warning and
+is otherwise ignored by the moderated linear model (use the
+`mixed_effects` path if you need covariates in those designs).
+
+```python
+config = ptk.StatisticalConfig()
+config.analysis_type           = 'unpaired'
+config.statistical_test_method = 'moderated_linear_model'
+config.moderation              = 'intensity_trend'    # or 'limma' / 'deqms'
+config.group_column            = 'Group'
+config.group_labels            = ['Control', 'Treatment']
+
+# Numeric covariates contribute one design column each.
+# Object / category dtypes are reference-dummy-coded via patsy.
+config.covariates              = ['Age', 'Sex', 'Batch']
+
+config.log_transform_before_stats = 'auto'
+config.validate()
+
+results = ptk.run_comprehensive_statistical_analysis(
+    data, sample_meta_dict, config, protein_annotations=annot,
+)
+```
+
+**Handling of missing values.** Samples missing any covariate value are
+listwise-deleted before the per-feature fit. With
+`moderation='intensity_trend'`, the variance prior is refit on the same
+restricted sample set so the prior matches the coefficient estimates.
+
 ### Linear-trend mode (moderated slope test)
 
 **Use case:** Longitudinal designs with three or more timepoints where
@@ -352,7 +390,7 @@ See [08-enrichment.md](08-enrichment.md) for the full enrichment workflow.
 | `paired_label2` | str | Follow-up/after label in `paired_column` |
 | `time_column` | str | Numeric time/dose column for `linear_trend`/`longitudinal` |
 | `interaction_terms` | list | Mixed-effects interaction terms (e.g. `['Group', 'Visit']`) |
-| `covariates` | list | Additional covariates to control for (e.g. `['Age', 'Sex']`) |
+| `covariates` | list | Additional covariates to control for (e.g. `['Age', 'Sex']`). Honored by `mixed_effects` for all designs, and by `moderated_linear_model` for `analysis_type='unpaired'`. See [Covariate adjustment](#covariate-adjustment). |
 | `log_transform_before_stats` | str/bool | `'auto'`, `True`, `False` - see [Log transformation](#log-transformation) |
 | `log_base` | str | `'log2'` (default), `'log10'`, `'ln'` |
 | `correction_method` | str | `'fdr_bh'` (BH), `'bonferroni'`, `'fdr_by'`, etc. |
