@@ -1,13 +1,22 @@
 """Tests for the classification module."""
 
+import importlib
+
 import numpy as np
 import pandas as pd
+import pytest
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import auc as sklearn_auc
 
 from proteomics_toolkit.classification import (
+    compute_shap_values,
+    plot_shap_summary,
     run_binary_classification,
     select_features_by_mad,
 )
+
+shap_installed = importlib.util.find_spec("shap") is not None
+requires_shap = pytest.mark.skipif(not shap_installed, reason="shap is an optional dependency")
 
 
 class TestRunBinaryClassification:
@@ -174,8 +183,6 @@ class TestFoldChangeSelectionStillAvailable:
 
 class TestInvalidFeatureSelection:
     def test_unknown_selection_raises(self, fold_change_matrix, group_labels):
-        import pytest
-
         with pytest.raises(ValueError, match="feature_selection"):
             run_binary_classification(
                 fold_change_matrix,
@@ -183,3 +190,82 @@ class TestInvalidFeatureSelection:
                 feature_selection="not_a_method",
                 cv_method=3,
             )
+
+
+class TestReturnModel:
+    def test_default_does_not_return_model(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest", cv_method=3,
+        )
+        assert "final_model" not in result
+        assert "scaler" not in result
+        assert "X_scaled" not in result
+
+    def test_return_model_includes_fit_artifacts(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        assert isinstance(result["final_model"], RandomForestClassifier)
+        assert result["X_scaled"].shape[0] == len(group_labels)
+        assert result["X_scaled"].shape[1] == result["n_features"]
+        assert result["scaler"] is not None
+        assert len(result["y_encoded"]) == len(group_labels)
+
+
+@requires_shap
+class TestShap:
+    def test_compute_shap_values_returns_2d_explanation(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        explanation = compute_shap_values(
+            result["final_model"], result["X_scaled"], feature_names=result["feature_names"],
+        )
+        # Positive-class slice -> 2-D values matching (n_samples, n_features)
+        assert explanation.values.ndim == 2
+        assert explanation.values.shape == (len(group_labels), result["n_features"])
+        assert list(explanation.feature_names) == list(result["feature_names"])
+
+    def test_compute_shap_values_works_with_dataframe(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        X_df = pd.DataFrame(result["X_scaled"], columns=result["feature_names"])
+        explanation = compute_shap_values(result["final_model"], X_df)
+        assert list(explanation.feature_names) == list(result["feature_names"])
+
+    def test_plot_shap_summary_beeswarm_runs(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        explanation = compute_shap_values(
+            result["final_model"], result["X_scaled"], feature_names=result["feature_names"],
+        )
+        fig = plot_shap_summary(explanation, max_display=5, plot_type="beeswarm")
+        assert fig is not None
+
+    def test_plot_shap_summary_bar_runs(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        explanation = compute_shap_values(
+            result["final_model"], result["X_scaled"], feature_names=result["feature_names"],
+        )
+        fig = plot_shap_summary(explanation, plot_type="bar")
+        assert fig is not None
+
+    def test_plot_shap_summary_invalid_plot_type_raises(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix, group_labels, method="random_forest",
+            cv_method=3, return_model=True,
+        )
+        explanation = compute_shap_values(
+            result["final_model"], result["X_scaled"], feature_names=result["feature_names"],
+        )
+        with pytest.raises(ValueError, match="plot_type"):
+            plot_shap_summary(explanation, plot_type="violin")

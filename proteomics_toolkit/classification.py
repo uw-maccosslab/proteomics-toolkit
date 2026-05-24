@@ -76,6 +76,7 @@ def run_binary_classification(
     feature_selection="mad",
     method="logistic_regression",
     cv_method=5,
+    return_model=False,
 ):
     """Run binary classification with feature selection and cross-validation.
 
@@ -121,6 +122,12 @@ def run_binary_classification(
             'random_forest', 'linear_svm', or 'xgboost'.
         cv_method: Cross-validation strategy. Integer for k-fold (default 5),
             or 'loo' for leave-one-out (not recommended for ROC curves).
+        return_model: If True, also include the final fitted classifier,
+            its StandardScaler, the scaled feature matrix, and the
+            encoded labels in the returned dict (keys ``final_model``,
+            ``scaler``, ``X_scaled``, ``y_encoded``). Use this when
+            you need the trained model for downstream interpretability
+            (e.g., :func:`compute_shap_values`).
 
     Returns:
         Dict with keys:
@@ -397,7 +404,7 @@ def run_binary_classification(
         print(f"  {label:>10}  {cm[i, 0]:>6}  {cm[i, 1]:>6}")
     print(f"\n{report}")
 
-    return {
+    result = {
         "accuracy": acc,
         "balanced_accuracy": bal_acc,
         "auc_roc": auc_mean,
@@ -416,6 +423,117 @@ def run_binary_classification(
         "class_names": class_names,
         "fold_roc_data": fold_roc_data,
     }
+    if return_model:
+        result["final_model"] = final_clf
+        result["scaler"] = scaler
+        result["X_scaled"] = X_scaled
+        result["y_encoded"] = y_encoded
+    return result
+
+
+def compute_shap_values(model, X, feature_names=None):
+    """Compute SHAP values for a fitted tree-based binary classifier.
+
+    Thin wrapper around :class:`shap.TreeExplainer` for
+    :class:`~sklearn.ensemble.RandomForestClassifier` and
+    :class:`~xgboost.XGBClassifier`. For binary classifiers SHAP returns
+    a 3-D ``(samples, features, classes)`` Explanation; this function
+    collapses to the positive class (class 1 under
+    :class:`~sklearn.preprocessing.LabelEncoder`'s alphabetical ordering)
+    so the returned Explanation is 2-D and ready for ``shap.plots.beeswarm``
+    or :func:`plot_shap_summary`.
+
+    Use with ``run_binary_classification(..., return_model=True)``: pass
+    ``result['final_model']`` and ``result['X_scaled']`` to keep features
+    on the same scale the model was trained on.
+
+    Args:
+        model: A fitted tree-based binary classifier. Linear and SVM
+            models are not supported by ``TreeExplainer``; use
+            :class:`shap.LinearExplainer` directly for those.
+        X: Feature matrix (numpy array or DataFrame), rows = samples.
+            Must be on the same scale used during training (e.g., the
+            ``X_scaled`` produced by ``run_binary_classification``).
+        feature_names: Optional list of column names to attach to the
+            returned Explanation. Inferred from ``X.columns`` when ``X``
+            is a DataFrame.
+
+    Returns:
+        :class:`shap.Explanation` (2-D) for the positive class, with
+        ``feature_names`` populated.
+
+    Raises:
+        ImportError: If ``shap`` is not installed. Install with
+            ``pip install proteomics-toolkit[shap]`` or ``pip install shap``.
+    """
+    try:
+        import shap
+    except ImportError as e:
+        raise ImportError(
+            "shap is required for compute_shap_values. Install via "
+            "'pip install proteomics-toolkit[shap]' or 'pip install shap'."
+        ) from e
+
+    if hasattr(X, "values"):
+        X_arr = X.values
+        if feature_names is None:
+            feature_names = list(X.columns)
+    else:
+        X_arr = np.asarray(X)
+
+    explainer = shap.TreeExplainer(model)
+    explanation = explainer(X_arr)
+
+    # Binary classifiers produce a 3-D (samples, features, 2) Explanation;
+    # keep only the positive class so downstream plots work directly.
+    if getattr(explanation, "values", None) is not None and explanation.values.ndim == 3:
+        explanation = explanation[:, :, 1]
+
+    if feature_names is not None:
+        explanation.feature_names = list(feature_names)
+    return explanation
+
+
+def plot_shap_summary(explanation, max_display=20, plot_type="beeswarm", title=None):
+    """Plot a SHAP summary (beeswarm or bar) for one classifier.
+
+    Args:
+        explanation: :class:`shap.Explanation` from :func:`compute_shap_values`
+            (2-D, positive class only).
+        max_display: Number of top features to show.
+        plot_type: ``'beeswarm'`` (per-sample colored points; default) or
+            ``'bar'`` (mean |SHAP| bar plot).
+        title: Optional title to set on the figure.
+
+    Returns:
+        :class:`matplotlib.figure.Figure` of the plot.
+
+    Raises:
+        ImportError: If ``shap`` is not installed.
+        ValueError: If ``plot_type`` is not ``'beeswarm'`` or ``'bar'``.
+    """
+    try:
+        import shap
+    except ImportError as e:
+        raise ImportError(
+            "shap is required for plot_shap_summary. Install via "
+            "'pip install proteomics-toolkit[shap]' or 'pip install shap'."
+        ) from e
+
+    import matplotlib.pyplot as plt
+
+    if plot_type == "beeswarm":
+        shap.plots.beeswarm(explanation, max_display=max_display, show=False)
+    elif plot_type == "bar":
+        shap.plots.bar(explanation, max_display=max_display, show=False)
+    else:
+        raise ValueError(f"plot_type must be 'beeswarm' or 'bar'; got {plot_type!r}")
+
+    fig = plt.gcf()
+    if title:
+        fig.suptitle(title)
+    plt.tight_layout()
+    return fig
 
 
 def plot_fold_change_pca(
