@@ -53,6 +53,54 @@ ptk.plot_grouped_heatmap(
 )
 ```
 
+## Bi-clustered sample heatmap
+
+`plot_sample_clustermap` is a seaborn-backed clustermap of samples
+(columns) by features (rows) with an optional top color bar
+annotating each sample by group. Rows are z-scored by default so the
+colormap reflects relative pattern across samples; both axes are
+hierarchically clustered.
+
+Useful for: visually confirming that samples cluster by treatment
+group on the significant proteins, or for displaying a curated panel
+of features grouped by metadata.
+
+```python
+sig = results[results['adj.P.Val'] < 0.05].head(50)
+
+g = ptk.plot_sample_clustermap(
+    data            = protein_data.loc[sig['Protein']],
+    sample_columns  = exp_sample_cols,
+    sample_metadata = meta_dict,
+    group_column    = 'Group',
+    label_column    = 'leading_gene_name',
+    title           = 'Top significant proteins',
+    zscore          = True,                # row z-score before clustering
+    cmap            = 'RdBu_r',
+    vmin            = -2.0, vmax           = 2.0,
+    row_cluster     = True,
+    col_cluster     = True,
+    metric          = 'correlation',
+    method          = 'average',
+)
+
+# g is a seaborn ClusterGrid; tweak g.ax_heatmap, g.ax_col_dendrogram, ...
+```
+
+Notes:
+
+- All-NaN rows are dropped (with a warning) and remaining NaNs are
+  filled with the row mean before clustering, since seaborn's
+  clustermap aborts on NaN.
+- Row labels are shown when there are at most 80 rows by default;
+  override with `show_row_labels=True` / `False`. Sample labels
+  along the x-axis are off by default (`show_col_labels=True` to
+  enable).
+- Pass `col_cluster=False` to preserve the original sample order
+  (e.g., when the column order already encodes time or dose).
+- `group_colors=` accepts a `{group_label: color_string}` mapping;
+  if omitted, colors are auto-assigned from `tab10`.
+
 ## Protein profile and grouped trajectories
 
 For longitudinal or temporal data, see `ptk.plot_grouped_trajectories`

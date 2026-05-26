@@ -1701,6 +1701,56 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
     return s0_sq, fg
 
 
+class _AttrsPayload:
+    """Opt-out-of-deepcopy wrapper for large attrs payloads.
+
+    Pandas propagates ``df.attrs`` through every operation, including
+    ``DataFrame.iterrows`` (which yields a Series per row), and the propagation
+    deep-copies every attrs value. For a large nested payload (e.g. a 17k-element
+    list of dicts), this turns an 8.7k-row iterrows from ~2 seconds into ~22
+    minutes.
+
+    Wrapping the payload in this class makes ``copy.deepcopy`` a no-op (returns
+    ``self``), which is safe because the payload is treated as immutable after
+    creation. Equality compares by identity so ``pandas.concat`` does not trip
+    the "truth value of a DataFrame is ambiguous" check it otherwise hits when
+    comparing two attrs dicts that contain large rich objects.
+
+    Use :func:`get_intensity_trend_points` to recover the payload as a
+    DataFrame; do not unwrap or mutate the records list directly.
+    """
+
+    __slots__ = ("_payload",)
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    @property
+    def payload(self):
+        return self._payload
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __eq__(self, other):
+        return self is other
+
+    def __ne__(self, other):
+        return self is not other
+
+    def __hash__(self):
+        return id(self)
+
+    def __len__(self):
+        return len(self._payload)
+
+    def __repr__(self):
+        return f"_AttrsPayload(len={len(self._payload)})"
+
+
 def run_moderated_linear_model(feature_data, metadata_df, config):
     """Per-feature linear model with empirical-Bayes variance moderation.
 
@@ -1830,8 +1880,14 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         df["intensity_used"] = per_feature_intensity
         df["intensity_s0_sq"] = s0_sq_per_feature
         df["limma_s0_sq"] = fit["s0_sq"]
-        # Stash the per-(feature, group) points for the diagnostic plot.
-        df.attrs["intensity_trend_points"] = fg_points
+        # Stash the per-(feature, group) points for the diagnostic plot inside
+        # an _AttrsPayload wrapper. The wrapper opts out of pandas' attrs
+        # deepcopy-on-propagation (which would dominate iterrows runtime for a
+        # 17k-element list of dicts) and out of attrs equality (which would
+        # trip the "truth value of a DataFrame is ambiguous" check on concat
+        # if we stored a raw DataFrame). Use get_intensity_trend_points(df)
+        # to recover the points as a DataFrame.
+        df.attrs["intensity_trend_points"] = _AttrsPayload(fg_points.to_dict("records"))
         print(
             f"Done: intensity_trend-mode moderated t completed for {len(df)} features; "
             f"d0={fit['d0']:.3g}, limma s0^2={fit['s0_sq']:.3g}"
@@ -1866,12 +1922,18 @@ def get_intensity_trend_points(results_df):
     """Return the per-(feature, group) long-form DataFrame used by the
     intensity-trend diagnostic plot.
 
-    This DataFrame is produced by :func:`run_moderated_linear_model` when
+    The points are produced by :func:`run_moderated_linear_model` when
     ``moderation="intensity_trend"`` and stashed on
-    ``results_df.attrs["intensity_trend_points"]``. It has columns
-    ``feature_idx``, ``feature_id``, ``group``, ``n_samples``,
-    ``mean_intensity``, ``sd_intensity``, ``predicted_sd``,
-    ``predicted_variance_raw``, and ``predicted_variance_logspace``.
+    ``results_df.attrs["intensity_trend_points"]`` as a list of records
+    (one dict per row). Records are used rather than a nested DataFrame
+    so they remain comparable by pandas operations (otherwise concat /
+    nsmallest / sort_values trip on attrs-equality with the message
+    "The truth value of a DataFrame is ambiguous").
+
+    The returned DataFrame has columns ``feature_idx``, ``feature_id``,
+    ``group``, ``n_samples``, ``mean_intensity``, ``sd_intensity``,
+    ``predicted_sd``, ``predicted_variance_raw``, and
+    ``predicted_variance_logspace``.
 
     Raises
     ------
@@ -1886,7 +1948,13 @@ def get_intensity_trend_points(results_df):
             "Results DataFrame does not carry intensity-trend points. "
             "Run run_moderated_linear_model with config.moderation='intensity_trend'."
         )
-    return pts
+    # Unwrap our opt-out-of-deepcopy wrapper if present.
+    if isinstance(pts, _AttrsPayload):
+        pts = pts.payload
+    # Tolerate legacy storage forms (raw DataFrame or bare list of records).
+    if isinstance(pts, pd.DataFrame):
+        return pts
+    return pd.DataFrame(pts)
 
 
 def _create_empty_result(protein_idx, reason):

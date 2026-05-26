@@ -19,6 +19,7 @@ from proteomics_toolkit.visualization import (
     plot_intensity_distributions,
     plot_missing_value_heatmap,
     plot_peptide_coverage_map,
+    plot_sample_clustermap,
     plot_variance_vs_intensity,
     plot_variance_vs_peptide_count,
 )
@@ -327,3 +328,149 @@ class TestPlotVarianceVsIntensity:
         results = pd.DataFrame({"Protein": ["P0"]})
         with pytest.raises(ValueError, match="intensity-trend points"):
             plot_variance_vs_intensity(results)
+
+
+class TestPlotSampleClustermap:
+    def _build_data(self, n_features=20, n_samples_per_group=8, seed=0):
+        rng = np.random.default_rng(seed)
+        groups = ["Control"] * n_samples_per_group + ["Treatment"] * n_samples_per_group
+        sample_cols = [f"S{i:02d}" for i in range(len(groups))]
+
+        # Inject a small treatment effect on the first 5 features so clustering
+        # has structure worth recovering.
+        base = rng.normal(loc=10, scale=1, size=(n_features, len(sample_cols)))
+        treatment_idx = [i for i, g in enumerate(groups) if g == "Treatment"]
+        base[:5, treatment_idx] += 2.0
+
+        df = pd.DataFrame(base, columns=sample_cols)
+        df.insert(0, "Protein", [f"P{i:04d}" for i in range(n_features)])
+        df.insert(1, "Gene", [f"Gene{i}" for i in range(n_features)])
+
+        sample_metadata = {
+            sample: {"Group": group} for sample, group in zip(sample_cols, groups)
+        }
+        return df, sample_cols, sample_metadata
+
+    def test_basic_clustermap_with_group_bar(self):
+        df, sample_cols, sample_metadata = self._build_data()
+        grid = plot_sample_clustermap(
+            data=df,
+            sample_columns=sample_cols,
+            sample_metadata=sample_metadata,
+            group_column="Group",
+            label_column="Gene",
+            title="Test Clustermap",
+        )
+        # The returned object should have heatmap and dendrogram axes
+        assert hasattr(grid, "ax_heatmap")
+        assert hasattr(grid, "ax_col_dendrogram")
+        # Heatmap should have one column per sample
+        assert grid.data2d.shape == (df.shape[0], len(sample_cols))
+        plt.close(grid.figure)
+
+    def test_clustermap_without_metadata(self):
+        df, sample_cols, _ = self._build_data()
+        grid = plot_sample_clustermap(
+            data=df,
+            sample_columns=sample_cols,
+            label_column="Gene",
+        )
+        assert grid.data2d.shape == (df.shape[0], len(sample_cols))
+        plt.close(grid.figure)
+
+    def test_clustermap_no_row_clustering(self):
+        df, sample_cols, sample_metadata = self._build_data()
+        grid = plot_sample_clustermap(
+            data=df,
+            sample_columns=sample_cols,
+            sample_metadata=sample_metadata,
+            row_cluster=False,
+            col_cluster=True,
+        )
+        # When row_cluster=False, row order matches the original data order
+        assert list(grid.data2d.index) == [f"P{i:04d}" for i in range(df.shape[0])] or \
+               list(range(df.shape[0])) == list(grid.data2d.index)
+        plt.close(grid.figure)
+
+    def test_clustermap_missing_sample_column_raises(self):
+        df, sample_cols, _ = self._build_data()
+        with pytest.raises(ValueError, match="not found in data"):
+            plot_sample_clustermap(
+                data=df,
+                sample_columns=sample_cols + ["NotASample"],
+            )
+
+    def test_clustermap_empty_sample_columns_raises(self):
+        df, _, _ = self._build_data()
+        with pytest.raises(ValueError, match="non-empty"):
+            plot_sample_clustermap(data=df, sample_columns=[])
+
+    def test_clustermap_label_fallback_to_uniprot_then_protein_group(self):
+        """Rows with missing/'NA' gene names should fall back to UniProt then protein_group.
+
+        Mirrors PRISM output where ``leading_gene_name`` is the literal string ``"NA"``
+        for custom or unmapped protein entries (e.g. spiked synthetic standards).
+        """
+        df, sample_cols, _ = self._build_data()
+        df = df.copy()
+        df["leading_gene_name"] = [f"Gene{i}" for i in range(len(df))]
+        df["leading_uniprot_id"] = [f"P{i:05d}" for i in range(len(df))]
+        df["protein_group"] = [f"PG{i:04d}" for i in range(len(df))]
+        # Three rows exercise the fallback chain:
+        df.loc[0, "leading_gene_name"] = "NA"            # falls back to UniProt
+        df.loc[1, "leading_gene_name"] = np.nan          # falls back to UniProt
+        df.loc[2, "leading_gene_name"] = "nan"           # falls back to UniProt
+        df.loc[3, "leading_gene_name"] = "NA"
+        df.loc[3, "leading_uniprot_id"] = ""             # falls back to protein_group
+
+        grid = plot_sample_clustermap(
+            data=df,
+            sample_columns=sample_cols,
+            label_column="leading_gene_name",
+            row_cluster=False,
+            col_cluster=False,
+        )
+        # data2d.index carries the resolved labels.
+        labels = list(grid.data2d.index)
+        assert labels[0] == df.loc[0, "leading_uniprot_id"]
+        assert labels[1] == df.loc[1, "leading_uniprot_id"]
+        assert labels[2] == df.loc[2, "leading_uniprot_id"]
+        assert labels[3] == df.loc[3, "protein_group"]
+        assert labels[4] == "Gene4"  # untouched row keeps its gene name
+        plt.close(grid.figure)
+
+    def test_clustermap_label_fallback_explicit_columns(self):
+        """An explicit ``label_fallback_columns`` should override the PRISM default."""
+        df, sample_cols, _ = self._build_data()
+        df = df.copy()
+        df["custom_label"] = [f"X{i}" for i in range(len(df))]
+        df["Gene"] = ["NA"] * len(df)
+
+        grid = plot_sample_clustermap(
+            data=df,
+            sample_columns=sample_cols,
+            label_column="Gene",
+            label_fallback_columns=["custom_label"],
+            row_cluster=False,
+            col_cluster=False,
+        )
+        assert list(grid.data2d.index)[:3] == ["X0", "X1", "X2"]
+        plt.close(grid.figure)
+
+    def test_clustermap_label_fallback_disabled(self):
+        """Passing an empty fallback list reproduces the legacy index-fallback behaviour."""
+        df, sample_cols, _ = self._build_data()
+        df = df.copy()
+        df["Gene"] = ["NA"] * len(df)
+
+        grid = plot_sample_clustermap(
+            data=df,
+            sample_columns=sample_cols,
+            label_column="Gene",
+            label_fallback_columns=[],
+            row_cluster=False,
+            col_cluster=False,
+        )
+        # All labels missing + empty fallback chain -> DataFrame index stringified.
+        assert list(grid.data2d.index) == [str(i) for i in range(len(df))]
+        plt.close(grid.figure)

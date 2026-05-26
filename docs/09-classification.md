@@ -14,6 +14,8 @@ Sections:
 - [Running classification](#running-classification)
 - [Nested differential-abundance selection](#nested-differential-abundance-selection)
 - [Comparing multiple methods](#comparing-multiple-methods)
+- [Gene-name labels for plots and importance tables](#gene-name-labels-for-plots-and-importance-tables)
+- [SHAP interpretability for tree models](#shap-interpretability-for-tree-models)
 
 ## Feature selection and leakage
 
@@ -138,6 +140,104 @@ ptk.plot_roc_comparison(method_results, title='ROC Comparison')
 **Label inversion:** The module automatically detects and corrects
 label inversion (AUC < 0.5) by flipping probabilities, predictions,
 and per-fold ROC curves.
+
+## Gene-name labels for plots and importance tables
+
+PRISM and other upstream pipelines often produce opaque feature IDs
+(e.g., `PG0123` protein-group identifiers). The classification API can
+relabel feature IDs to gene symbols at the point where the user
+surface is materialised, so plots, the `feature_importances` Series
+index, and SHAP `Explanation.feature_names` show gene names while the
+model is still trained on the original IDs internally.
+
+```python
+# annotation_df is typically the PRISM protein DataFrame returned by
+# ptk.load_prism_data, which has 'protein_group' and 'leading_gene_name'
+# columns (the defaults).
+cr = ptk.run_binary_classification(
+    fc_matrix, group_labels,
+    n_top_features=50,
+    method='random_forest',
+    cv_method=5,
+    annotations=annotation_df,           # opt-in; defaults to None
+    id_col='protein_group',              # default
+    gene_col='leading_gene_name',        # default
+)
+
+# feature_importances is indexed by gene symbol (with fallback to the
+# original ID when the gene name is missing).
+cr['feature_importances'].head()
+```
+
+The standalone helper is also available for use outside the
+classifier:
+
+```python
+labels = ptk.relabel_features_with_genes(
+    feature_ids   = ['PG0001', 'PG0002', 'PG9999'],
+    annotation_df = annotation_df,
+    id_col        = 'protein_group',
+    gene_col      = 'leading_gene_name',
+    fallback      = 'id',                # or 'empty'
+)
+```
+
+`fallback='id'` keeps the original feature ID when no gene name is
+found (the safer default for plots); `fallback='empty'` returns an
+empty string so missing genes are visually hidden.
+
+## SHAP interpretability for tree models
+
+For tree-based binary classifiers (`method='random_forest'` or
+`method='xgboost'`), SHAP values let you inspect which proteins drive
+each prediction. The workflow is: (1) refit the classifier with
+`return_model=True` so the fitted pipeline is available, then (2)
+compute SHAP values on the same `X_scaled` matrix the model saw
+during training.
+
+`compute_shap_values` and `plot_shap_summary` require the optional
+`shap` extra:
+
+```
+pip install proteomics-toolkit[shap]   # or: uv sync --extra shap
+```
+
+```python
+cr = ptk.run_binary_classification(
+    fc_matrix, group_labels,
+    n_top_features=50,
+    method='random_forest',
+    cv_method=5,
+    annotations=annotation_df,           # optional gene-name relabeling
+    return_model=True,                   # keep the fitted pipeline
+)
+
+# cr now also carries:
+#   cr['final_model']  - fitted classifier
+#   cr['scaler']       - StandardScaler used during training
+#   cr['X_scaled']     - feature matrix on the same scale
+#   cr['y_encoded']    - label-encoded labels
+#   cr['feature_ids']  - original IDs (preserved when annotations= is set)
+
+explanation = ptk.compute_shap_values(
+    model           = cr['final_model'],
+    X               = cr['X_scaled'],
+    feature_names   = cr['feature_names'],   # already gene-relabeled
+    annotations     = annotation_df,         # optional; round-trip safe
+)
+
+# Beeswarm summary of the top features (default plot_type='beeswarm')
+ptk.plot_shap_summary(explanation, max_display=20)
+
+# Mean |SHAP| bar plot
+ptk.plot_shap_summary(explanation, max_display=20, plot_type='bar')
+```
+
+`compute_shap_values` returns a 2-D `shap.Explanation` for the
+positive class (class 1 under sklearn `LabelEncoder`'s alphabetical
+ordering), so the result is directly usable with `shap.plots.beeswarm`
+and friends. Linear and SVM models are not supported by `TreeExplainer`;
+use `shap.LinearExplainer` directly for those.
 
 See [06-statistical-analysis.md](06-statistical-analysis.md) for upstream
 fold-change generation details.

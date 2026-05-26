@@ -6,7 +6,7 @@ Functions for creating plots and visualizations for proteomics data analysis.
 
 import logging
 import warnings
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -2475,6 +2475,294 @@ def plot_grouped_heatmap(
     return fig
 
 
+_MISSING_LABEL_TOKENS = frozenset({"", "na", "nan", "none", "null", "n/a"})
+
+
+def _resolve_row_labels(
+    data: pd.DataFrame,
+    primary_column: Optional[str],
+    fallback_columns: Optional[List[str]] = None,
+) -> List[str]:
+    """Build human-readable row labels with a fallback chain across annotation columns.
+
+    For each row, the first non-empty, non-missing value across
+    ``[primary_column, *fallback_columns]`` is used. Values that are empty,
+    ``None``/``NaN``, or one of the case-insensitive sentinels in
+    :data:`_MISSING_LABEL_TOKENS` (``"NA"``, ``"NaN"``, ``"None"``, ``"null"``,
+    ``"n/a"``, or the empty string) are treated as missing. If every candidate
+    is missing for a given row, the DataFrame index entry is used as a last
+    resort.
+
+    PRISM rollup outputs commonly carry the literal string ``"NA"`` in
+    ``leading_gene_name`` for custom or unmapped protein entries
+    (e.g. spiked synthetic standards). The fallback chain lets callers pass
+    ``primary_column="leading_gene_name"`` with
+    ``fallback_columns=["leading_uniprot_id", "protein_group"]`` and get a
+    useful label instead of an opaque index integer.
+
+    Args:
+        data: DataFrame containing the candidate label columns.
+        primary_column: First column to consult, or ``None`` to use only the
+            fallback columns.
+        fallback_columns: Ordered list of additional columns to try if the
+            primary column is missing for a given row.
+
+    Returns:
+        A list of label strings, one per row of ``data`` (in row order).
+    """
+    candidates = []
+    if primary_column is not None and primary_column in data.columns:
+        candidates.append(primary_column)
+    if fallback_columns:
+        for col in fallback_columns:
+            if col in data.columns and col not in candidates:
+                candidates.append(col)
+
+    def _is_missing(v: Any) -> bool:
+        if v is None:
+            return True
+        try:
+            if isinstance(v, float) and pd.isna(v):
+                return True
+        except (TypeError, ValueError):
+            pass
+        s = str(v).strip()
+        return s.lower() in _MISSING_LABEL_TOKENS
+
+    labels: List[str] = []
+    for idx, row in zip(data.index, data.itertuples(index=False)):
+        chosen: Optional[str] = None
+        row_dict = dict(zip(data.columns, row))
+        for col in candidates:
+            v = row_dict.get(col)
+            if not _is_missing(v):
+                chosen = str(v).strip()
+                break
+        labels.append(chosen if chosen is not None else str(idx))
+    return labels
+
+
+def plot_sample_clustermap(
+    data: pd.DataFrame,
+    sample_columns: List[str],
+    sample_metadata: Optional[Dict[str, Dict]] = None,
+    group_column: str = "Group",
+    group_colors: Optional[Dict[str, str]] = None,
+    label_column: Optional[str] = None,
+    label_fallback_columns: Optional[List[str]] = None,
+    title: str = "Clustered Heatmap",
+    zscore: bool = True,
+    cmap: str = "RdBu_r",
+    vmin: float = -2.0,
+    vmax: float = 2.0,
+    figsize: Optional[Tuple[float, float]] = None,
+    row_cluster: bool = True,
+    col_cluster: bool = True,
+    method: str = "average",
+    metric: str = "correlation",
+    show_row_labels: Optional[bool] = None,
+    show_col_labels: bool = False,
+    legend_title: Optional[str] = None,
+) -> "sns.matrix.ClusterGrid":
+    """Hierarchical clustermap of samples x features with optional group color bar.
+
+    Builds a seaborn ``clustermap`` from a feature-selected subset of proteins.
+    Both rows (features) and columns (samples) are hierarchically clustered by
+    default. When ``sample_metadata`` is supplied, a top color bar annotates
+    each column by group (e.g., Control vs Xray).
+
+    Args:
+        data: DataFrame with features as rows. Must contain all entries in
+            ``sample_columns``; may also contain annotation columns (e.g.
+            ``leading_gene_name``) used for row labels.
+        sample_columns: Column names of ``data`` to plot as columns of the
+            heatmap.
+        sample_metadata: Optional per-sample metadata dict. Keys are sample
+            column names; values are dicts containing at least ``group_column``.
+            When provided, a top color bar annotates each column.
+        group_column: Key in each ``sample_metadata`` dict identifying the
+            group label.
+        group_colors: Optional mapping from group label to color string. When
+            ``None``, colors are auto-assigned from matplotlib's tab10 palette.
+        label_column: Column in ``data`` to use as row labels (e.g.
+            ``"leading_gene_name"``). If ``None``, the DataFrame's index is
+            used. Missing values (``NaN``/``None`` or case-insensitive
+            ``"NA"``/``"NaN"``/``"None"``/``"null"``/``"n/a"``/empty string)
+            are resolved through ``label_fallback_columns``.
+        label_fallback_columns: Ordered list of column names to consult when
+            ``label_column`` is missing for a row. When ``None``, defaults to
+            ``["leading_uniprot_id", "protein_group"]`` if those columns are
+            present in ``data`` (a PRISM-friendly default). Pass ``[]`` to
+            disable fallback and reproduce the legacy behaviour of falling
+            back directly to the DataFrame index.
+        title: Figure suptitle.
+        zscore: z-score features (rows) before clustering and plotting. The
+            default ``True`` matches the typical 'show me the relative pattern
+            across samples' interpretation.
+        cmap, vmin, vmax: matplotlib colormap parameters for the heatmap.
+            ``vmin``/``vmax`` only apply when ``zscore=True``; otherwise the
+            color scale auto-fits.
+        figsize: Figure size. Auto-sized from the row/column counts if
+            ``None``.
+        row_cluster, col_cluster: Whether to cluster rows / columns
+            hierarchically. Set ``col_cluster=False`` to preserve sample
+            ordering (e.g. by treatment) while still clustering features.
+        method: Linkage method passed to ``scipy.cluster.hierarchy.linkage``
+            via ``sns.clustermap``. ``"average"`` is robust for proteomics
+            features.
+        metric: Distance metric. ``"correlation"`` is the standard choice
+            for z-scored protein abundance.
+        show_row_labels: If ``None`` (default), labels are shown when there
+            are at most 80 rows. Pass ``True`` or ``False`` to force.
+        show_col_labels: Whether to show sample column labels along the
+            x-axis. Off by default since sample IDs are typically noisy.
+        legend_title: Title for the group-color legend. Defaults to
+            ``group_column``.
+
+    Returns:
+        seaborn.matrix.ClusterGrid: The clustermap grid; access
+        ``g.ax_heatmap``, ``g.ax_col_dendrogram`` etc. for further tweaks.
+
+    Raises:
+        ValueError: If ``sample_columns`` is empty or contains entries not
+            present in ``data``.
+    """
+    if not sample_columns:
+        raise ValueError("sample_columns must be non-empty.")
+    missing = [c for c in sample_columns if c not in data.columns]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} sample column(s) not found in data: "
+            f"{missing[:3]}{'...' if len(missing) > 3 else ''}"
+        )
+
+    # Build the numeric matrix (features x samples). z-score per row so
+    # clustering and the colormap reflect relative patterns across samples.
+    matrix = data[sample_columns].apply(pd.to_numeric, errors="coerce")
+
+    if zscore:
+        row_means = matrix.mean(axis=1)
+        row_stds = matrix.std(axis=1, ddof=0).replace(0, 1.0)
+        matrix = matrix.sub(row_means, axis=0).div(row_stds, axis=0)
+        heat_vmin, heat_vmax = vmin, vmax
+        cbar_label = "Z-score"
+    else:
+        heat_vmin = heat_vmax = None
+        cbar_label = "Value"
+
+    # Drop rows that are entirely NaN (clustermap can't cluster on all-NaN).
+    keep_mask = matrix.notna().any(axis=1)
+    if not keep_mask.all():
+        dropped = (~keep_mask).sum()
+        logger.warning(
+            "plot_sample_clustermap: dropped %d row(s) that were entirely NaN.",
+            int(dropped),
+        )
+        matrix = matrix.loc[keep_mask]
+        data_kept = data.loc[keep_mask]
+    else:
+        data_kept = data
+
+    # Fill remaining NaNs with row mean (post-zscore, that's 0). Without this
+    # clustermap aborts on NaN.
+    matrix = matrix.fillna(0.0)
+
+    # Row labels: walk a fallback chain so rows with missing/"NA"
+    # leading_gene_name (a common case for custom or unmapped PRISM entries)
+    # still get a meaningful label.
+    if label_column is not None and label_column in data_kept.columns:
+        if label_fallback_columns is None:
+            fallback_candidates = ["leading_uniprot_id", "protein_group"]
+            fallback_columns = [
+                c for c in fallback_candidates if c in data_kept.columns and c != label_column
+            ]
+        else:
+            fallback_columns = list(label_fallback_columns)
+        labels = _resolve_row_labels(
+            data_kept,
+            primary_column=label_column,
+            fallback_columns=fallback_columns,
+        )
+        matrix = matrix.copy()
+        matrix.index = labels
+
+    # Top color bar from sample_metadata
+    col_colors = None
+    legend_entries: List[Tuple[str, str]] = []
+    if sample_metadata is not None:
+        groups = [
+            (sample_metadata.get(c, {}) or {}).get(group_column, "Unknown")
+            for c in sample_columns
+        ]
+        unique_groups = list(dict.fromkeys(groups))  # preserve first-seen order
+        if group_colors is None:
+            palette = plt.get_cmap("tab10").colors
+            group_colors = {
+                g: mcolors.to_hex(palette[i % len(palette)])
+                for i, g in enumerate(unique_groups)
+            }
+        col_colors = pd.Series(
+            [group_colors.get(g, "#cccccc") for g in groups],
+            index=sample_columns,
+            name=group_column,
+        )
+        legend_entries = [(g, group_colors.get(g, "#cccccc")) for g in unique_groups]
+
+    if show_row_labels is None:
+        show_row_labels = matrix.shape[0] <= 80
+    yticklabels = list(matrix.index) if show_row_labels else False
+    xticklabels = list(matrix.columns) if show_col_labels else False
+
+    if figsize is None:
+        width = max(8.0, min(20.0, matrix.shape[1] * 0.18 + 6.0))
+        height = max(6.0, min(22.0, matrix.shape[0] * 0.20 + 4.0))
+        figsize = (width, height)
+
+    grid = sns.clustermap(
+        matrix,
+        cmap=cmap,
+        vmin=heat_vmin,
+        vmax=heat_vmax,
+        row_cluster=row_cluster,
+        col_cluster=col_cluster,
+        method=method,
+        metric=metric,
+        col_colors=col_colors,
+        figsize=figsize,
+        yticklabels=yticklabels,
+        xticklabels=xticklabels,
+        cbar_kws={"label": cbar_label},
+        linewidths=0,
+        rasterized=True,
+    )
+
+    # Title above the column dendrogram
+    grid.figure.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+
+    # Tidy y-tick label fontsize when labels are shown
+    if show_row_labels and matrix.shape[0] > 0:
+        grid.ax_heatmap.tick_params(axis="y", labelsize=8)
+        plt.setp(grid.ax_heatmap.get_yticklabels(), rotation=0)
+
+    # Add a legend for the group color bar
+    if legend_entries:
+        from matplotlib.patches import Patch
+
+        handles = [Patch(facecolor=color, label=str(group)) for group, color in legend_entries]
+        grid.ax_col_dendrogram.legend(
+            handles=handles,
+            title=legend_title or group_column,
+            loc="center",
+            bbox_to_anchor=(1.15, 0.5),
+            bbox_transform=grid.ax_col_dendrogram.transAxes,
+            frameon=False,
+            fontsize=10,
+            title_fontsize=11,
+        )
+
+    return grid
+
+
 def plot_grouped_trajectories(
     data_df: pd.DataFrame,
     value_columns: List[str],
@@ -3422,15 +3710,18 @@ def plot_variance_vs_intensity(
         If ``results`` does not carry the intensity-trend points (i.e.
         was not produced with ``moderation="intensity_trend"``).
     """
-    pts = None
-    if hasattr(results, "attrs"):
-        pts = results.attrs.get("intensity_trend_points")
-    if pts is None:
+    # Route through the canonical accessor so both records-form and legacy
+    # DataFrame-form storage in attrs are handled uniformly.
+    from .statistical_analysis import get_intensity_trend_points
+
+    try:
+        pts = get_intensity_trend_points(results)
+    except ValueError as e:
         raise ValueError(
             "Results DataFrame does not carry intensity-trend points. "
             "Run run_moderated_linear_model with config.moderation='intensity_trend' "
             "first, or pass get_intensity_trend_points(results)."
-        )
+        ) from e
 
     mean_intensity = pts["mean_intensity"].to_numpy(dtype=float)
     sd_intensity = pts["sd_intensity"].to_numpy(dtype=float)

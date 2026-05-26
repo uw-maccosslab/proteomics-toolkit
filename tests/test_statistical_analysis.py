@@ -463,9 +463,10 @@ class TestModeratedLinearModelIntensityTrend:
         result = run_moderated_linear_model(feature_data, metadata_df, config)
         for col in ("Protein", "logFC", "t", "P.Value", "intensity_s0_sq", "intensity_used"):
             assert col in result.columns
-        # Per-(feature, group) points DataFrame is stashed on attrs
-        pts = result.attrs.get("intensity_trend_points")
-        assert pts is not None
+        # Per-(feature, group) points are stashed on attrs as a list of records
+        # (one dict per row) to avoid tripping pandas attrs-equality. Recover
+        # the DataFrame via the canonical accessor.
+        pts = get_intensity_trend_points(result)
         assert {"feature_idx", "group", "mean_intensity", "sd_intensity", "predicted_sd"}.issubset(pts.columns)
 
     def test_get_intensity_trend_points_accessor(self):
@@ -490,6 +491,57 @@ class TestModeratedLinearModelIntensityTrend:
         top10 = set(result.sort_values("P.Value").head(10)["Protein"])
         expected = {f"P{i:04d}" for i in range(10)}
         assert top10 == expected
+
+    def test_intensity_trend_attrs_do_not_break_pandas_ops(self):
+        """Regression: prior to records-form storage, attaching a DataFrame
+        to ``results_df.attrs["intensity_trend_points"]`` made any subsequent
+        nsmallest / sort_values / concat raise "The truth value of a
+        DataFrame is ambiguous" because pandas compares attrs by equality
+        on concat and DataFrame == DataFrame returns a DataFrame.
+        """
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        # These ops must not raise; before the fix they raised ValueError.
+        _ = result.nsmallest(5, "P.Value")
+        _ = result.sort_values("P.Value").head(5)
+
+    def test_intensity_trend_attrs_do_not_slow_iterrows(self):
+        """Regression: storing the per-(feature, group) points as a plain
+        list of dicts in attrs makes pandas deep-copy the entire list every
+        time it propagates attrs to a new object - including the Series
+        yielded by every iterrows step. For a real protein matrix (~8k
+        proteins * 2 groups = ~17k records) that turns an 8k-row iterrows
+        loop from ~2s into ~22 minutes. Wrapping the records in
+        ``_AttrsPayload`` (a deepcopy-no-op sentinel) avoids the cost.
+
+        This test asserts that iterrows over the result is fast and that
+        the per-row Series carries the same attrs object identity rather
+        than a fresh copy.
+        """
+        import time
+
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+
+        # Sanity check: payload is present and non-trivial in size
+        pts = get_intensity_trend_points(result)
+        assert len(pts) > 50
+
+        # iterrows must stay quick - small fixture only ~30 rows but the same
+        # deepcopy-per-row code path runs. Allow generous headroom (50ms is
+        # still ~3 orders of magnitude faster than the bug's behaviour).
+        t0 = time.time()
+        rows = list(result.iterrows())
+        elapsed = time.time() - t0
+        assert elapsed < 1.0, f"iterrows took {elapsed:.3f}s - attrs deepcopy may be back"
+
+        # Sentinel sanity: the wrapped payload in attrs is the same object
+        # propagated to each row's attrs (no deepcopy).
+        parent_payload = result.attrs.get("intensity_trend_points")
+        for _, row in rows[:3]:
+            assert row.attrs.get("intensity_trend_points") is parent_payload
 
 
 def _make_confounded_fixture(
@@ -770,8 +822,7 @@ class TestModeratedLinearTrend:
         log_data, raw, meta, config, _ = _make_linear_trend_fixture()
         config._raw_feature_data = raw
         result = run_moderated_linear_model(log_data, meta, config)
-        pts = result.attrs.get("intensity_trend_points")
-        assert pts is not None
+        pts = get_intensity_trend_points(result)
         # 5 unique weeks in the fixture
         assert pts["group"].nunique() == 5
         # 200 features x 5 groups = 1000 rows

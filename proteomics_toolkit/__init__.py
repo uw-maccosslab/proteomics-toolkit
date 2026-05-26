@@ -238,6 +238,7 @@ from .visualization import (
     plot_cv_distribution,  # QC plot: CV distribution across all samples (or by group)
     plot_grouped_heatmap,  # Heatmap for any grouped data
     plot_grouped_trajectories,  # Line plots for grouped trajectories
+    plot_sample_clustermap,  # Bi-clustered heatmap with optional top group color bar
     plot_identifications_per_sample,  # QC plot: #features identified per sample (bar)
     plot_individual_control_pool_analysis,  # Detailed: Individual control pool analysis
     plot_intensity_distributions,  # QC plot: Density overlay of intensity per sample
@@ -328,6 +329,7 @@ __all__ = [
     "plot_individual_control_pool_analysis",  # Detailed control analysis
     "plot_grouped_heatmap",  # Heatmap for any grouped data
     "plot_grouped_trajectories",  # Trajectory plots for groups
+    "plot_sample_clustermap",  # Bi-clustered heatmap with optional top group color bar
     "plot_protein_profile",  # Single protein profile
     "plot_missing_value_heatmap",  # QC: missing-value pattern (proteins or peptides)
     "plot_identifications_per_sample",  # QC: #features identified per sample

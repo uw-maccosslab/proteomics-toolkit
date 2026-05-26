@@ -10,13 +10,16 @@ A Python toolkit for analyzing mass spectrometry-based proteomics data, supporti
 ## Features
 
 ### Core Analysis Modules
-- **data_import**: Load Skyline CSV or PRISM parquet data, handle batch suffixes, manage sample metadata
+- **data_import**: Load Skyline CSV, PRISM parquet, or DIA-NN `pg_matrix.tsv` data, handle batch suffixes, manage sample metadata
 - **preprocessing**: Protein identifier parsing, sample classification, data quality assessment
 - **normalization**: Seven normalization methods (median, VSN, quantile, MAD, z-score, RLR, LOESS)
-- **statistical_analysis**: Differential protein analysis — t-tests, Wilcoxon, Mann-Whitney, mixed-effects models
-- **visualization**: Publication-ready plots — volcano, PCA, box plots, heatmaps, correlation, trajectories
+- **statistical_analysis**: Differential protein analysis — t-tests, Wilcoxon, Mann-Whitney, mixed-effects, moderated linear model with empirical-Bayes variance shrinkage (limma / DEqMS / intensity-trend)
+- **visualization**: Publication-ready plots — volcano, PCA, box plots, heatmaps, correlation, trajectories, bi-clustered sample clustermaps, UMAP, PCA loadings
 - **enrichment**: Gene set enrichment via Enrichr API
 - **temporal_clustering**: K-means clustering of temporal protein trends
+- **classification**: Binary classification with cross-validation, SHAP interpretability, multi-class permutation importance
+- **marker_discovery**: Descriptive marker-discovery metrics and silhouette-driven k-means clustering for low-n designs
+- **multivariate**: PERMANOVA variance partitioning on sample-by-sample distance matrices
 - **validation**: Metadata/data consistency checking with diagnostic reports
 - **export**: Standardized result export with timestamped configs
 
@@ -251,7 +254,10 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 
 ### data_import.py
 - `load_skyline_data()` — Load Skyline protein/peptide CSVs + metadata
-- `load_prism_data()` — Load PRISM parquet + metadata
+- `load_prism_data()` — Load PRISM protein parquet + metadata
+- `load_prism_peptide_data()` — Load PRISM peptide parquet
+- `load_diann_data()` — Load DIA-NN `report.pg_matrix.tsv` protein-group matrix
+- `load_fasta_sequences()` — Parse a FASTA file into `{accession -> sequence}`
 - `identify_sample_columns()` — Auto-detect sample columns
 - `clean_sample_names()` — Remove common prefixes/suffixes
 - `detect_batch_suffix()` — Detect PRISM `__@__` batch suffix
@@ -285,7 +291,10 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 
 ### statistical_analysis.py
 - `StatisticalConfig` — Configuration class (zero-arg constructor, set attributes individually)
-- `run_comprehensive_statistical_analysis()` — Main analysis entry point
+- `run_comprehensive_statistical_analysis()` — Main analysis entry point (dispatches by `statistical_test_method`)
+- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='intensity_trend'` / `'limma'` / `'deqms'`); supports covariate adjustment for `analysis_type='unpaired'`
+- `get_intensity_trend_points()` — Recover the per-(feature, group) diagnostic points DataFrame from a moderated `intensity_trend` results object
+- `compute_paired_fold_changes()` — Build a per-subject fold-change matrix for paired designs (used as input to the classification module)
 - `display_analysis_summary()` — Print/return summary of results
 - `run_statistical_analysis()` — Backward-compatible wrapper
 
@@ -293,8 +302,14 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `plot_box_plot()` — Sample intensity distributions by group
 - `plot_volcano()` — Volcano plot with labeled top hits
 - `plot_pca()` — PCA with group coloring, optional log-transform
+- `plot_pca_loadings()` — PCA loadings biplot with top-N protein labels
+- `plot_umap()` — UMAP projection of samples colored by metadata group (requires `[umap]` extra)
 - `plot_comparative_pca()` — Compare PCA across normalization methods
 - `plot_normalization_comparison()` — Before/after normalization QC
+- `plot_missing_value_heatmap()` — Missing-value pattern across samples x features
+- `plot_identifications_per_sample()` — Bar plot of #features identified per sample
+- `plot_intensity_distributions()` — Density overlay of intensity per sample
+- `plot_cv_distribution()` — CV distribution across all samples (or by group)
 - `plot_sample_correlation_heatmap()` — Full correlation matrix
 - `plot_sample_correlation_triangular_heatmap()` — Lower-triangle correlation
 - `plot_control_correlation()` — Control sample correlation with optional clustering
@@ -303,8 +318,12 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `plot_individual_control_pool_analysis()` — Individual control analysis
 - `plot_control_cv_distribution()` — CV distribution for control samples
 - `plot_grouped_heatmap()` — Heatmap for any grouped data
+- `plot_sample_clustermap()` — Bi-clustered heatmap of samples x features with optional group color bar
 - `plot_grouped_trajectories()` — Line plots for temporal/dose-response data
 - `plot_protein_profile()` — Single protein expression profile
+- `plot_peptide_coverage_map()` — Peptide positions along a protein sequence with optional coloring by abundance / fold-change
+- `plot_variance_vs_intensity()` — Diagnostic for the `intensity_trend` moderation prior
+- `plot_variance_vs_peptide_count()` — Diagnostic for the DEqMS moderation prior
 
 ### enrichment.py
 - `EnrichmentConfig` — Configuration dataclass (libraries, thresholds, API settings)
@@ -330,6 +349,25 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `run_enrichment_by_cluster()` — Enrichment per cluster
 - `plot_cluster_heatmap()` — Cluster-organized heatmap
 - `plot_cluster_parallel_coordinates()` — Parallel coordinate plots
+
+### classification.py
+- `run_binary_classification()` — Binary classification with feature selection and cross-validation; returns CV metrics, ROC data, and (with `return_model=True`) the fitted pipeline
+- `select_features_by_mad()` — Unsupervised feature ranking by MAD across subjects (the leakage-free default selector)
+- `compute_shap_values()` — `shap.TreeExplainer` wrapper for RandomForest / XGBoost binary classifiers; collapses to the 2-D positive-class slice (requires `[shap]` extra)
+- `plot_shap_summary()` — SHAP beeswarm or bar summary for the top features (requires `[shap]` extra)
+- `relabel_features_with_genes()` — Map pipeline-internal feature IDs (e.g. PRISM `PG####`) to gene symbols for plot labels and importance tables, with fallback to the original ID
+- `multiclass_feature_importance()` — Multi-class RF / XGBoost permutation importance with bootstrap stability scores, for descriptive marker discovery in low-replication designs
+- `plot_fold_change_pca()` — PCA of per-subject fold-changes by group
+- `plot_roc_curve()` — ROC curve from a single classification result (with per-fold mean +/- SD band)
+- `plot_roc_comparison()` — Overlay ROC curves from multiple methods
+
+### marker_discovery.py
+- `method_specificity_score()` — Per-(protein, group) descriptive marker score: group mean, distance from the second-best group (`delta_top`), specificity vs across-group median, and rank
+- `inter_vs_intra_group_variance()` — Per-protein ratio of variance across group means to mean within-group variance; descriptive complement to ANOVA when n per group is too small
+- `cluster_proteins_kmeans()` — K-means clustering of proteins over samples with silhouette-driven k selection; supports per-protein z-score for shape-based clustering
+
+### multivariate.py
+- `permanova()` — Anderson 2001 PERMANOVA on a sample-by-sample distance matrix with label permutation for significance; supports euclidean, braycurtis, cosine, correlation, and cityblock metrics
 
 ### validation.py
 - `validate_metadata_data_consistency()` — Check metadata matches data columns
