@@ -169,6 +169,63 @@ class TestNestedDifferentialAbundance:
         assert "auc_roc" in result
 
 
+class TestNestedVarianceRatio:
+    def test_runs_and_returns_schema(self, fold_change_matrix, group_labels):
+        result = run_binary_classification(
+            fold_change_matrix,
+            group_labels,
+            feature_selection="variance_ratio",
+            n_top_features=10,
+            cv_method=3,
+        )
+        assert result["feature_selection"] == "variance_ratio"
+        assert result["n_features"] == 10
+        # Final-model feature names: 10 picked from full data
+        assert len(result["feature_names"]) == 10
+        assert "accuracy" in result
+        assert "auc_roc" in result
+
+    def test_picks_high_inter_low_intra_features(self):
+        # Build a synthetic matrix where 3 features have huge inter/intra
+        # variance ratio and 17 are pure noise. The selector must rank the
+        # 3 signal features highest.
+        import numpy as np
+        import pandas as pd
+
+        rng = np.random.default_rng(0)
+        n_per_group = 20
+        n_noise = 17
+        n_signal = 3
+        groups = ["A"] * n_per_group + ["B"] * n_per_group
+        subjects = [f"S{i:02d}" for i in range(2 * n_per_group)]
+
+        noise = rng.normal(0, 1, size=(2 * n_per_group, n_noise))
+        signal = np.empty((2 * n_per_group, n_signal))
+        signal[:n_per_group] = rng.normal(-3, 0.2, size=(n_per_group, n_signal))
+        signal[n_per_group:] = rng.normal(+3, 0.2, size=(n_per_group, n_signal))
+
+        cols = [f"signal_{i}" for i in range(n_signal)] + [
+            f"noise_{i}" for i in range(n_noise)
+        ]
+        X = pd.DataFrame(
+            np.hstack([signal, noise]),
+            index=subjects,
+            columns=cols,
+        )
+        y = pd.Series(groups, index=subjects)
+
+        result = run_binary_classification(
+            X, y,
+            feature_selection="variance_ratio",
+            n_top_features=3,
+            cv_method=3,
+            method="linear_svm",
+        )
+        # All 3 signal features should be in the top 3
+        top3 = set(result["feature_names"])
+        assert top3 == {f"signal_{i}" for i in range(n_signal)}
+
+
 class TestFoldChangeSelectionStillAvailable:
     def test_explicit_fold_change_mode(self, fold_change_matrix, group_labels):
         result = run_binary_classification(

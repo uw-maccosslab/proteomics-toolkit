@@ -68,6 +68,45 @@ def _select_top_by_ttest(X_train, y_train, n_top_features):
     return order[:n].tolist()
 
 
+def _select_top_by_variance_ratio(X_train, y_train, n_top_features):
+    """Rank columns of X_train by inter-group / intra-group variance ratio.
+
+    For each feature, computes ``var(group_means) / mean(within_group_var)``
+    using only the training subset. This is the same ranking criterion as
+    :func:`~proteomics_toolkit.marker_discovery.inter_vs_intra_group_variance`
+    but computed per-fold so the held-out test labels never enter feature
+    ranking. For 2+ groups it is monotonically related to the one-way ANOVA
+    F-statistic.
+
+    Falls back to MAD ranking when a fold has fewer than two distinct
+    classes (degenerate stratification).
+    """
+    classes = np.unique(y_train)
+    if len(classes) < 2:
+        train_df = pd.DataFrame(X_train)
+        return list(select_features_by_mad(train_df, n_top_features=n_top_features))
+
+    means_list, vars_list = [], []
+    for c in classes:
+        mask = y_train == c
+        means_list.append(np.nanmean(X_train[mask], axis=0))
+        # ddof=1 sample variance, matching numpy/limma conventions
+        vars_list.append(np.nanvar(X_train[mask], axis=0, ddof=1))
+    means_mat = np.column_stack(means_list)
+    vars_mat = np.column_stack(vars_list)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        inter = np.nanvar(means_mat, axis=1, ddof=1)
+        intra = np.nanmean(vars_mat, axis=1)
+        ratio = np.where(intra > 0, inter / intra, np.nan)
+
+    ratio = np.asarray(ratio, dtype=float)
+    ratio[~np.isfinite(ratio)] = -np.inf
+    order = np.argsort(-ratio)  # descending
+    n = min(n_top_features, len(order))
+    return order[:n].tolist()
+
+
 def run_binary_classification(
     fold_change_matrix,
     group_labels,
@@ -99,9 +138,19 @@ def run_binary_classification(
       the classifier and score the held-out test split. This is the
       statistically correct way to use a supervised ranker without
       leakage.
+    - ``"variance_ratio"``: nested supervised selection by inter-group /
+      intra-group variance ratio (the F-ratio used by
+      :func:`~proteomics_toolkit.marker_discovery.inter_vs_intra_group_variance`).
+      Per-fold: rank features by ``var(group_means) / mean(within_group_var)``
+      on the training subset only, take the top ``n_top_features``. Like
+      ``"differential_abundance"`` this avoids leakage by re-selecting per
+      fold; useful when you want to rank by "are the group means well
+      separated relative to within-group spread" rather than a pairwise
+      t-statistic.
     - ``"fold_change"``: legacy behaviour - top by absolute mean
       fold-change across all subjects. **Leaky on small datasets** when
-      classes differ systematically; use MAD or nested DA instead.
+      classes differ systematically; use MAD, nested DA, or nested
+      variance_ratio instead.
 
     Passing an explicit ``feature_proteins`` list overrides the automatic
     selection for every fold. This is appropriate when the feature list
@@ -119,8 +168,9 @@ def run_binary_classification(
         n_top_features: Number of top features to select when
             ``feature_proteins`` is None. Applies to all three selection
             strategies.
-        feature_selection: One of ``"mad"`` (default), ``"differential_abundance"``,
-            or ``"fold_change"``. See above for details.
+        feature_selection: One of ``"mad"`` (default),
+            ``"differential_abundance"``, ``"variance_ratio"``, or
+            ``"fold_change"``. See above for details.
         method: Classification method. One of 'logistic_regression',
             'random_forest', 'linear_svm', or 'xgboost'.
         cv_method: Cross-validation strategy. Integer for k-fold (default 5),
@@ -155,16 +205,17 @@ def run_binary_classification(
             'confusion_matrix': Confusion matrix as numpy array.
             'cv_predictions': DataFrame with true and predicted labels.
             'feature_importances': Series of feature importance scores
-                (from final fit on all data; for ``differential_abundance``
-                this uses the full-data DA ranking and is meant as a
-                descriptive summary, not a CV-validated metric).
+                (from final fit on all data; for nested selectors
+                ``differential_abundance`` and ``variance_ratio`` this
+                uses the full-data ranking and is meant as a descriptive
+                summary, not a CV-validated metric).
             'classification_report': Text classification report.
             'n_features': Number of features used per fold.
             'feature_names': For ``mad`` / ``fold_change`` / explicit
                 ``feature_proteins``: the fixed feature set. For
-                ``differential_abundance``: the feature set selected
-                from the full data (distinct from the per-fold sets
-                that drove CV performance).
+                ``differential_abundance`` / ``variance_ratio``: the
+                feature set selected from the full data (distinct from
+                the per-fold sets that drove CV performance).
             'feature_selection': Echo of the strategy used.
             'y_true': Encoded true labels array.
             'y_prob': Predicted probability array.
@@ -199,13 +250,16 @@ def run_binary_classification(
     X = X.dropna(axis=1)
 
     # Feature-selection resolution
-    valid_selection = {"mad", "differential_abundance", "fold_change"}
+    valid_selection = {"mad", "differential_abundance", "variance_ratio", "fold_change"}
     if feature_selection not in valid_selection:
         raise ValueError(
             f"feature_selection must be one of {sorted(valid_selection)}; got {feature_selection!r}"
         )
 
-    nested_da = False
+    # When set, this is the per-fold ranker for a nested-CV strategy.
+    # None means feature selection (if any) was already done up-front and
+    # the per-fold loop runs without re-selecting.
+    nested_selector_fn = None
     if feature_proteins is not None:
         available = [p for p in feature_proteins if p in X.columns]
         if len(available) < 2:
@@ -228,14 +282,19 @@ def run_binary_classification(
             top_features = mean_abs_fc.nlargest(min(n_top_features, len(mean_abs_fc)))
             X = X[top_features.index]
         elif feature_selection == "differential_abundance":
-            # Defer per-fold selection; X stays as the full feature space.
-            nested_da = True
+            nested_selector_fn = _select_top_by_ttest
+        elif feature_selection == "variance_ratio":
+            nested_selector_fn = _select_top_by_variance_ratio
 
     feature_names = list(X.columns)
-    n_features = min(n_top_features, len(feature_names)) if nested_da else len(feature_names)
-    if nested_da:
+    n_features = (
+        min(n_top_features, len(feature_names))
+        if nested_selector_fn is not None
+        else len(feature_names)
+    )
+    if nested_selector_fn is not None:
         print(
-            f"Classification using nested differential-abundance selection "
+            f"Classification using nested {feature_selection} selection "
             f"(top {n_features} per fold, from {len(feature_names)} candidates), "
             f"{len(common_subjects)} subjects"
         )
@@ -300,9 +359,9 @@ def run_binary_classification(
         y_train = y_encoded[train_idx]
         y_test = y_encoded[test_idx]
 
-        if nested_da:
+        if nested_selector_fn is not None:
             # Rank features on the training split only, then subset both splits.
-            top_cols = _select_top_by_ttest(X_train_raw, y_train, n_top_features)
+            top_cols = nested_selector_fn(X_train_raw, y_train, n_top_features)
             X_train_raw = X_train_raw[:, top_cols]
             X_test_raw = X_test_raw[:, top_cols]
 
@@ -357,13 +416,13 @@ def run_binary_classification(
         auc_mean = auc_overall
         auc_std = 0.0
 
-    # Fit final model on all data for feature importances. For nested DA,
-    # select top features using the *full dataset* t-test; this is
+    # Fit final model on all data for feature importances. For nested
+    # selectors, re-rank features using the *full dataset*; this is
     # separate from the CV performance (which used per-fold selections)
     # and is meant as a descriptive summary of which features the method
     # prefers when fed the whole cohort.
-    if nested_da:
-        final_top_cols = _select_top_by_ttest(X_values, y_encoded, n_top_features)
+    if nested_selector_fn is not None:
+        final_top_cols = nested_selector_fn(X_values, y_encoded, n_top_features)
         final_feature_names = [feature_names[i] for i in final_top_cols]
         X_final = X_values[:, final_top_cols]
     else:

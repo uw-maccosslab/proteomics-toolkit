@@ -107,7 +107,7 @@ from . import (
     visualization,  # Plotting and visualization
 )
 
-__version__ = "26.4.2"
+__version__ = "26.4.3"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================
@@ -238,7 +238,6 @@ from .visualization import (
     plot_cv_distribution,  # QC plot: CV distribution across all samples (or by group)
     plot_grouped_heatmap,  # Heatmap for any grouped data
     plot_grouped_trajectories,  # Line plots for grouped trajectories
-    plot_sample_clustermap,  # Bi-clustered heatmap with optional top group color bar
     plot_identifications_per_sample,  # QC plot: #features identified per sample (bar)
     plot_individual_control_pool_analysis,  # Detailed: Individual control pool analysis
     plot_intensity_distributions,  # QC plot: Density overlay of intensity per sample
@@ -248,6 +247,7 @@ from .visualization import (
     plot_pca_loadings,  # PCA loadings biplot with top-N protein labels
     plot_peptide_coverage_map,  # QC plot: Peptide positions along a protein sequence
     plot_protein_profile,  # Single protein profile plot
+    plot_sample_clustermap,  # Bi-clustered heatmap with optional top group color bar
     plot_umap,  # UMAP projection of samples colored by metadata group
     plot_variance_vs_intensity,  # Diagnostic for intensity_trend moderation prior
     plot_variance_vs_peptide_count,  # Diagnostic for DEqMS variance prior
