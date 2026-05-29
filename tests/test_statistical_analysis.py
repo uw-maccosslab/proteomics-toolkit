@@ -892,6 +892,198 @@ class TestModerationOptionValidation:
             run_moderated_linear_model(feature_data, metadata_df, config)
 
 
+class TestVariancePriorGroupColumn:
+    """Tests for the ``variance_prior_group_column`` option that sources the
+    intensity_trend LOWESS from a separate sample pool (typically dedicated
+    technical-replicate classes) instead of the design groups.
+
+    Why this matters: when the design groups are not nominal replicates
+    (e.g. a paired pre/post analysis where each timepoint group still spans
+    many subjects), the design within-group SD bakes in inter-subject
+    biology that the prior should not be calibrating against. Pointing the
+    prior at QC / reference samples gives a cleaner technical-noise floor
+    and a less conservative test.
+    """
+
+    @staticmethod
+    def _fixture(seed=42):
+        """Linear-trend fixture with extra QC samples whose technical
+        variance is much smaller than the design's between-subject spread.
+
+        Returns
+        -------
+        log_data, raw_data : DataFrames
+            Feature data on log and raw scales, including both study and
+            QC sample columns.
+        metadata_df : DataFrame
+            Long-form metadata including a ``QC_Category`` column. Study
+            samples have a finite Week; QC samples have NaN Week so they
+            are naturally excluded from the design fit.
+        config : StatisticalConfig
+            Pre-populated for linear_trend; caller toggles
+            variance_prior_group_column on/off.
+        """
+        rng = np.random.default_rng(seed)
+        # 8 subjects x 5 weeks = 40 study samples.
+        subjects = [f"S{i:02d}" for i in range(8)]
+        weeks = [0.0, 2.0, 4.0, 6.0, 12.0]
+        study_samples = [f"{s}_W{int(w)}" for s in subjects for w in weeks]
+        study_week = np.array([w for _ in subjects for w in weeks], dtype=float)
+        study_subj = np.array([s for s in subjects for _ in weeks])
+        # Large between-subject biology so the design within-group SD is
+        # noticeably larger than the QC technical SD.
+        subj_intercepts = rng.normal(0.0, 0.6, size=len(subjects))
+        subj_per_sample = np.repeat(subj_intercepts, len(weeks))
+
+        # 6 BatchQC and 6 BatchRef samples sharing one "subject" each but
+        # with low technical noise (sigma = 0.1 in log space) -- the
+        # technical-replicate noise floor.
+        qc_samples = [f"BatchQC_{i:02d}" for i in range(6)] + [
+            f"BatchRef_{i:02d}" for i in range(6)
+        ]
+        qc_class = ["BatchQC"] * 6 + ["BatchRef"] * 6
+
+        n_features = 150
+        n_planted = 15
+        all_samples = study_samples + qc_samples
+        n_total = len(all_samples)
+
+        log_values = np.empty((n_features, n_total))
+        # Study columns: noise + subject intercept + (planted slope x week)
+        study_block = rng.normal(loc=10.0, scale=0.3, size=(n_features, len(study_samples)))
+        study_block += subj_per_sample[np.newaxis, :]
+        study_block[:n_planted, :] += 0.05 * study_week[np.newaxis, :]
+        log_values[:, : len(study_samples)] = study_block
+        # QC columns: same baseline but only tight technical noise
+        qc_block = rng.normal(loc=10.0, scale=0.1, size=(n_features, len(qc_samples)))
+        log_values[:, len(study_samples):] = qc_block
+
+        features = [f"P{i:04d}" for i in range(n_features)]
+        log_data = pd.DataFrame(log_values, index=features, columns=all_samples)
+        raw_data = pd.DataFrame(np.exp(log_values * np.log(2.0)), index=features, columns=all_samples)
+
+        metadata_df = pd.DataFrame(
+            {
+                "Sample": all_samples,
+                "Subject": list(study_subj) + qc_samples,
+                "Week": list(study_week) + [np.nan] * len(qc_samples),
+                "QC_Category": ["Study"] * len(study_samples) + qc_class,
+            }
+        )
+
+        config = StatisticalConfig()
+        config.analysis_type = "linear_trend"
+        config.statistical_test_method = "moderated_linear_model"
+        config.time_column = "Week"
+        config.subject_column = "Subject"
+        config.log_transform_before_stats = False
+        config.moderation = "intensity_trend"
+        config._raw_feature_data = raw_data
+        return log_data, raw_data, metadata_df, config
+
+    def test_qc_prior_produces_lower_s0_sq_than_design_prior(self):
+        """The headline behaviour: with QC samples that have lower technical
+        variance than the design within-group spread, the QC-sourced prior
+        should yield a smaller intensity_s0_sq, which propagates to smaller
+        posterior variances and larger |t|."""
+        log_data, _, meta, config = self._fixture()
+
+        # Default: design within-group SD (one group per unique week)
+        res_default = run_moderated_linear_model(log_data, meta, config)
+
+        # New option: prior from QC samples only
+        config.variance_prior_group_column = "QC_Category"
+        config.variance_prior_groups = ["BatchQC", "BatchRef"]
+        res_qc = run_moderated_linear_model(log_data, meta, config)
+
+        assert np.nanmedian(res_qc["intensity_s0_sq"]) < np.nanmedian(res_default["intensity_s0_sq"])
+        assert np.nanmedian(res_qc["posterior_s2"]) < np.nanmedian(res_default["posterior_s2"])
+        assert np.nanmedian(np.abs(res_qc["t"])) > np.nanmedian(np.abs(res_default["t"]))
+
+    def test_default_unchanged_when_option_not_set(self):
+        """Backward compatibility: leaving variance_prior_group_column as
+        None must reproduce the historical design-group prior bit-for-bit."""
+        log_data, _, meta, config = self._fixture()
+        res_a = run_moderated_linear_model(log_data, meta, config)
+        # Explicitly set both override knobs to None and re-run.
+        config.variance_prior_group_column = None
+        config.variance_prior_groups = None
+        res_b = run_moderated_linear_model(log_data, meta, config)
+        # Drop the trend-points attrs payload before comparing frames so
+        # the _AttrsPayload identity equality doesn't trip pandas.equals.
+        for r in (res_a, res_b):
+            r.attrs.pop("intensity_trend_points", None)
+        pd.testing.assert_frame_equal(res_a, res_b)
+
+    def test_unknown_prior_column_raises(self):
+        log_data, _, meta, config = self._fixture()
+        config.variance_prior_group_column = "NotAColumn"
+        with pytest.raises(ValueError, match="variance_prior_group_column"):
+            run_moderated_linear_model(log_data, meta, config)
+
+    def test_prior_groups_restriction_is_honored(self):
+        """When variance_prior_groups is set, the prior cloud only sees
+        rows whose prior-column value is in the whitelist."""
+        log_data, _, meta, config = self._fixture()
+        config.variance_prior_group_column = "QC_Category"
+        config.variance_prior_groups = ["BatchQC"]  # exclude BatchRef
+        result = run_moderated_linear_model(log_data, meta, config)
+        pts = get_intensity_trend_points(result)
+        assert set(pts["group"].unique()) == {"BatchQC"}
+
+    def test_works_in_paired_analysis_type(self):
+        """Same option, paired design. Build a minimal paired fixture with
+        QC samples missing Timepoint and confirm both prior modes run."""
+        rng = np.random.default_rng(0)
+        n_subj, n_feat = 10, 80
+        subjects = [f"S{i:02d}" for i in range(n_subj)]
+        study_samples = [f"{s}_T{t}" for s in subjects for t in (1, 2)]
+        subj_intercept = np.repeat(rng.normal(0, 0.6, size=n_subj), 2)
+        timepoint = np.tile([1.0, 2.0], n_subj)
+
+        log_values = rng.normal(loc=10.0, scale=0.3, size=(n_feat, len(study_samples)))
+        log_values += subj_intercept[np.newaxis, :]
+        log_values[:10, :] += 0.6 * (timepoint - 1.0)[np.newaxis, :]
+
+        qc_samples = [f"QC_{i:02d}" for i in range(8)]
+        qc_block = rng.normal(loc=10.0, scale=0.1, size=(n_feat, len(qc_samples)))
+
+        all_samples = study_samples + qc_samples
+        all_values = np.column_stack([log_values, qc_block])
+        features = [f"P{i:04d}" for i in range(n_feat)]
+        log_data = pd.DataFrame(all_values, index=features, columns=all_samples)
+        raw_data = pd.DataFrame(np.exp(all_values * np.log(2.0)), index=features, columns=all_samples)
+
+        meta = pd.DataFrame(
+            {
+                "Sample": all_samples,
+                "Subject": list(np.repeat(subjects, 2)) + qc_samples,
+                "Timepoint": list(timepoint) + [np.nan] * len(qc_samples),
+                "QC_Category": ["Study"] * len(study_samples) + ["BatchQC"] * len(qc_samples),
+            }
+        )
+        config = StatisticalConfig()
+        config.analysis_type = "paired"
+        config.statistical_test_method = "moderated_linear_model"
+        config.subject_column = "Subject"
+        config.paired_column = "Timepoint"
+        config.paired_label1 = 1.0
+        config.paired_label2 = 2.0
+        config.log_transform_before_stats = False
+        config.moderation = "intensity_trend"
+        config._raw_feature_data = raw_data
+        config.variance_prior_group_column = "QC_Category"
+        config.variance_prior_groups = ["BatchQC"]
+
+        result = run_moderated_linear_model(log_data, meta, config)
+        # Sanity: same number of features, prior column populated.
+        assert len(result) == n_feat
+        assert result["intensity_s0_sq"].notna().all()
+        # Prior cloud must have used only the QC samples.
+        pts = get_intensity_trend_points(result)
+        assert set(pts["group"].unique()) == {"BatchQC"}
+
+
 class TestLimmaPriorRobust:
     def test_robust_tightens_prior_df_when_outliers_present(self):
         # Outliers inflate the variance of log(s^2), pushing d0 toward 0

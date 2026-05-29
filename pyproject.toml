@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proteomics-toolkit"
-version = "26.4.3"
+version = "26.5.0"
 description = "Proteomics analysis toolkit for mass spectrometry data"
 readme = "README.md"
 license = "Apache-2.0"

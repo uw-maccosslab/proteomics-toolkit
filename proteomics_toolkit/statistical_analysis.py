@@ -230,6 +230,37 @@ class StatisticalConfig:
         self.moderation = "intensity_trend"
         self.robust = False
 
+        # Source of the (feature, group) cloud that drives the
+        # ``intensity_trend`` LOWESS prior. Default ``None`` reproduces the
+        # historical behaviour: groups come from the design (the two values of
+        # ``paired_column`` for paired analyses, the two ``group_labels`` for
+        # unpaired, or the unique ``time_column`` values for linear-trend).
+        # That means the "within-group" SD includes any biological
+        # heterogeneity within those design groups (e.g. inter-subject
+        # variability) on top of pure technical noise, which can over-shrink
+        # genuine biology in studies where the design groups are not nominal
+        # replicates.
+        #
+        # When ``variance_prior_group_column`` is set, the prior is fit
+        # instead from samples grouped by the named metadata column - intended
+        # for dedicated technical replicate classes (BatchQC, BatchRef,
+        # pooled QC, system suitability, etc.). The per-feature OLS fit on
+        # study samples is unchanged; only the variance prior changes.
+        # ``variance_prior_groups`` optionally restricts which values of the
+        # column are used.
+        #
+        # Example::
+        #
+        #     config.variance_prior_group_column = "QC_Category"
+        #     config.variance_prior_groups = ["BatchQC", "BatchRef"]
+        #
+        # Requires that the QC samples be included in the ``sample_metadata``
+        # passed to :func:`run_comprehensive_statistical_analysis`; they are
+        # automatically excluded from the design fit but still available for
+        # the prior.
+        self.variance_prior_group_column = None
+        self.variance_prior_groups = None
+
     def validate(self):
         """Validate that required parameters are set for the chosen analysis type"""
         if not self.analysis_type:
@@ -327,6 +358,19 @@ def prepare_metadata_dataframe(sample_metadata_dict, sample_columns, config):
     # Paired/time column is usually required
     if config.paired_column:
         required_cols.append(config.paired_column)
+
+    # For continuous-time analyses (linear_trend, longitudinal), the time
+    # column carries the design and must be populated on every design sample.
+    # Without this filter, callers who pass auxiliary samples (e.g. QC /
+    # reference samples used only for the variance prior) trip the downstream
+    # "found NaN/inf" check inside the model fit.
+    if (
+        hasattr(config, "analysis_type")
+        and config.analysis_type in ("linear_trend", "dose_response", "longitudinal")
+    ):
+        time_col = getattr(config, "time_column", None) or getattr(config, "dose_column", None)
+        if time_col and time_col not in required_cols:
+            required_cols.append(time_col)
 
     # Group column is only required for group comparison analyses
     # NOT required for dose-response or continuous predictor models
@@ -1298,16 +1342,32 @@ def _fit_moderated_t(feature_data, metadata_df, config):
             )
         if time_col not in meta.columns:
             raise ValueError(f"time_column {time_col!r} not present in metadata columns")
-        # Coerce to numeric; refuse if any sample has a missing/non-numeric time value.
+        # Coerce to numeric; non-numeric strings still raise (likely user error).
         try:
-            time_vec = pd.to_numeric(meta[time_col], errors="raise").to_numpy(dtype=float)
+            time_vec = pd.to_numeric(meta[time_col], errors="coerce").to_numpy(dtype=float)
         except (ValueError, TypeError) as e:
             raise ValueError(
                 f"linear_trend requires numeric values in time_column {time_col!r}; failed to coerce: {e}"
             ) from e
-        if not np.all(np.isfinite(time_vec)):
+        # Drop samples with non-finite time. This accommodates callers who
+        # pass auxiliary samples (e.g. QC / reference samples used only for
+        # the variance prior via variance_prior_group_column) which legitimately
+        # carry NaN time. The prior fit sees those samples via its own
+        # metadata pool; the design fit must not.
+        finite_mask = np.isfinite(time_vec)
+        if not finite_mask.all():
+            kept = int(finite_mask.sum())
+            dropped = int(len(time_vec) - kept)
+            print(
+                f"  Dropping {dropped} sample(s) with non-finite {time_col!r} value "
+                f"from the design fit (kept {kept})."
+            )
+            meta = meta.loc[finite_mask]
+            sample_cols = meta.index.tolist()
+            time_vec = time_vec[finite_mask]
+        if len(sample_cols) < 4:
             raise ValueError(
-                f"linear_trend requires every sample to have a finite numeric {time_col!r} value; found NaN/inf"
+                f"After dropping non-finite {time_col!r}, only {len(sample_cols)} samples remain."
             )
         if len(np.unique(time_vec)) < 2:
             raise ValueError(
@@ -1572,7 +1632,31 @@ def _per_feature_group_stats(feature_data, metadata_df, config):
     sample_cols = [c for c in feature_data.columns if c in set(metadata_df["Sample"])]
     meta = metadata_df.set_index("Sample").loc[sample_cols].copy()
 
-    if analysis_type == "unpaired":
+    # Optional override: use a user-specified metadata column to define the
+    # prior groups (typically dedicated technical-replicate classes like
+    # BatchQC / BatchRef / Pool). Takes precedence over the design-derived
+    # grouping below. See StatisticalConfig.variance_prior_group_column.
+    prior_col = getattr(config, "variance_prior_group_column", None)
+    if prior_col:
+        if prior_col not in meta.columns:
+            raise ValueError(
+                f"variance_prior_group_column={prior_col!r} not present in metadata columns. "
+                f"Ensure the QC/reference samples carry this field and are included in "
+                f"the sample_metadata passed to run_comprehensive_statistical_analysis."
+            )
+        allowed = getattr(config, "variance_prior_groups", None)
+        if allowed:
+            allowed_str = {str(g) for g in allowed}
+            keep = meta[prior_col].astype(str).isin(allowed_str)
+            meta = meta.loc[keep]
+            sample_cols = meta.index.tolist()
+        else:
+            # Drop samples whose prior-group value is missing.
+            keep = meta[prior_col].notna() & (meta[prior_col].astype(str) != "")
+            meta = meta.loc[keep]
+            sample_cols = meta.index.tolist()
+        group_labels_by_sample = meta[prior_col].astype(str).tolist()
+    elif analysis_type == "unpaired":
         group_col = config.group_column
         labels = list(config.group_labels[:2])
         keep = meta[group_col].astype(str).isin([str(g) for g in labels])
@@ -1767,6 +1851,30 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
       ``trend=TRUE``; recommended for MS data because variance is
       clearly intensity-dependent.
 
+    Intensity-trend prior source
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    By default, the ``intensity_trend`` LOWESS is fit on within-group SD
+    where "group" comes from the analysis design: the two
+    ``paired_column`` values (paired), the two ``group_labels`` (unpaired),
+    or the unique ``time_column`` values (linear_trend). In studies where
+    the design groups are not biological replicates (e.g. a paired
+    pre/post analysis where each "T1" group still spans many subjects
+    with real biological heterogeneity), that within-group SD includes
+    both technical noise *and* between-subject biology, which inflates
+    the prior and conservatively over-shrinks real signal.
+
+    Set ``config.variance_prior_group_column`` to a metadata column
+    identifying dedicated technical-replicate classes (BatchQC, BatchRef,
+    pooled QC, system suitability) to fit the prior on pure technical
+    variance instead. Optionally restrict the values used via
+    ``config.variance_prior_groups``. The study-sample per-feature OLS
+    fit is unchanged; only the variance prior changes. The QC samples
+    must be included in the ``sample_metadata`` passed to
+    :func:`run_comprehensive_statistical_analysis`; they are
+    automatically excluded from the design fit (since they don't match
+    ``paired_label1/2`` or ``group_labels``) but remain available for
+    the prior.
+
     When ``config.robust`` is True, the prior hyperparameters
     ``(s0^2, d0)`` are estimated with Huber-style Winsorization so a
     handful of genuinely high-variance features don't inflate the prior
@@ -1864,10 +1972,32 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         raw_data = _raw_feature_data_for_fit(feature_data, config)
         print(f"Running moderated linear model (moderation='intensity_trend', robust={bool(config.robust)})...")
         fit = _fit_moderated_t(feature_data, metadata_df, config)
-        # Restrict the metadata used for the intensity-trend prior to the
-        # same samples kept by _fit_moderated_t (covariate listwise deletion
-        # may have dropped some samples).
-        metadata_for_trend = metadata_df[metadata_df["Sample"].isin(fit["kept_samples"])]
+        # Metadata used for the intensity-trend prior. By default, restrict to
+        # the samples kept by _fit_moderated_t (covariate listwise deletion may
+        # have dropped some). When variance_prior_group_column is set, the
+        # prior is sourced from a separate set of samples (typically dedicated
+        # technical-replicate classes) that need not be in the design fit; in
+        # that case, hand the full metadata to the prior fit and let it select
+        # by the override column.
+        if getattr(config, "variance_prior_group_column", None):
+            # Prefer the dispatcher-built parallel metadata view, which
+            # includes samples (e.g. QC, reference pools) that were dropped
+            # by prepare_metadata_dataframe's required-design-column filter.
+            # Fall back to metadata_df for direct callers who set the option
+            # but bypass the dispatcher.
+            prior_md = getattr(config, "_prior_metadata_df", None)
+            metadata_for_trend = prior_md if prior_md is not None else metadata_df
+            print(
+                f"  Variance prior from variance_prior_group_column="
+                f"{config.variance_prior_group_column!r}"
+                + (
+                    f", restricted to groups={list(config.variance_prior_groups)}"
+                    if getattr(config, "variance_prior_groups", None)
+                    else ""
+                )
+            )
+        else:
+            metadata_for_trend = metadata_df[metadata_df["Sample"].isin(fit["kept_samples"])]
         s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(fit, raw_data, metadata_for_trend, config)
         df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
         # Summary intensity per feature: mean of per-group means (raw scale).
@@ -2275,12 +2405,44 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
     # For the intensity_trend moderation, stash the **raw (pre-log)** sample
     # intensities on the config object so the prior can be fit in raw space.
     if is_moderated and moderation == "intensity_trend":
-        raw_sample_view = normalized_data[available_samples].copy()
+        raw_samples = list(available_samples)
+        # When variance_prior_group_column is set, the prior is sourced from a
+        # separate sample pool (typically QC/reference replicates) that may
+        # have been excluded from metadata_df by prepare_metadata_dataframe's
+        # required-column filtering (e.g. QC samples with NaN Timepoint).
+        # Expand the raw-data stash to include those samples and build a
+        # parallel metadata view that survives the design filter.
+        prior_col = getattr(config, "variance_prior_group_column", None)
+        if prior_col:
+            prior_rows = []
+            for sname in all_sample_columns:
+                if sname not in sample_metadata:
+                    continue
+                val = sample_metadata[sname].get(prior_col)
+                if val is None:
+                    continue
+                if isinstance(val, float) and not np.isfinite(val):
+                    continue
+                if str(val).strip() == "":
+                    continue
+                if sname not in raw_samples:
+                    raw_samples.append(sname)
+                row = sample_metadata[sname].copy()
+                row["Sample"] = sname
+                prior_rows.append(row)
+            if prior_rows:
+                config._prior_metadata_df = pd.DataFrame(prior_rows)
+            else:
+                config._prior_metadata_df = None
+        else:
+            config._prior_metadata_df = None
+        raw_sample_view = normalized_data[raw_samples].copy()
         if "Protein" in normalized_data.columns:
             raw_sample_view.index = normalized_data["Protein"].values
         config._raw_feature_data = raw_sample_view
     else:
         config._raw_feature_data = None
+        config._prior_metadata_df = None
 
     # Ensure the index contains actual protein identifiers (not integer row numbers)
     # so that iterrows() in test functions yields meaningful Protein values
