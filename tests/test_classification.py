@@ -442,3 +442,86 @@ class TestRfeEstimatorFactory:
         s_svm = _continuous_scores(svm, X)
         assert s_lr.shape == (20,)
         assert s_svm.shape == (20,)
+
+
+from proteomics_toolkit.classification import run_rfecv_stability
+
+
+class TestRunRfecvStabilitySignal:
+    def test_planted_features_rank_top_and_auc_high(self, rfecv_signal_data):
+        data, labels, signal_features = rfecv_signal_data
+        res = run_rfecv_stability(
+            data, labels, estimator="linear_svm",
+            outer_cv=(5, 4), inner_cv=3, prefilter_top_var=None,
+            n_permutations=30, random_state=0,
+        )
+        # Honest held-out AUC clearly above chance.
+        assert res["outer_auc_mean"] > 0.75
+        # The 5 planted features are the most frequently selected.
+        top5 = list(res["selection_frequency"].head(5).index)
+        assert set(signal_features).issubset(set(top5))
+        # Permutation null says this beats chance.
+        assert res["permutation_p_value"] < 0.05
+
+    def test_return_schema_and_plot_compatibility_keys(self, rfecv_signal_data):
+        data, labels, _ = rfecv_signal_data
+        res = run_rfecv_stability(
+            data, labels, outer_cv=(5, 2), inner_cv=3,
+            prefilter_top_var=None, n_permutations=0, random_state=0,
+        )
+        for key in [
+            "estimator", "outer_auc_mean", "outer_auc_std", "auc_roc", "auc_std",
+            "balanced_accuracy", "per_fold_scores", "selection_frequency",
+            "consensus_features", "n_features_per_fold", "permutation_auc_null",
+            "permutation_p_value", "cv_predictions", "fold_roc_data", "class_names",
+            "n_features", "y_true", "y_prob", "config",
+        ]:
+            assert key in res, f"missing key {key}"
+        assert isinstance(res["selection_frequency"], pd.Series)
+        assert isinstance(res["cv_predictions"], pd.DataFrame)
+        # plot_roc_curve must accept the result without raising.
+        from proteomics_toolkit.classification import plot_roc_curve
+        fig = plot_roc_curve(res)
+        assert fig is not None
+
+    def test_logistic_l1_estimator_runs(self, rfecv_signal_data):
+        data, labels, signal_features = rfecv_signal_data
+        res = run_rfecv_stability(
+            data, labels, estimator="logistic_l1",
+            outer_cv=(5, 2), inner_cv=3, prefilter_top_var=None,
+            n_permutations=0, random_state=0,
+        )
+        assert res["estimator"] == "logistic_l1"
+        assert res["outer_auc_mean"] > 0.75
+
+
+class TestRunRfecvStabilityNoise:
+    def test_noise_auc_near_chance_and_not_significant(self, rfecv_noise_data):
+        data, labels = rfecv_noise_data
+        res = run_rfecv_stability(
+            data, labels, estimator="linear_svm",
+            outer_cv=(5, 4), inner_cv=3, prefilter_top_var=None,
+            n_permutations=30, random_state=0,
+        )
+        assert 0.35 < res["outer_auc_mean"] < 0.65
+        # No feature is selected in almost every fold.
+        assert res["selection_frequency"].max() < 0.9
+        # Permutation test does not flag a signal.
+        assert res["permutation_p_value"] > 0.05
+
+
+class TestRunRfecvStabilityErrors:
+    def test_too_few_samples_raises(self):
+        data = pd.DataFrame(
+            [[1.0, 2.0], [3.0, 4.0]], index=["a", "b"], columns=["F0", "F1"]
+        )
+        labels = pd.Series(["x", "y"], index=["a", "b"])
+        with pytest.raises(ValueError, match="at least 10"):
+            run_rfecv_stability(data, labels)
+
+    def test_non_binary_labels_raise(self, rfecv_signal_data):
+        data, labels, _ = rfecv_signal_data
+        labels = labels.copy()
+        labels.iloc[0] = "third_class"
+        with pytest.raises(ValueError, match="exactly two classes"):
+            run_rfecv_stability(data, labels, n_permutations=0)
