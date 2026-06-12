@@ -241,3 +241,36 @@ use `shap.LinearExplainer` directly for those.
 
 See [06-statistical-analysis.md](06-statistical-analysis.md) for upstream
 fold-change generation details.
+
+## Recursive feature elimination with stability selection
+
+`run_rfecv_stability(data, labels, ...)` finds a compact classifying signature
+in the n-much-less-than-p regime without the optimistic bias of a plain
+`sklearn.RFECV`. It wraps RFECV in an outer `RepeatedStratifiedKFold`, so
+feature selection never sees the fold it is scored on.
+
+It returns:
+
+- `outer_auc_mean` / `outer_auc_std`: honest held-out AUC (with `fold_roc_data`
+  for `plot_roc_curve`, which draws the mean ROC with a +/- 1 SD band).
+- `selection_frequency`: a Series giving the fraction of outer folds in which
+  each feature survived RFE. Features near 1.0 "consistently survive CV".
+- `consensus_features`: features above `consensus_threshold` (default 0.5).
+- `permutation_p_value`: empirical p from a label-shuffle null on the AUC.
+
+```python
+import proteomics_toolkit as ptk
+
+res = ptk.run_rfecv_stability(
+    expr,                 # samples x features
+    labels,               # binary Series indexed by sample
+    estimator="linear_svm",
+    annotations=protein_table,   # optional gene relabeling
+)
+print(res["outer_auc_mean"], res["permutation_p_value"])
+ptk.plot_selection_frequency(res, top_n=30)
+ptk.plot_roc_curve(res)
+```
+
+For peptide-scale matrices, keep `prefilter_top_var` set (e.g. 2000-3000) and
+lower `n_permutations` to control runtime.
