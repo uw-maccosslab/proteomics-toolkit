@@ -409,3 +409,36 @@ class TestShapAnnotations:
         )
         # All labels in the Explanation are gene-prefixed
         assert all(n.startswith("GENE_") for n in explanation.feature_names)
+
+
+from proteomics_toolkit.classification import (
+    _continuous_scores,
+    _make_rfe_estimator,
+)
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+
+
+class TestRfeEstimatorFactory:
+    def test_linear_svm_returns_linearsvc_with_coef(self):
+        est = _make_rfe_estimator("linear_svm", random_state=0)
+        assert isinstance(est, LinearSVC)
+
+    def test_logistic_l1_returns_l1_logistic(self):
+        est = _make_rfe_estimator("logistic_l1", random_state=0)
+        assert isinstance(est, LogisticRegression)
+        assert est.penalty == "l1"
+
+    def test_unknown_estimator_raises(self):
+        with pytest.raises(ValueError, match="estimator"):
+            _make_rfe_estimator("random_forest", random_state=0)
+
+    def test_continuous_scores_prefers_proba_then_decision(self):
+        X = np.random.RandomState(0).normal(size=(20, 4))
+        y = (X[:, 0] > 0).astype(int)
+        lr = LogisticRegression().fit(X, y)
+        svm = LinearSVC(dual="auto").fit(X, y)
+        s_lr = _continuous_scores(lr, X)
+        s_svm = _continuous_scores(svm, X)
+        assert s_lr.shape == (20,)
+        assert s_svm.shape == (20,)

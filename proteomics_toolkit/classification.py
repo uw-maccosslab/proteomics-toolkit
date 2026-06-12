@@ -40,6 +40,45 @@ def select_features_by_mad(fold_change_matrix, n_top_features=50):
     return list(top.index)
 
 
+def _make_rfe_estimator(estimator, random_state=42):
+    """Build a linear estimator exposing ``coef_`` for RFE ranking.
+
+    Args:
+        estimator: ``"linear_svm"`` or ``"logistic_l1"``.
+        random_state: Seed for reproducibility.
+
+    Returns:
+        An unfitted scikit-learn estimator.
+
+    Raises:
+        ValueError: If ``estimator`` is not a supported name.
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.svm import LinearSVC
+
+    if estimator == "linear_svm":
+        # Small C favors a wide margin; dual="auto" handles n_features >> n_samples.
+        return LinearSVC(C=0.01, random_state=random_state, max_iter=5000, dual="auto")
+    if estimator == "logistic_l1":
+        return LogisticRegression(
+            penalty="l1", solver="saga", C=1.0, max_iter=5000, random_state=random_state
+        )
+    raise ValueError(f"Unknown estimator: {estimator!r}. Use 'linear_svm' or 'logistic_l1'.")
+
+
+def _continuous_scores(clf, X):
+    """Return a continuous positive-class score for each row of ``X``.
+
+    AUC and ROC are rank-based, so a calibrated probability is unnecessary:
+    ``decision_function`` (the signed distance from a linear SVM's boundary)
+    ranks samples identically to a calibrated probability and avoids an extra
+    calibration cross-validation. Logistic regression uses ``predict_proba``.
+    """
+    if hasattr(clf, "predict_proba"):
+        return clf.predict_proba(X)[:, 1]
+    return clf.decision_function(X)
+
+
 def _select_top_by_ttest(X_train, y_train, n_top_features):
     """Rank columns of X_train by |Welch t-statistic| between the two classes.
 
