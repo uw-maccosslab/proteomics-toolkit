@@ -60,9 +60,7 @@ def _make_rfe_estimator(estimator, random_state=42):
         # Small C favors a wide margin; dual="auto" handles n_features >> n_samples.
         return LinearSVC(C=0.01, random_state=random_state, max_iter=5000, dual="auto")
     if estimator == "logistic_l1":
-        return LogisticRegression(
-            penalty="l1", solver="saga", C=1.0, max_iter=5000, random_state=random_state
-        )
+        return LogisticRegression(penalty="l1", solver="saga", C=1.0, max_iter=5000, random_state=random_state)
     raise ValueError(f"Unknown estimator: {estimator!r}. Use 'linear_svm' or 'logistic_l1'.")
 
 
@@ -80,8 +78,18 @@ def _continuous_scores(clf, X):
 
 
 def _run_rfecv_outer_cv(
-    X, y, estimator, outer_cv, inner_cv, step, prefilter_top_var,
-    scoring, min_features_to_select, random_state, n_jobs, collect,
+    X,
+    y,
+    estimator,
+    outer_cv,
+    inner_cv,
+    step,
+    prefilter_top_var,
+    scoring,
+    min_features_to_select,
+    random_state,
+    n_jobs,
+    collect,
 ):
     """Run the nested outer-CV RFE-CV procedure once for labels ``y``.
 
@@ -102,9 +110,7 @@ def _run_rfecv_outer_cv(
     from sklearn.preprocessing import StandardScaler
 
     n_splits, n_repeats = outer_cv
-    outer = RepeatedStratifiedKFold(
-        n_splits=n_splits, n_repeats=n_repeats, random_state=random_state
-    )
+    outer = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=random_state)
     inner = StratifiedKFold(n_splits=inner_cv, shuffle=True, random_state=random_state)
 
     n_features_total = X.shape[1]
@@ -156,9 +162,7 @@ def _run_rfecv_outer_cv(
                 fpr, tpr, _ = roc_curve(y_te, scores)
                 fold_roc.append((fpr, tpr, sk_auc(fpr, tpr)))
             for j, idx in enumerate(te):
-                predictions.append(
-                    (int(idx), int(y_te[j]), int(y_pred[j]), float(scores[j]), fold_i)
-                )
+                predictions.append((int(idx), int(y_te[j]), int(y_pred[j]), float(scores[j]), fold_i))
 
     out = {"fold_aucs": fold_aucs}
     if collect:
@@ -235,9 +239,7 @@ def run_rfecv_stability(
     from sklearn.preprocessing import LabelEncoder
 
     if estimator not in ("linear_svm", "logistic_l1"):
-        raise ValueError(
-            f"Unknown estimator: {estimator!r}. Use 'linear_svm' or 'logistic_l1'."
-        )
+        raise ValueError(f"Unknown estimator: {estimator!r}. Use 'linear_svm' or 'logistic_l1'.")
 
     common = data.index.intersection(labels.index)
     if len(common) < 10:
@@ -260,18 +262,23 @@ def run_rfecv_stability(
     class_names = list(le.classes_)
 
     obs = _run_rfecv_outer_cv(
-        X, y, estimator, outer_cv, inner_cv, step, prefilter_top_var,
-        scoring, min_features_to_select, random_state, n_jobs, collect=True,
+        X,
+        y,
+        estimator,
+        outer_cv,
+        inner_cv,
+        step,
+        prefilter_top_var,
+        scoring,
+        min_features_to_select,
+        random_state,
+        n_jobs,
+        collect=True,
     )
 
     total_folds = outer_cv[0] * outer_cv[1]
-    selection_frequency = (
-        pd.Series(obs["sel_counts"] / total_folds, index=feature_names)
-        .sort_values(ascending=False)
-    )
-    consensus_features = list(
-        selection_frequency[selection_frequency >= consensus_threshold].index
-    )
+    selection_frequency = pd.Series(obs["sel_counts"] / total_folds, index=feature_names).sort_values(ascending=False)
+    consensus_features = list(selection_frequency[selection_frequency >= consensus_threshold].index)
 
     fold_aucs = np.asarray(obs["fold_aucs"], dtype=float)
     outer_auc_mean = float(np.nanmean(fold_aucs))
@@ -284,23 +291,29 @@ def run_rfecv_stability(
         for _ in range(n_permutations):
             y_perm = rng.permutation(y)
             perm = _run_rfecv_outer_cv(
-                X, y_perm, estimator, outer_cv, inner_cv, step, prefilter_top_var,
-                scoring, min_features_to_select, random_state, n_jobs, collect=False,
+                X,
+                y_perm,
+                estimator,
+                outer_cv,
+                inner_cv,
+                step,
+                prefilter_top_var,
+                scoring,
+                min_features_to_select,
+                random_state,
+                n_jobs,
+                collect=False,
             )
             null_aucs.append(float(np.nanmean(perm["fold_aucs"])))
     null_aucs = np.asarray(null_aucs, dtype=float)
     permutation_p_value = (
-        float((1 + np.sum(null_aucs >= outer_auc_mean)) / (1 + n_permutations))
-        if n_permutations > 0
-        else None
+        float((1 + np.sum(null_aucs >= outer_auc_mean)) / (1 + n_permutations)) if n_permutations > 0 else None
     )
 
     # Pooled predictions across repeated folds (each sample appears n_repeats times).
     preds = obs["predictions"]
     if preds:
-        balanced_acc = float(
-            balanced_accuracy_score([p[1] for p in preds], [p[2] for p in preds])
-        )
+        balanced_acc = float(balanced_accuracy_score([p[1] for p in preds], [p[2] for p in preds]))
     else:
         balanced_acc = float("nan")
     cv_predictions = pd.DataFrame(
@@ -322,15 +335,18 @@ def run_rfecv_stability(
             consensus_features, annotations, id_col=id_col, gene_col=gene_col
         )
 
-    n_features = (
-        int(np.median(obs["n_features_per_fold"])) if obs["n_features_per_fold"] else 0
-    )
+    n_features = int(np.median(obs["n_features_per_fold"])) if obs["n_features_per_fold"] else 0
 
     logger.info(
         "RFECV stability: estimator=%s, outer AUC=%.3f +/- %.3f, "
         "median features/fold=%d, consensus(>=%.2f)=%d, perm p=%s",
-        estimator, outer_auc_mean, outer_auc_std, n_features,
-        consensus_threshold, len(consensus_features), permutation_p_value,
+        estimator,
+        outer_auc_mean,
+        outer_auc_std,
+        n_features,
+        consensus_threshold,
+        len(consensus_features),
+        permutation_p_value,
     )
 
     return {
@@ -383,9 +399,7 @@ def _select_top_by_ttest(X_train, y_train, n_top_features):
     mask0 = y_train == classes[0]
     mask1 = y_train == classes[1]
     with np.errstate(invalid="ignore", divide="ignore"):
-        tstat, _ = ttest_ind(
-            X_train[mask0], X_train[mask1], axis=0, equal_var=False, nan_policy="omit"
-        )
+        tstat, _ = ttest_ind(X_train[mask0], X_train[mask1], axis=0, equal_var=False, nan_policy="omit")
     tstat = np.abs(np.asarray(tstat, dtype=float))
     tstat[~np.isfinite(tstat)] = -np.inf
     order = np.argsort(-tstat)  # descending
@@ -577,9 +591,7 @@ def run_binary_classification(
     # Feature-selection resolution
     valid_selection = {"mad", "differential_abundance", "variance_ratio", "fold_change"}
     if feature_selection not in valid_selection:
-        raise ValueError(
-            f"feature_selection must be one of {sorted(valid_selection)}; got {feature_selection!r}"
-        )
+        raise ValueError(f"feature_selection must be one of {sorted(valid_selection)}; got {feature_selection!r}")
 
     # When set, this is the per-fold ranker for a nested-CV strategy.
     # None means feature selection (if any) was already done up-front and
@@ -612,11 +624,7 @@ def run_binary_classification(
             nested_selector_fn = _select_top_by_variance_ratio
 
     feature_names = list(X.columns)
-    n_features = (
-        min(n_top_features, len(feature_names))
-        if nested_selector_fn is not None
-        else len(feature_names)
-    )
+    n_features = min(n_top_features, len(feature_names)) if nested_selector_fn is not None else len(feature_names)
     if nested_selector_fn is not None:
         print(
             f"Classification using nested {feature_selection} selection "
@@ -811,7 +819,10 @@ def run_binary_classification(
     # without the caller having to remap.
     if annotations is not None:
         gene_labels = relabel_features_with_genes(
-            final_feature_names, annotations, id_col=id_col, gene_col=gene_col,
+            final_feature_names,
+            annotations,
+            id_col=id_col,
+            gene_col=gene_col,
         )
         feature_names_out = gene_labels
         importances_out = pd.Series(importances.values, index=gene_labels).sort_values(ascending=False)
@@ -830,9 +841,7 @@ def run_binary_classification(
         "classification_report": report,
         "n_features": n_features,
         "feature_names": feature_names_out,
-        "feature_selection": (
-            "explicit" if feature_proteins is not None else feature_selection
-        ),
+        "feature_selection": ("explicit" if feature_proteins is not None else feature_selection),
         "y_true": y_encoded,
         "y_prob": y_prob_all,
         "class_names": class_names,
@@ -897,8 +906,9 @@ def relabel_features_with_genes(
     return [gene_map.get(fid, "") for fid in feature_ids]
 
 
-def compute_shap_values(model, X, feature_names=None, annotations=None,
-                        id_col="protein_group", gene_col="leading_gene_name"):
+def compute_shap_values(
+    model, X, feature_names=None, annotations=None, id_col="protein_group", gene_col="leading_gene_name"
+):
     """Compute SHAP values for a fitted tree-based binary classifier.
 
     Thin wrapper around :class:`shap.TreeExplainer` for
@@ -969,7 +979,10 @@ def compute_shap_values(model, X, feature_names=None, annotations=None,
     if feature_names is not None:
         if annotations is not None:
             feature_names = relabel_features_with_genes(
-                feature_names, annotations, id_col=id_col, gene_col=gene_col,
+                feature_names,
+                annotations,
+                id_col=id_col,
+                gene_col=gene_col,
             )
         explanation.feature_names = list(feature_names)
     return explanation
@@ -1217,9 +1230,7 @@ METHOD_LABELS = {
 }
 
 
-def plot_selection_frequency(
-    results, top_n=30, title="RFECV Selection Frequency", figsize=(8, 9), color="#1f77b4"
-):
+def plot_selection_frequency(results, top_n=30, title="RFECV Selection Frequency", figsize=(8, 9), color="#1f77b4"):
     """Lollipop plot of the most stable features from ``run_rfecv_stability``.
 
     Args:
@@ -1246,7 +1257,10 @@ def plot_selection_frequency(
     ax.set_yticklabels(freq.index)
     ax.invert_yaxis()  # most frequent at top
     ax.axvline(
-        threshold, color="gray", linestyle="--", linewidth=1,
+        threshold,
+        color="gray",
+        linestyle="--",
+        linewidth=1,
         label=f"consensus >= {threshold:g}",
     )
     ax.set_xlabel("Selection frequency across outer CV folds")
@@ -1431,17 +1445,23 @@ def multiclass_feature_importance(
         labels.append(str(val))
         keep_cols.append(col)
     if len(keep_cols) < 6:
-        raise ValueError(
-            f"Need >=6 samples with non-empty {group_column!r}; got {len(keep_cols)}."
-        )
+        raise ValueError(f"Need >=6 samples with non-empty {group_column!r}; got {len(keep_cols)}.")
     classes = sorted(set(labels))
     if len(classes) < 2:
         raise ValueError(f"Need >=2 distinct classes for {group_column!r}; got {len(classes)}.")
 
     default_annot = (
-        "Protein", "Description", "Protein Gene", "UniProt_Accession", "UniProt_Entry_Name",
-        "leading_gene_name", "leading_uniprot_id", "leading_protein", "leading_name",
-        "leading_description", "protein_group",
+        "Protein",
+        "Description",
+        "Protein Gene",
+        "UniProt_Accession",
+        "UniProt_Entry_Name",
+        "leading_gene_name",
+        "leading_uniprot_id",
+        "leading_protein",
+        "leading_name",
+        "leading_description",
+        "protein_group",
     )
     sample_set = set(keep_cols)
     if annotation_columns is not None:
@@ -1493,9 +1513,7 @@ def multiclass_feature_importance(
     # Use n_jobs=1 for permutation_importance to avoid memory blowup: with -1
     # each worker copies the full (n_samples, n_features) matrix, which OOM-kills
     # at large feature counts on small machines.
-    perm = permutation_importance(
-        clf, X_scaled, y, n_repeats=n_repeats, random_state=int(random_state), n_jobs=1
-    )
+    perm = permutation_importance(clf, X_scaled, y, n_repeats=n_repeats, random_state=int(random_state), n_jobs=1)
     importance_mean = perm.importances_mean
     importance_std = perm.importances_std
 
@@ -1517,8 +1535,12 @@ def multiclass_feature_importance(
             clf_b = make_clf(seed_b)
             clf_b.fit(X_b, y[idx])
             perm_b = permutation_importance(
-                clf_b, X_b, y[idx], n_repeats=max(5, n_repeats // 3),
-                random_state=seed_b, n_jobs=1,
+                clf_b,
+                X_b,
+                y[idx],
+                n_repeats=max(5, n_repeats // 3),
+                random_state=seed_b,
+                n_jobs=1,
             )
             order_b = np.argsort(-perm_b.importances_mean, kind="stable")
             top_b = order_b[:top_k_for_stability]
@@ -1556,4 +1578,3 @@ def multiclass_feature_importance(
         oob,
     )
     return out
-
