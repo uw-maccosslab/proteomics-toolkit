@@ -1217,6 +1217,46 @@ METHOD_LABELS = {
 }
 
 
+def plot_selection_frequency(
+    results, top_n=30, title="RFECV Selection Frequency", figsize=(8, 9), color="#1f77b4"
+):
+    """Lollipop plot of the most stable features from ``run_rfecv_stability``.
+
+    Args:
+        results: The dict returned by :func:`run_rfecv_stability`.
+        top_n: Number of top features (by selection frequency) to show.
+        title: Plot title.
+        figsize: Figure size.
+        color: Marker/stem color.
+
+    Returns:
+        matplotlib Figure. The ``consensus_threshold`` is drawn as a dashed
+        reference line.
+    """
+    import matplotlib.pyplot as plt
+
+    freq = results["selection_frequency"].head(top_n)
+    threshold = results["config"].get("consensus_threshold", 0.5)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    y_pos = range(len(freq))
+    ax.hlines(y=y_pos, xmin=0, xmax=freq.values, color=color, alpha=0.6)
+    ax.plot(freq.values, list(y_pos), "o", color=color)
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels(freq.index)
+    ax.invert_yaxis()  # most frequent at top
+    ax.axvline(
+        threshold, color="gray", linestyle="--", linewidth=1,
+        label=f"consensus >= {threshold:g}",
+    )
+    ax.set_xlabel("Selection frequency across outer CV folds")
+    ax.set_xlim(0, 1)
+    ax.set_title(title)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    return fig
+
+
 def plot_roc_comparison(
     results_dict,
     title="ROC Comparison",

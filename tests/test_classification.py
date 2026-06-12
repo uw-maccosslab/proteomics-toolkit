@@ -525,3 +525,21 @@ class TestRunRfecvStabilityErrors:
         labels.iloc[0] = "third_class"
         with pytest.raises(ValueError, match="exactly two classes"):
             run_rfecv_stability(data, labels, n_permutations=0)
+
+
+class TestPlotSelectionFrequency:
+    def test_returns_figure(self, rfecv_signal_data):
+        import matplotlib
+        matplotlib.use("Agg")
+        from proteomics_toolkit.classification import plot_selection_frequency
+
+        data, labels, _ = rfecv_signal_data
+        res = run_rfecv_stability(
+            data, labels, outer_cv=(5, 2), inner_cv=3,
+            prefilter_top_var=None, n_permutations=0, random_state=0,
+        )
+        fig = plot_selection_frequency(res, top_n=10)
+        assert fig is not None
+        ax = fig.axes[0]
+        # At most top_n features are drawn.
+        assert len(ax.get_yticklabels()) <= 10
