@@ -476,9 +476,10 @@ class TestRfeEstimatorFactory:
     def test_logistic_l1_returns_l1_logistic(self):
         est = _make_rfe_estimator("logistic_l1", random_state=0)
         assert isinstance(est, LogisticRegression)
-        # Pure L1 via the non-deprecated l1_ratio API (sklearn 1.8+).
-        assert est.l1_ratio == 1.0
         assert est.solver == "saga"
+        # Pure L1 via whichever API the installed scikit-learn supports:
+        # penalty="l1" (<1.8) or l1_ratio=1.0 (>=1.8).
+        assert getattr(est, "penalty", None) == "l1" or getattr(est, "l1_ratio", None) == 1.0
 
     def test_logistic_l1_emits_no_penalty_deprecation(self):
         import warnings
