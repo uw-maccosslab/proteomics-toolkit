@@ -107,7 +107,7 @@ from . import (
     visualization,  # Plotting and visualization
 )
 
-__version__ = "26.5.0"
+__version__ = "26.6.0"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================
@@ -122,9 +122,11 @@ from .classification import (
     plot_fold_change_pca,  # PCA of per-subject fold-changes by group
     plot_roc_comparison,  # Overlay ROC curves from multiple methods
     plot_roc_curve,  # ROC curve from classification results
+    plot_selection_frequency,  # Lollipop of RFECV selection frequency
     plot_shap_summary,  # Beeswarm / bar summary of SHAP values
     relabel_features_with_genes,  # Map pipeline IDs -> gene names for plot labels
     run_binary_classification,  # LOO/k-fold CV binary classification
+    run_rfecv_stability,  # Nested-CV RFE with stability selection + null
     select_features_by_mad,  # Unsupervised feature ranking by MAD
 )
 from .data_import import (
@@ -365,6 +367,8 @@ __all__ = [
     "merge_enrichment_results",  # Merge multiple enrichment DataFrames
     # CLASSIFICATION - Binary group discrimination and multi-class importance
     "run_binary_classification",  # LOO/k-fold CV binary classification
+    "run_rfecv_stability",  # Nested-CV RFE with stability selection + null
+    "plot_selection_frequency",  # Lollipop of RFECV selection frequency
     "select_features_by_mad",  # Unsupervised feature ranking by MAD
     "plot_fold_change_pca",  # PCA of per-subject fold-changes by group
     "plot_roc_curve",  # ROC curve from classification results

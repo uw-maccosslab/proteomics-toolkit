@@ -17,7 +17,7 @@ A Python toolkit for analyzing mass spectrometry-based proteomics data, supporti
 - **visualization**: Publication-ready plots — volcano, PCA, box plots, heatmaps, correlation, trajectories, bi-clustered sample clustermaps, UMAP, PCA loadings
 - **enrichment**: Gene set enrichment via Enrichr API
 - **temporal_clustering**: K-means clustering of temporal protein trends
-- **classification**: Binary classification with cross-validation, SHAP interpretability, multi-class permutation importance
+- **classification**: Binary classification with cross-validation, SHAP interpretability, multi-class permutation importance; recursive feature elimination with cross-validation, per-feature stability selection, and a permutation null (`run_rfecv_stability`)
 - **marker_discovery**: Descriptive marker-discovery metrics and silhouette-driven k-means clustering for low-n designs
 - **multivariate**: PERMANOVA variance partitioning on sample-by-sample distance matrices
 - **validation**: Metadata/data consistency checking with diagnostic reports
@@ -352,6 +352,8 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 
 ### classification.py
 - `run_binary_classification()` — Binary classification with feature selection and cross-validation; returns CV metrics, ROC data, and (with `return_model=True`) the fitted pipeline
+- `run_rfecv_stability()` — Recursive feature elimination with cross-validation under an honest outer CV; returns held-out AUC, per-feature selection frequency, consensus signature, and a permutation null
+- `plot_selection_frequency()` — Lollipop plot of the most stable features from `run_rfecv_stability`
 - `select_features_by_mad()` — Unsupervised feature ranking by MAD across subjects (the leakage-free default selector)
 - `compute_shap_values()` — `shap.TreeExplainer` wrapper for RandomForest / XGBoost binary classifiers; collapses to the 2-D positive-class slice (requires `[shap]` extra)
 - `plot_shap_summary()` — SHAP beeswarm or bar summary for the top features (requires `[shap]` extra)

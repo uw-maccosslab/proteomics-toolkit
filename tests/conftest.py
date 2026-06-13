@@ -160,3 +160,31 @@ def group_labels():
     subjects = [f"Subj_{i}" for i in range(10)]
     labels = ["Responder"] * 5 + ["NonResponder"] * 5
     return pd.Series(labels, index=subjects, name="Group")
+
+
+@pytest.fixture
+def rfecv_signal_data():
+    """40 samples x 200 features; 5 planted discriminative features + noise."""
+    rng = np.random.RandomState(0)
+    n, p, n_signal = 40, 200, 5
+    y = np.array([0] * 20 + [1] * 20)
+    X = rng.normal(size=(n, p))
+    # Planted features shift by +2 in class 1 (columns 0..4).
+    X[y == 1, :n_signal] += 2.0
+    samples = [f"S{i}" for i in range(n)]
+    data = pd.DataFrame(X, index=samples, columns=[f"F{j}" for j in range(p)])
+    labels = pd.Series(["ctrl" if v == 0 else "case" for v in y], index=samples)
+    signal_features = [f"F{j}" for j in range(n_signal)]
+    return data, labels, signal_features
+
+
+@pytest.fixture
+def rfecv_noise_data():
+    """40 samples x 200 features of pure noise; labels independent of features."""
+    rng = np.random.RandomState(1)
+    n, p = 40, 200
+    X = rng.normal(size=(n, p))
+    samples = [f"S{i}" for i in range(n)]
+    data = pd.DataFrame(X, index=samples, columns=[f"F{j}" for j in range(p)])
+    labels = pd.Series(["ctrl"] * 20 + ["case"] * 20, index=samples)
+    return data, labels
