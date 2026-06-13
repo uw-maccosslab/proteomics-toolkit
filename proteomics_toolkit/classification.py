@@ -60,7 +60,9 @@ def _make_rfe_estimator(estimator, random_state=42):
         # Small C favors a wide margin; dual="auto" handles n_features >> n_samples.
         return LinearSVC(C=0.01, random_state=random_state, max_iter=5000, dual="auto")
     if estimator == "logistic_l1":
-        return LogisticRegression(penalty="l1", solver="saga", C=1.0, max_iter=5000, random_state=random_state)
+        # sklearn 1.8 deprecated penalty="l1" in favor of l1_ratio; l1_ratio=1.0
+        # with the saga solver gives pure-L1 (sparse) coefficients.
+        return LogisticRegression(solver="saga", l1_ratio=1.0, C=1.0, max_iter=5000, random_state=random_state)
     raise ValueError(f"Unknown estimator: {estimator!r}. Use 'linear_svm' or 'logistic_l1'.")
 
 

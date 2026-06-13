@@ -476,7 +476,20 @@ class TestRfeEstimatorFactory:
     def test_logistic_l1_returns_l1_logistic(self):
         est = _make_rfe_estimator("logistic_l1", random_state=0)
         assert isinstance(est, LogisticRegression)
-        assert est.penalty == "l1"
+        # Pure L1 via the non-deprecated l1_ratio API (sklearn 1.8+).
+        assert est.l1_ratio == 1.0
+        assert est.solver == "saga"
+
+    def test_logistic_l1_emits_no_penalty_deprecation(self):
+        import warnings
+
+        X = np.random.RandomState(0).normal(size=(40, 8))
+        y = (X[:, 0] + X[:, 1] > 0).astype(int)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _make_rfe_estimator("logistic_l1", random_state=0).fit(X, y)
+        penalty_warnings = [w for w in caught if "penalty" in str(w.message).lower()]
+        assert not penalty_warnings
 
     def test_unknown_estimator_raises(self):
         with pytest.raises(ValueError, match="estimator"):
