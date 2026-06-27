@@ -1373,8 +1373,28 @@ def _fit_moderated_t(feature_data, metadata_df, config):
             raise ValueError(
                 f"linear_trend requires at least 2 unique values in {time_col!r}; found {len(np.unique(time_vec))}"
             )
+        # Listwise-delete samples missing any requested covariate, then build a
+        # covariate sub-design (numeric as-is, categoricals dummy-encoded). Done
+        # after the non-finite-time drop so QC/reference samples (NaN time) are
+        # already gone and are not required to carry covariate values.
+        meta, cov_matrix, cov_col_names = _build_covariate_design(
+            meta, list(getattr(config, "covariates", []) or [])
+        )
+        sample_cols = meta.index.tolist()
+        # Recompute the time vector on the (possibly covariate-reduced) rows.
+        time_vec = pd.to_numeric(meta[time_col], errors="coerce").to_numpy(dtype=float)
+        if len(sample_cols) < 4:
+            raise ValueError(
+                f"After covariate completeness filtering, only {len(sample_cols)} samples remain."
+            )
+        if len(np.unique(time_vec)) < 2:
+            raise ValueError(
+                f"linear_trend requires at least 2 unique values in {time_col!r} after "
+                f"covariate filtering; found {len(np.unique(time_vec))}"
+            )
         # Optional subject one-hot block for repeated-measures designs.
         subj_col = config.subject_column
+        design_blocks = [np.ones_like(time_vec), time_vec]
         if subj_col and subj_col in meta.columns:
             subjects = meta[subj_col].astype(str).values
             unique_subjects = sorted(set(subjects))
@@ -1382,9 +1402,13 @@ def _fit_moderated_t(feature_data, metadata_df, config):
             subj_mat = np.zeros((len(subjects), max(len(unique_subjects) - 1, 0)))
             for j, s in enumerate(unique_subjects[1:]):
                 subj_mat[:, j] = (subjects == s).astype(float)
-            X = np.column_stack([np.ones_like(time_vec), time_vec, subj_mat])
-        else:
-            X = np.column_stack([np.ones_like(time_vec), time_vec])
+            design_blocks.append(subj_mat)
+        # Append covariate columns. The slope contrast stays at index 1, so
+        # covariates are adjusted for without changing what is tested.
+        if cov_matrix.shape[1] > 0:
+            design_blocks.append(cov_matrix)
+            print(f"  Adjusting for covariates: {cov_col_names}")
+        X = np.column_stack(design_blocks)
         # Need enough samples to fit the design plus leave residual df > 0.
         if X.shape[0] < X.shape[1] + 2:
             raise ValueError(
@@ -2474,12 +2498,12 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
         if config.covariates:
             print(f"  Covariates: {config.covariates}")
     elif config.statistical_test_method == "moderated_linear_model" and config.covariates:
-        if config.analysis_type == "unpaired":
+        if config.analysis_type in ("unpaired", "linear_trend"):
             print(f"  Covariates: {config.covariates}")
         else:
             print(
                 f"  Warning: covariates ignored - moderated_linear_model "
-                f"only applies covariates for analysis_type='unpaired' "
+                f"applies covariates only for analysis_type in ('unpaired', 'linear_trend') "
                 f"(got {config.analysis_type!r})."
             )
 

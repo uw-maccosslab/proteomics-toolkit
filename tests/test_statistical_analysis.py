@@ -883,6 +883,66 @@ class TestModeratedLinearTrend:
         with pytest.raises(ValueError, match="unique"):
             run_moderated_linear_model(log_data, meta, config)
 
+    def test_covariate_adjustment_recovers_slope(self):
+        # Age confounds the score -> expression slope: age = 50 + 30*score, so an
+        # age effect leaks into the unadjusted slope. Adjusting for Age recovers it.
+        rng = np.random.default_rng(7)
+        n_samples, n_features, n_planted = 48, 150, 15
+        score = rng.uniform(0.0, 1.0, size=n_samples)
+        age = 50.0 + 30.0 * score + rng.normal(0.0, 3.0, size=n_samples)
+        true_slope, age_coef = 1.0, 0.02
+        log_values = rng.normal(10.0, 0.3, size=(n_features, n_samples))
+        log_values[:n_planted, :] += true_slope * score[np.newaxis, :]
+        log_values[:n_planted, :] += age_coef * age[np.newaxis, :]
+        feats = [f"P{i:04d}" for i in range(n_features)]
+        samples = [f"S{i:02d}" for i in range(n_samples)]
+        log_data = pd.DataFrame(log_values, index=feats, columns=samples)
+        meta = pd.DataFrame({"Sample": samples, "Score": score, "Age": age})
+
+        def _run(covs):
+            cfg = StatisticalConfig()
+            cfg.analysis_type = "linear_trend"
+            cfg.statistical_test_method = "moderated_linear_model"
+            cfg.time_column = "Score"
+            cfg.moderation = "limma"
+            cfg.log_transform_before_stats = False
+            cfg.covariates = covs
+            return run_moderated_linear_model(log_data, meta, cfg)
+
+        planted = feats[:n_planted]
+        adj = _run(["Age"]).set_index("Protein").loc[planted, "logFC"].mean()
+        unadj = _run([]).set_index("Protein").loc[planted, "logFC"].mean()
+        # Unadjusted slope is inflated by ~age_coef * d(age)/d(score) = 0.02 * 30 = 0.6.
+        assert unadj > true_slope + 0.25, f"unadjusted slope {unadj:.3f} not inflated"
+        # Adjusting for Age recovers the planted slope.
+        assert abs(adj - true_slope) < 0.2, f"adjusted slope {adj:.3f} != {true_slope}"
+
+    def test_linear_trend_covariates_compose_with_intensity_trend(self):
+        log_data, raw, meta, config, planted = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        config.subject_column = None
+        meta = meta.copy()
+        meta["Age"] = np.random.default_rng(3).normal(60.0, 8.0, size=len(meta))
+        config.covariates = ["Age"]
+        result = run_moderated_linear_model(log_data, meta, config)
+        for col in ("intensity_s0_sq", "intensity_used", "logFC", "P.Value"):
+            assert col in result.columns, f"missing column {col!r}"
+        # Planted slope still recovered with the (uninformative) covariate present.
+        med = result.set_index("Protein").loc[planted, "logFC"].median()
+        assert abs(med - 0.05) < 0.02
+
+    def test_linear_trend_covariate_listwise_deletion(self):
+        log_data, raw, meta, config, _ = _make_linear_trend_fixture()
+        config._raw_feature_data = raw
+        config.subject_column = None  # 50 samples, no subject block
+        meta = meta.copy()
+        meta["Age"] = np.random.default_rng(5).normal(60.0, 8.0, size=len(meta))
+        meta.loc[meta.index[:3], "Age"] = np.nan  # 3 samples lack the covariate
+        config.covariates = ["Age"]
+        result = run_moderated_linear_model(log_data, meta, config)
+        # n_group1 + n_group2 == samples used per feature; 50 - 3 = 47.
+        assert int((result["n_group1"] + result["n_group2"]).max()) == 47
+
 
 class TestModerationOptionValidation:
     def test_invalid_moderation_raises(self):
