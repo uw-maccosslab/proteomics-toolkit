@@ -1,0 +1,17 @@
+# Normalize all text files to LF in the repository and on checkout.
+# Git auto-detects text vs binary; the explicit rules below guard the
+# data/asset files so they are never line-ending-normalized.
+* text=auto eol=lf
+
+# Binary assets (never touch line endings)
+*.parquet binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.gz binary
+*.zip binary
+*.xlsx binary
+*.whl binary
