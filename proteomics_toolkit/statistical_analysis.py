@@ -1618,7 +1618,15 @@ def _fit_count_dependent_prior(fit, counts):
 
     log_counts_valid = np.log(counts[valid])
     log_s2_valid = np.log(s2[valid])
-    smoothed = lowess(log_s2_valid, log_counts_valid, frac=0.5, it=3, return_sorted=True)
+    # delta = 1% of the x-range (statsmodels' documented recommendation and R
+    # lowess()'s default): interpolate between closely-spaced points instead of
+    # a full local regression at every one. Avoids the O(n^2) default (delta=0)
+    # that dominates runtime on peptide-scale inputs; lossless on this smooth
+    # trend since the curve is re-interpolated onto all points below.
+    smoothed = lowess(
+        log_s2_valid, log_counts_valid, frac=0.5, it=3, return_sorted=True,
+        delta=0.01 * np.ptp(log_counts_valid),
+    )
     xs, ys = smoothed[:, 0], smoothed[:, 1]
 
     with np.errstate(invalid="ignore"):
@@ -1766,7 +1774,15 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
     fg_valid = fg[mask].copy()
     log_mean = np.log(fg_valid["mean_intensity"].to_numpy())
     log_var_raw = 2.0 * np.log(fg_valid["sd_intensity"].to_numpy())
-    smoothed = lowess(log_var_raw, log_mean, frac=0.5, it=3, return_sorted=True)
+    # delta = 1% of the x-range (statsmodels' documented recommendation and R
+    # lowess()'s default): interpolate between closely-spaced points instead of
+    # a full local regression at every one. Avoids the O(n^2) default (delta=0)
+    # that dominates runtime on peptide-scale inputs; lossless on this smooth
+    # trend since the curve is re-interpolated onto all points below.
+    smoothed = lowess(
+        log_var_raw, log_mean, frac=0.5, it=3, return_sorted=True,
+        delta=0.01 * np.ptp(log_mean),
+    )
     xs, ys = smoothed[:, 0], smoothed[:, 1]
 
     # Per (feature, group) predicted log(raw variance) from the LOWESS.
