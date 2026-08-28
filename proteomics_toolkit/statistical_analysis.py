@@ -225,6 +225,14 @@ class StatisticalConfig:
         #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend;
         #                           equivalent to limma's ``trend=TRUE`` and the recommended
         #                           default for DIA/DDA MS data.
+        #   - "intensity_peptide_trend" : additive two-stage prior, LOWESS on
+        #                           log(mean intensity) plus LOWESS on log(peptide count).
+        #                           Peptide count carries variance information that
+        #                           intensity alone misses (a protein rolled up from many
+        #                           peptides is better determined than one from few at the
+        #                           same intensity), so this is the most accurate prior for
+        #                           protein-level rollup data. Requires
+        #                           ``peptide_count_column`` in the data.
         # ``robust`` enables Huber-style Winsorization of per-feature log(s^2) when
         # estimating the prior hyperparameters, matching limma's ``robust=TRUE``.
         self.moderation = "intensity_trend"
@@ -1728,8 +1736,17 @@ def _per_feature_group_stats(feature_data, metadata_df, config):
     return pd.DataFrame(rows)
 
 
-def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
+def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config, peptide_counts=None):
     """LOWESS prior on log(variance) vs log(mean intensity), per (feature, group).
+
+    When ``peptide_counts`` is supplied, a second additive LOWESS stage is
+    fit on the residual against log(peptide count), giving the additive
+    model ``log(var) = f1(log mean intensity) + f2(log peptide count)``.
+    Peptide count carries substantial information about protein-level
+    variance that intensity alone does not: at matched intensity, a protein
+    rolled up from many peptides is better determined than one from few.
+    The two predictors are only weakly correlated, so a single backfitting
+    pass is sufficient.
 
     This is the Python equivalent of limma's ``trend=TRUE``. Each
     (feature, group) pair contributes one point to the LOWESS fit:
@@ -1772,6 +1789,32 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config):
     # Per (feature, group) predicted log(raw variance) from the LOWESS.
     all_log_mean = np.log(fg["mean_intensity"].to_numpy(dtype=float))
     log_var_hat = np.interp(all_log_mean, xs, ys, left=ys[0], right=ys[-1])
+    fg["intensity_log_var_hat"] = log_var_hat
+
+    # Optional second additive stage: residual log-variance vs log(peptide count).
+    # Fit on the same (feature, group) points used for the intensity stage.
+    if peptide_counts is not None:
+        counts_by_feature = np.asarray(peptide_counts, dtype=float)
+        fg_counts = counts_by_feature[fg["feature_idx"].to_numpy(dtype=int)]
+        fg["peptide_count_used"] = fg_counts
+        fit_mask = mask & np.isfinite(fg_counts) & (fg_counts > 0)
+        if fit_mask.sum() >= 5:
+            resid = log_var_raw - np.interp(log_mean, xs, ys, left=ys[0], right=ys[-1])
+            log_counts_fit = np.log(fg_counts[mask])
+            ok = np.isfinite(log_counts_fit) & np.isfinite(resid)
+            if ok.sum() >= 5 and np.ptp(log_counts_fit[ok]) > 0:
+                sm2 = lowess(resid[ok], log_counts_fit[ok], frac=0.5, it=3, return_sorted=True)
+                xs2, ys2 = sm2[:, 0], sm2[:, 1]
+                all_log_counts = np.log(np.where(fg_counts > 0, fg_counts, np.nan))
+                pep_adj = np.interp(all_log_counts, xs2, ys2, left=ys2[0], right=ys2[-1])
+                pep_adj = np.where(np.isfinite(pep_adj), pep_adj, 0.0)
+                fg["peptide_log_var_adj"] = pep_adj
+                log_var_hat = log_var_hat + pep_adj
+            else:
+                fg["peptide_log_var_adj"] = 0.0
+        else:
+            fg["peptide_log_var_adj"] = 0.0
+
     fg["predicted_sd"] = np.exp(0.5 * log_var_hat)
     fg["predicted_variance_raw"] = np.exp(log_var_hat)
 
@@ -1966,7 +2009,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         missing.
     """
     moderation = str(getattr(config, "moderation", "intensity_trend")).lower()
-    valid_modes = {"limma", "deqms", "intensity_trend"}
+    valid_modes = {"limma", "deqms", "intensity_trend", "intensity_peptide_trend"}
     if moderation not in valid_modes:
         raise ValueError(f"config.moderation must be one of {sorted(valid_modes)}; got {moderation!r}.")
 
@@ -1992,9 +2035,25 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         print(f"Done: deqms-mode moderated t completed for {len(df)} features; d0={fit['d0']:.3g}")
         return df
 
-    if moderation == "intensity_trend":
+    if moderation in ("intensity_trend", "intensity_peptide_trend"):
+        use_peptides = moderation == "intensity_peptide_trend"
+        counts_per_feature = None
+        if use_peptides:
+            count_col = getattr(config, "peptide_count_column", "n_peptides")
+            if count_col not in feature_data.columns:
+                raise ValueError(
+                    f"moderation='intensity_peptide_trend' requires a peptide-count column "
+                    f"({count_col!r}) in feature_data. Either supply protein-level data with "
+                    f"that column, set config.peptide_count_column to an existing column, or "
+                    f"use moderation='intensity_trend'."
+                )
+            counts_per_feature = feature_data[count_col].copy()
+            feature_data = feature_data.drop(columns=[count_col])
         raw_data = _raw_feature_data_for_fit(feature_data, config)
-        print(f"Running moderated linear model (moderation='intensity_trend', robust={bool(config.robust)})...")
+        if use_peptides and count_col in getattr(raw_data, "columns", []):
+            # The raw stash may still carry the count column; it is not a sample.
+            raw_data = raw_data.drop(columns=[count_col])
+        print(f"Running moderated linear model (moderation={moderation!r}, robust={bool(config.robust)})...")
         fit = _fit_moderated_t(feature_data, metadata_df, config)
         # Metadata used for the intensity-trend prior. By default, restrict to
         # the samples kept by _fit_moderated_t (covariate listwise deletion may
@@ -2022,7 +2081,13 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
             )
         else:
             metadata_for_trend = metadata_df[metadata_df["Sample"].isin(fit["kept_samples"])]
-        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(fit, raw_data, metadata_for_trend, config)
+        counts_aligned = None
+        if use_peptides:
+            counts_aligned = counts_per_feature.reindex(fit["features"]).to_numpy(dtype=float)
+            print(f"  Peptide-count stage enabled from column {count_col!r}")
+        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(
+            fit, raw_data, metadata_for_trend, config, peptide_counts=counts_aligned
+        )
         df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
         # Summary intensity per feature: mean of per-group means (raw scale).
         per_feature_intensity = (
@@ -2033,6 +2098,8 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         )
         df["intensity_used"] = per_feature_intensity
         df["intensity_s0_sq"] = s0_sq_per_feature
+        if use_peptides and counts_aligned is not None:
+            df["peptide_count_used"] = counts_aligned
         df["limma_s0_sq"] = fit["s0_sq"]
         # Stash the per-(feature, group) points for the diagnostic plot inside
         # an _AttrsPayload wrapper. The wrapper opts out of pandas' attrs
@@ -2418,7 +2485,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
     extra_cols = []
     is_moderated = config.statistical_test_method == "moderated_linear_model"
     moderation = getattr(config, "moderation", "intensity_trend")
-    if is_moderated and moderation == "deqms":
+    if is_moderated and moderation in ("deqms", "intensity_peptide_trend"):
         count_col = getattr(config, "peptide_count_column", "n_peptides")
         if count_col in statistical_data.columns:
             extra_cols.append(count_col)
@@ -2428,7 +2495,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
 
     # For the intensity_trend moderation, stash the **raw (pre-log)** sample
     # intensities on the config object so the prior can be fit in raw space.
-    if is_moderated and moderation == "intensity_trend":
+    if is_moderated and moderation in ("intensity_trend", "intensity_peptide_trend"):
         raw_samples = list(available_samples)
         # When variance_prior_group_column is set, the prior is sourced from a
         # separate sample pool (typically QC/reference replicates) that may

@@ -456,6 +456,96 @@ class TestModeratedLinearModelDeqms:
         assert top10 == expected
 
 
+class TestModeratedLinearModelIntensityPeptideTrend:
+    """The additive intensity + peptide-count variance prior.
+
+    Peptide count carries variance information that intensity alone misses:
+    at matched intensity a protein rolled up from many peptides is better
+    determined than one from few. These tests pin that the second stage is
+    wired in, is actually used, and degrades gracefully.
+    """
+
+    def test_returns_intensity_and_peptide_columns(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(0)
+        feature_data["n_peptides"] = rng.integers(2, 30, size=len(feature_data))
+        config.moderation = "intensity_peptide_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        for col in ("Protein", "logFC", "P.Value", "intensity_s0_sq", "peptide_count_used"):
+            assert col in result.columns
+        assert result["peptide_count_used"].notna().all()
+
+    def test_peptide_count_column_is_not_treated_as_a_sample(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(1)
+        feature_data["n_peptides"] = rng.integers(2, 30, size=len(feature_data))
+        config.moderation = "intensity_peptide_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        # One row per feature: the count column must have been dropped before
+        # the design fit rather than being consumed as an extra sample.
+        assert len(result) == len(feature_data)
+
+    def test_missing_count_column_raises(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_peptide_trend"
+        with pytest.raises(ValueError, match="peptide-count column"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_custom_count_column_honoured(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(2)
+        feature_data["my_counts"] = rng.integers(2, 30, size=len(feature_data))
+        config.moderation = "intensity_peptide_trend"
+        config.peptide_count_column = "my_counts"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert result["peptide_count_used"].notna().all()
+
+    def test_peptide_stage_changes_the_prior(self):
+        """The second stage must actually move the prior, not silently no-op.
+
+        Counts are made strongly informative (variance inflated for
+        low-count features) so the peptide stage has real signal to find.
+        """
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(3)
+        counts = rng.integers(2, 30, size=len(feature_data))
+        sample_cols = [c for c in feature_data.columns if c.startswith("S")]
+        noise = rng.normal(0, 1, size=(len(feature_data), len(sample_cols)))
+        inflate = (30.0 / counts)[:, None]
+        feature_data[sample_cols] = feature_data[sample_cols].to_numpy() + noise * inflate
+
+        config.moderation = "intensity_trend"
+        without = run_moderated_linear_model(feature_data.copy(), metadata_df, config)
+
+        fd = feature_data.copy()
+        fd["n_peptides"] = counts
+        config.moderation = "intensity_peptide_trend"
+        with_pep = run_moderated_linear_model(fd, metadata_df, config)
+
+        assert not np.allclose(
+            without["intensity_s0_sq"].to_numpy(dtype=float),
+            with_pep["intensity_s0_sq"].to_numpy(dtype=float),
+            equal_nan=True,
+        )
+
+    def test_points_carry_peptide_diagnostic_columns(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        rng = np.random.default_rng(4)
+        feature_data["n_peptides"] = rng.integers(2, 30, size=len(feature_data))
+        config.moderation = "intensity_peptide_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        pts = get_intensity_trend_points(result)
+        assert {"peptide_count_used", "peptide_log_var_adj", "intensity_log_var_hat"}.issubset(pts.columns)
+
+    def test_constant_peptide_count_degrades_to_intensity_only(self):
+        """A degenerate count column must not blow up or corrupt the prior."""
+        feature_data, metadata_df, config = _make_limma_fixture()
+        feature_data["n_peptides"] = 5  # no variation -> nothing for stage 2
+        config.moderation = "intensity_peptide_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert np.isfinite(result["intensity_s0_sq"].to_numpy(dtype=float)).all()
+
+
 class TestModeratedLinearModelIntensityTrend:
     def test_returns_intensity_columns_and_attrs(self):
         feature_data, metadata_df, config = _make_limma_fixture()

@@ -153,18 +153,30 @@ tracks within a row.
 ## Variance-prior diagnostics
 
 Two companion plots for the
-[moderated linear model](06-statistical-analysis.md#moderated-linear-model--limma-deqms-or-intensity_trend):
+[moderated linear model](06-statistical-analysis.md#moderated-linear-model--limma-deqms-intensity_trend-or-intensity_peptide_trend):
 
-**`plot_variance_vs_intensity`** (for `moderation="intensity_trend"`):
-per-(feature, group) SD on the Y axis against √(group-mean intensity)
-on the X axis. Under Poisson-like MS noise the cloud lies on a line
-through the origin of slope `k`. A clear trend over intensity confirms
-the prior is doing useful work; the plot overlays the LOWESS fit (same
-curve used by the prior) and a dashed `sd = k·√intensity` reference
-line.
+**`plot_variance_vs_intensity`** (for `moderation="intensity_trend"` or
+`"intensity_peptide_trend"`): drawn in the space the prior is actually fit
+in — `log(within-group variance)` against `log(group-mean intensity)`, one
+point per (feature, group) pair, with the LOWESS prior overlaid.
+
+The title reports the observed log-log slope, and reference slopes of 1 and
+2 are drawn for scale. The slope identifies the noise regime directly: 1 is
+counting/shot noise (variance proportional to mean), 2 is constant CV
+(variance proportional to mean squared), 0 is flat additive background. MS
+intensities are ion *rates* rather than counts, so intermediate values are
+normal and are exactly why the prior is nonparametric rather than committed
+to either extreme.
+
+The right-hand panel shows the residual after the intensity stage. With
+`"intensity_peptide_trend"` it is plotted against peptide count with the
+second-stage LOWESS overlaid, so a downward trend shows the peptide term
+adding real information. With plain `"intensity_trend"` it shows the residual
+distribution and its spread.
 
 ```python
 # After run_moderated_linear_model with moderation='intensity_trend'
+# or 'intensity_peptide_trend'
 ptk.plot_variance_vs_intensity(results)
 ```
 

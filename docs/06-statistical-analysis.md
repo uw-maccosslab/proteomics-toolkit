@@ -138,19 +138,77 @@ results = ptk.run_comprehensive_statistical_analysis(
 > during statistical testing, so the `Protein` column in results always
 > contains real accession numbers (not integer row indices).
 
-## Moderated linear model — limma, deqms, or intensity_trend
+## Moderated linear model — limma, deqms, intensity_trend, or intensity_peptide_trend
 
 **Use case:** Small sample sizes (fewer than ~6 replicates per group)
 where raw per-feature t-statistics are under-powered. A single entry
 point `run_moderated_linear_model` runs the Smyth per-feature OLS fit
-and applies one of three empirical-Bayes variance priors selected via
+and applies one of four empirical-Bayes variance priors selected via
 `config.moderation`:
 
 | Moderation | Prior shape | When to pick |
 |---|---|---|
-| `"intensity_trend"` *(default)* | Prior varies with mean intensity (Python equivalent of limma's `trend=TRUE`). Captures the Poisson `sd ~ sqrt(intensity)` relationship natural to MS counting noise. | Default for MS data. Works at protein and peptide level. |
+| `"intensity_peptide_trend"` | Additive two-stage LOWESS: `log(var) = f1(log mean intensity) + f2(log peptide count)`. | **Most accurate for protein-level rollup data.** Requires a peptide-count column. |
+| `"intensity_trend"` *(default)* | Nonparametric LOWESS of `log(variance)` on `log(mean intensity)`; the Python equivalent of limma's `trend=TRUE`. | Good default for MS data. Works at protein *and* peptide level. |
 | `"limma"` | Single global prior (Smyth 2004). | Use when the variance-intensity trend is flat, or as a conservative baseline. |
-| `"deqms"` | Prior conditioned on peptide count (Zhu et al. 2020). | Protein-level only. Useful when peptide counts are informative about identification confidence. |
+| `"deqms"` | Prior conditioned on peptide count alone (Zhu et al. 2020). | Protein-level only. See the caveat below before preferring it. |
+
+**On the shape of the intensity prior.** `intensity_trend` makes *no*
+counting-noise assumption. MS intensities are ion rates, not ion counts, so
+there is no reason to expect the Poisson `sd ~ sqrt(intensity)` relationship
+to hold, and empirically it does not: on a 14-replicate validation dataset the
+`log(variance)` vs `log(mean intensity)` slope is 1.42, between the shot-noise
+value of 1 and the constant-CV value of 2. The prior is fully nonparametric
+precisely so it does not have to commit to either. Fitting an explicit
+`a + b*mu + c*mu^2` error model instead gives no measurable improvement
+(cross-validated RMSE 1.046 vs 1.043).
+
+**Why peptide count belongs in the prior.** Intensity is not a sufficient
+statistic for protein-level variance: at matched intensity, a protein rolled
+up from many peptides is better determined than one from few. The two
+predictors are only weakly correlated (r = 0.34), so the peptide term adds
+largely independent information. Cross-validated RMSE on `log(variance)`,
+7,990 (feature, group) points from 14 technical replicates:
+
+| Prior | CV RMSE | vs flat prior |
+|---|---|---|
+| `"limma"` (constant) | 2.337 | — |
+| `"deqms"`-style, peptide count alone | 2.389 | -2.2% |
+| `"intensity_trend"` | 1.043 | +55.4% |
+| **`"intensity_peptide_trend"`** | **0.831** | **+64.4%** |
+
+Note the trap in row two: peptide count *alone* is slightly **worse** than a
+flat prior. It helps only in addition to intensity, never instead of it, so
+`"deqms"` is not a substitute for `"intensity_peptide_trend"`.
+
+**Which abundance conditions the prior.** The intensity stage always uses the
+abundance of the feature actually being tested: protein abundance for a
+protein-level analysis, peptide abundance for a peptide-level one. The prior
+reads the same raw feature matrix the model is fit on, so this follows
+automatically and needs no configuration. `"intensity_peptide_trend"` is
+protein-level only, since a peptide has no peptide count.
+
+**Why the peptide term is not an empirical hack.** Fitting the two terms
+jointly and linearly on the validation dataset gives
+
+```
+log(var) = c + 1.60 * log(protein abundance) - 0.89 * log(n_peptides)     R2 = 0.88
+```
+
+Both coefficients land where theory says they should. If a protein abundance
+is a rollup of `n` peptides with independent errors, its variance scales as
+`1/n`, i.e. a peptide coefficient of exactly -1; the observed -0.89 says
+averaging is nearly ideal, with a small shortfall consistent with correlated
+peptide-level error (shared ionisation suppression, interference, and rollup
+shrinkage). The abundance coefficient of 1.60 again sits between the
+shot-noise and constant-CV extremes. So the second stage is recovering a real
+statistical property of the rollup rather than fitting noise.
+
+Because the model is additive in the two log terms, conditioning stage 1 on
+mean per-peptide intensity (`log(abundance) - log(n_peptides)`) instead of
+protein abundance is only a reparameterisation, and measurably makes no
+difference (CV RMSE 0.8325 vs 0.8314). Protein abundance is kept as the more
+directly interpretable choice.
 
 Set `config.robust = True` to Winsorize extreme `s_i²` values when
 estimating the prior hyperparameters (matches limma's `robust=TRUE`).
@@ -173,12 +231,34 @@ results = ptk.run_comprehensive_statistical_analysis(
     data, sample_meta_dict, config, protein_annotations=annot
 )
 
-# Diagnostic: (feature, group) SD vs sqrt(intensity) with LOWESS prior
+# Diagnostic, drawn in fit space: log(variance) vs log(mean intensity) with
+# the LOWESS prior, the observed log-log slope, and reference slopes of
+# 1 (shot noise) and 2 (constant CV).
 ptk.plot_variance_vs_intensity(results)
 ```
 
-For DEqMS with PRISM protein data (PRISM emits `n_peptides` in the
-protein parquet):
+For the combined intensity + peptide prior with PRISM protein data (PRISM
+emits `n_peptides` in the protein parquet):
+
+```python
+# Include n_peptides alongside the annotation and sample columns.
+data_with_counts = pd.concat([
+    annot.reset_index(drop=True),
+    protein_data[sample_cols].reset_index(drop=True),
+], axis=1)
+data_with_counts['n_peptides'] = protein_data['n_peptides'].values
+
+config.moderation = 'intensity_peptide_trend'
+# config.peptide_count_column defaults to 'n_peptides'
+results = ptk.run_comprehensive_statistical_analysis(
+    data_with_counts, sample_meta_dict, config, protein_annotations=annot
+)
+# Right-hand panel shows the residual after the intensity stage against
+# peptide count, so the value of the second stage is visible.
+ptk.plot_variance_vs_intensity(results)
+```
+
+For DEqMS (peptide count alone) with PRISM protein data:
 
 ```python
 # Include n_peptides in the data DataFrame you pass in.
@@ -199,10 +279,14 @@ ptk.plot_variance_vs_peptide_count(results)
 Output DataFrames include extra columns: `residual_s2`, `residual_df`,
 `posterior_s2`, `posterior_df`, `limma_s0_sq`, plus one of
 `deqms_s0_sq` + `peptide_count_used` or
-`intensity_s0_sq` + `intensity_used` depending on moderation. The
-`intensity_trend` results also carry a per-(feature, group) long-form
-DataFrame on `results.attrs["intensity_trend_points"]`, accessible via
-`ptk.get_intensity_trend_points(results)`.
+`intensity_s0_sq` + `intensity_used` depending on moderation
+(`intensity_peptide_trend` adds `peptide_count_used` as well). The
+`intensity_trend` and `intensity_peptide_trend` results also carry a
+per-(feature, group) long-form DataFrame on
+`results.attrs["intensity_trend_points"]`, accessible via
+`ptk.get_intensity_trend_points(results)`, with columns
+`intensity_log_var_hat` and — for the combined mode —
+`peptide_log_var_adj` giving each stage's contribution.
 
 ### Covariate adjustment
 

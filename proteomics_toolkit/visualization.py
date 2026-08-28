@@ -3674,44 +3674,49 @@ def plot_variance_vs_peptide_count(
 
 def plot_variance_vs_intensity(
     results: pd.DataFrame,
-    figsize: Tuple[float, float] = (8, 6),
+    figsize: Tuple[float, float] = (13, 5.5),
 ) -> plt.Figure:
     """Diagnostic for the ``intensity_trend`` moderation prior.
 
-    Renders one point per (feature, group) pair: Y = within-group
-    standard deviation across that group's samples, X = √(within-group
-    mean intensity). Under pure Poisson noise the points lie on a line
-    through the origin with slope `k`, so a straight linear cloud with
-    slope ≈ 1 suggests counting-noise-dominated data.
+    Plotted in the space the prior is actually fit in: ``log(within-group
+    variance)`` against ``log(within-group mean intensity)``, one point per
+    (feature, group) pair, with the LOWESS prior overlaid.
 
-    Overlays the LOWESS fit (same curve used by the prior) and a dashed
-    reference line ``sd = k·√intensity`` with `k` estimated from the
-    cloud.
+    This matters. The prior is a nonparametric LOWESS in log-log space, with
+    no counting-noise assumption anywhere in it. An earlier version of this
+    plot drew the cloud as SD vs sqrt(mean intensity) with a ``sd =
+    k*sqrt(intensity)`` Poisson reference line, which is a model the
+    estimator does not use; on those axes a perfectly good log-log fit looks
+    like a poor one and the scatter fans out at high intensity.
+
+    The reference slopes are the interpretable quantity instead. In log-log
+    space the local slope identifies the noise regime directly:
+
+    - slope 1 : variance proportional to mean, i.e. counting/shot noise
+    - slope 2 : variance proportional to mean squared, i.e. constant CV
+    - slope 0 : flat, additive background noise
+
+    MS intensities are ion *rates*, not counts, so there is no reason to
+    expect exactly 1; values between 1 and 2 are typical and are precisely
+    why a nonparametric prior is preferred over either parametric extreme.
+
+    The right panel shows the residual after the intensity stage against
+    peptide count when ``moderation="intensity_peptide_trend"`` was used,
+    so the value of the second stage is visible. With plain
+    ``intensity_trend`` it shows the residual distribution instead.
 
     Parameters
     ----------
     results : pd.DataFrame
-        The output of :func:`~proteomics_toolkit.statistical_analysis.run_moderated_linear_model`
-        with ``moderation="intensity_trend"``. The per-(feature, group)
-        cloud is read from
-        ``results.attrs["intensity_trend_points"]`` (populated
-        automatically; also retrievable via
-        :func:`~proteomics_toolkit.statistical_analysis.get_intensity_trend_points`).
+        Output of :func:`~proteomics_toolkit.statistical_analysis.run_moderated_linear_model`
+        with ``moderation="intensity_trend"`` or ``"intensity_peptide_trend"``.
     figsize : tuple
         Figure size.
 
     Returns
     -------
     matplotlib.figure.Figure
-
-    Raises
-    ------
-    ValueError
-        If ``results`` does not carry the intensity-trend points (i.e.
-        was not produced with ``moderation="intensity_trend"``).
     """
-    # Route through the canonical accessor so both records-form and legacy
-    # DataFrame-form storage in attrs are handled uniformly.
     from .statistical_analysis import get_intensity_trend_points
 
     try:
@@ -3720,56 +3725,76 @@ def plot_variance_vs_intensity(
         raise ValueError(
             "Results DataFrame does not carry intensity-trend points. "
             "Run run_moderated_linear_model with config.moderation='intensity_trend' "
-            "first, or pass get_intensity_trend_points(results)."
+            "or 'intensity_peptide_trend' first."
         ) from e
 
     mean_intensity = pts["mean_intensity"].to_numpy(dtype=float)
     sd_intensity = pts["sd_intensity"].to_numpy(dtype=float)
-    predicted_sd = pts["predicted_sd"].to_numpy(dtype=float) if "predicted_sd" in pts.columns else None
+    has_pep = "peptide_count_used" in pts.columns
 
     mask = np.isfinite(mean_intensity) & np.isfinite(sd_intensity) & (mean_intensity > 0) & (sd_intensity > 0)
     if mask.sum() < 3:
         raise ValueError("Need at least 3 (feature, group) points with valid mean/SD to plot.")
 
-    sqrt_mean = np.sqrt(mean_intensity[mask])
-    sd = sd_intensity[mask]
+    log_mean = np.log(mean_intensity[mask])
+    log_var = 2.0 * np.log(sd_intensity[mask])
 
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.scatter(sqrt_mean, sd, s=10, alpha=0.4, color="black", label="(feature, group)")
+    fig, axes = plt.subplots(1, 2, figsize=figsize, constrained_layout=True)
 
-    # LOWESS curve from the stored predicted SD, sorted by sqrt(mean)
-    if predicted_sd is not None:
-        finite = np.isfinite(mean_intensity) & np.isfinite(predicted_sd) & (mean_intensity > 0)
-        if finite.sum() > 2:
-            order = np.argsort(np.sqrt(mean_intensity[finite]))
-            ax.plot(
-                np.sqrt(mean_intensity[finite])[order],
-                predicted_sd[finite][order],
-                color="crimson",
-                linewidth=2.5,
-                label="LOWESS prior",
-            )
+    # ---- Panel 1: the fit, in its own space -----------------------------
+    ax = axes[0]
+    ax.scatter(log_mean, log_var, s=6, alpha=0.25, color="black",
+               label=f"(feature, group), n={mask.sum():,}")
 
-    # Poisson reference line sd = k·√intensity, k fit to the cloud
-    k = float(np.sum(sd * sqrt_mean) / np.sum(sqrt_mean * sqrt_mean))
-    x_ref = np.linspace(0, sqrt_mean.max() * 1.02, 100)
-    ax.plot(
-        x_ref,
-        k * x_ref,
-        color="gray",
-        linestyle="--",
-        linewidth=1.5,
-        label=f"sd = {k:.3g}·√intensity (Poisson-like)",
-    )
+    if "intensity_log_var_hat" in pts.columns:
+        yhat = pts["intensity_log_var_hat"].to_numpy(dtype=float)[mask]
+    else:
+        yhat = 2.0 * np.log(pts["predicted_sd"].to_numpy(dtype=float)[mask])
+    order = np.argsort(log_mean)
+    ax.plot(log_mean[order], yhat[order], color="crimson", linewidth=2.5,
+            label="LOWESS prior (intensity stage)")
 
-    ax.set_xlabel("√(mean intensity)")
-    ax.set_ylabel("Within-group standard deviation")
-    ax.set_title("Variance prior (intensity_trend diagnostic)")
-    ax.set_xlim(left=0)
-    ax.set_ylim(bottom=0)
-    ax.legend(loc="best")
+    # Reference slopes anchored at the cloud centre, for regime reading.
+    slope = float(np.polyfit(log_mean, log_var, 1)[0])
+    cx, cy = float(np.median(log_mean)), float(np.median(log_var))
+    span = np.array([log_mean.min(), log_mean.max()])
+    for m, ls, lab in ((1.0, ":", "slope 1 (shot noise)"), (2.0, "-.", "slope 2 (constant CV)")):
+        ax.plot(span, cy + m * (span - cx), color="gray", linestyle=ls, linewidth=1.3, label=lab)
+
+    ax.set_xlabel("log(mean intensity)")
+    ax.set_ylabel("log(within-group variance)")
+    ax.set_title(f"Variance prior in fit space\nobserved log-log slope = {slope:.2f}")
+    ax.legend(loc="best", fontsize=8)
     ax.grid(True, alpha=0.3)
-    plt.tight_layout()
+
+    # ---- Panel 2: what the peptide stage adds ---------------------------
+    ax2 = axes[1]
+    resid = log_var - yhat
+    if has_pep:
+        counts = pts["peptide_count_used"].to_numpy(dtype=float)[mask]
+        ok = np.isfinite(counts) & (counts > 0)
+        if ok.sum() > 3:
+            ax2.scatter(np.log(counts[ok]), resid[ok], s=6, alpha=0.25, color="black")
+            if "peptide_log_var_adj" in pts.columns:
+                adj = pts["peptide_log_var_adj"].to_numpy(dtype=float)[mask][ok]
+                o2 = np.argsort(np.log(counts[ok]))
+                ax2.plot(np.log(counts[ok])[o2], adj[o2], color="crimson", linewidth=2.5,
+                         label="LOWESS prior (peptide stage)")
+                ax2.legend(loc="best", fontsize=8)
+            ax2.axhline(0, color="gray", linestyle="--", linewidth=1.2)
+            ax2.set_xlabel("log(peptide count)")
+            ax2.set_ylabel("residual log(variance) after intensity stage")
+            ax2.set_title("Peptide-count stage\n(downward trend = real information added)")
+            ax2.grid(True, alpha=0.3)
+    else:
+        ax2.hist(resid, bins=60, color="steelblue", edgecolor="black", linewidth=0.3)
+        ax2.axvline(0, color="crimson", linestyle="--", linewidth=1.5)
+        ax2.set_xlabel("residual log(variance) after intensity stage")
+        ax2.set_ylabel("(feature, group) pairs")
+        ax2.set_title(f"Residual spread, SD = {np.nanstd(resid):.2f}\n"
+                      "(use moderation='intensity_peptide_trend' to reduce)")
+        ax2.grid(True, alpha=0.3)
+
     return fig
 
 
