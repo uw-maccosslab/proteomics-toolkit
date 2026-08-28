@@ -101,13 +101,14 @@ from . import (
     multivariate,  # Multivariate variance partitioning (PERMANOVA)
     normalization,  # Normalization methods
     preprocessing,  # Data cleaning and quality assessment
+    regression,  # Continuous-outcome regression (ElasticNet)
     statistical_analysis,  # Statistical testing and modeling
     temporal_clustering,  # Temporal trend analysis and clustering
     validation,  # Data validation and error checking
     visualization,  # Plotting and visualization
 )
 
-__version__ = "26.6.0"
+__version__ = "26.7.0"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================
@@ -128,6 +129,10 @@ from .classification import (
     run_binary_classification,  # LOO/k-fold CV binary classification
     run_rfecv_stability,  # Nested-CV RFE with stability selection + null
     select_features_by_mad,  # Unsupervised feature ranking by MAD
+)
+from .regression import (
+    plot_regression_scatter,  # Predicted-vs-true scatter from run_elasticnet_regression
+    run_elasticnet_regression,  # Nested-CV ElasticNet regression with stability selection + null
 )
 from .data_import import (
     BATCH_SUFFIX_DELIMITER,  # The batch suffix delimiter: __@__
@@ -385,4 +390,8 @@ __all__ = [
     # MULTIVARIATE - Variance partitioning and ordination tests
     "multivariate",  # Module access
     "permanova",  # PERMANOVA on a metadata factor
+    # REGRESSION - Continuous-outcome prediction with nested CV
+    "regression",  # Module access
+    "run_elasticnet_regression",  # Nested-CV ElasticNet regression with stability selection + null
+    "plot_regression_scatter",  # Predicted-vs-true scatter from run_elasticnet_regression
 ]

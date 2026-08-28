@@ -2,13 +2,11 @@
 
 ## Overview
 
-<!-- One-sentence summary of the upcoming release. -->
+<!-- One paragraph: what this release is about. -->
 
 ## New Features
 
-<!-- Feature descriptions grouped by area (Data Import, Preprocessing,
-Normalization, Statistical Analysis, Visualization, Classification, etc).
-Focus on user-visible behavior, not implementation details. -->
+<!-- New functions/modules, with the problem each solves. -->
 
 ## Bug Fixes
 
@@ -27,9 +25,8 @@ changes. -->
 
 ## Testing
 
-<!-- New tests added in this release. -->
+<!-- New or changed test coverage. -->
 
 ## Documentation
 
-<!-- Documentation updates relevant to users (new recipes, restructured
-guides, README changes). -->
+<!-- Docs added or updated. -->
