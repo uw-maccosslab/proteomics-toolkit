@@ -18,6 +18,7 @@ A Python toolkit for analyzing mass spectrometry-based proteomics data, supporti
 - **enrichment**: Gene set enrichment via Enrichr API
 - **temporal_clustering**: K-means clustering of temporal protein trends
 - **classification**: Binary classification with cross-validation, SHAP interpretability, multi-class permutation importance; recursive feature elimination with cross-validation, per-feature stability selection, and a permutation null (`run_rfecv_stability`)
+- **regression**: Nested cross-validated ElasticNet regression for continuous outcomes, with per-feature stability selection and a permutation null (`run_elasticnet_regression`)
 - **marker_discovery**: Descriptive marker-discovery metrics and silhouette-driven k-means clustering for low-n designs
 - **multivariate**: PERMANOVA variance partitioning on sample-by-sample distance matrices
 - **validation**: Metadata/data consistency checking with diagnostic reports
@@ -362,6 +363,10 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `plot_fold_change_pca()` — PCA of per-subject fold-changes by group
 - `plot_roc_curve()` — ROC curve from a single classification result (with per-fold mean +/- SD band)
 - `plot_roc_comparison()` — Overlay ROC curves from multiple methods
+
+### regression.py
+- `run_elasticnet_regression()` — Nested cross-validated ElasticNet regression for continuous outcomes under an honest outer CV; returns held-out R2/RMSE/Spearman, per-feature selection frequency, consensus signature, and a permutation null
+- `plot_regression_scatter()` — Predicted-vs-true scatter plot from `run_elasticnet_regression`, with a 1:1 reference line and R2/Spearman/permutation-p annotated
 
 ### marker_discovery.py
 - `method_specificity_score()` — Per-(protein, group) descriptive marker score: group mean, distance from the second-best group (`delta_top`), specificity vs across-group median, and rank
