@@ -130,10 +130,6 @@ from .classification import (
     run_rfecv_stability,  # Nested-CV RFE with stability selection + null
     select_features_by_mad,  # Unsupervised feature ranking by MAD
 )
-from .regression import (
-    plot_regression_scatter,  # Predicted-vs-true scatter from run_elasticnet_regression
-    run_elasticnet_regression,  # Nested-CV ElasticNet regression with stability selection + null
-)
 from .data_import import (
     BATCH_SUFFIX_DELIMITER,  # The batch suffix delimiter: __@__
     clean_sample_names,  # Clean up sample column names automatically
@@ -197,6 +193,10 @@ from .preprocessing import (
     apply_systematic_color_scheme,  # Apply consistent colors for visualization
     classify_samples,  # Classify samples into study vs control groups
     parse_protein_identifiers,  # Extract UniProt IDs, gene names, descriptions
+)
+from .regression import (
+    plot_regression_scatter,  # Predicted-vs-true scatter from run_elasticnet_regression
+    run_elasticnet_regression,  # Nested-CV ElasticNet regression with stability selection + null
 )
 
 # STATISTICAL ANALYSIS - Core statistical functions and configuration
