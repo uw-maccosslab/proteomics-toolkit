@@ -11,7 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/ruff-action@v3
+      # Pinned to an exact version: ruff-action v4 uses immutable releases and
+      # publishes no moving `v4` major tag, so `@v4` would not resolve. v4 is
+      # also the first release to run on node24; v3 targets the deprecated
+      # node20. Bump this tag deliberately when upgrading.
+      - uses: astral-sh/ruff-action@v4.1.0
         with:
           # Read the ruff pin from the dev extras in pyproject.toml so the CI
           # lint gate and local `.venv/bin/ruff` always run the same version.
