@@ -67,6 +67,10 @@ entries between releases.
 ## Code Style
 
 - Python: PEP 8, `ruff` for linting (`ruff check .`)
+- The ruff version is pinned in the `dev` extra in `pyproject.toml`, and both
+  CI workflows read that pin via ruff-action's `version-file` input. Install
+  with `pip install -e ".[dev]"` and run `.venv/bin/ruff check .` to reproduce
+  the CI lint gate exactly. Bump the pin in `pyproject.toml` only.
 - Line length: 120 characters
 - Google-style docstrings
 - Modern type hints (`float | None` not `Optional[float]`)

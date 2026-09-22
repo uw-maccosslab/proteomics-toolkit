@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proteomics-toolkit"
-version = "26.7.0"
+version = "26.7.1"
 description = "Proteomics analysis toolkit for mass spectrometry data"
 readme = "README.md"
 license = "Apache-2.0"
@@ -44,6 +44,10 @@ Issues = "https://github.com/uw-maccosslab/proteomics-toolkit/issues"
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    # Pinned exactly so local lint matches the CI lint gate. Both ci.yml and
+    # publish.yml read this pin via ruff-action's version-file input, so this
+    # line is the single source of truth for the ruff version.
+    "ruff==0.16.8",
 ]
 umap = [
     "umap-learn>=0.5",

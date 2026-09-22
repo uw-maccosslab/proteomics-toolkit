@@ -108,7 +108,7 @@ from . import (
     visualization,  # Plotting and visualization
 )
 
-__version__ = "26.7.0"
+__version__ = "26.7.1"
 __author__ = "Michael MacCoss Lab, University of Washington"
 
 # =============================================================================

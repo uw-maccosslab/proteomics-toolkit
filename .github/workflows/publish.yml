@@ -8,6 +8,16 @@ permissions:
   id-token: write
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/ruff-action@v3
+        with:
+          # Read the ruff pin from the dev extras in pyproject.toml so the CI
+          # lint gate and local `.venv/bin/ruff` always run the same version.
+          version-file: "pyproject.toml"
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -27,7 +37,7 @@ jobs:
         run: python -m pytest tests/ -v --tb=short
 
   publish:
-    needs: test
+    needs: [lint, test]
     runs-on: ubuntu-latest
     environment: pypi
     steps:
