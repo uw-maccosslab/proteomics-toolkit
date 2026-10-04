@@ -295,8 +295,8 @@ etc.) when comparing two groups. The treatment statistics (`logFC`,
 `t`, `P.Value`, `adj.P.Val`) are reported on the treatment coefficient
 after adjusting for the supplied covariates.
 
-Currently supported for `analysis_type='unpaired'` only. Setting
-`config.covariates` with `paired` or `linear_trend` emits a warning and
+Supported for `analysis_type` in `'unpaired'`, `'linear_trend'`, and
+`'interaction'`. Setting `config.covariates` with `paired` emits a warning and
 is otherwise ignored by the moderated linear model (use the
 `mixed_effects` path if you need covariates in those designs).
 
@@ -371,6 +371,61 @@ variance shrinkage, which is the dominant power gain on small-n MS data
 when the variance prior is the bottleneck. The mixed-effects route is
 preferable when subject variance is the primary nuisance of interest
 or when the slope structure is more complex than a fixed effect.
+
+### Interaction mode (moderated difference of differences)
+
+**Use case:** A 2 x 2 design where the question is whether an effect
+*changes* between two conditions: does the treatment-versus-control
+difference differ between two visits, or does a collection-method
+difference change with processing delay? Tests the interaction with the
+same limma / deqms / intensity_trend variance moderation as the other
+moderated designs.
+
+The design is
+`feature ~ intercept + group:level + group + level (+ optional subject block + covariates)`,
+and the `group:level` coefficient is tested. `logFC` is the difference of
+differences:
+
+```text
+logFC = (alt - ref at paired_label2) - (alt - ref at paired_label1)
+```
+
+where `ref`/`alt` are `group_labels[0]`/`group_labels[1]`. All four cells
+must contain samples. Design columns that are aliased are dropped
+automatically (for example, a `subject_column` block whose subjects are
+nested in the group absorbs the group main effect), and the call raises if
+the interaction itself is not estimable. With `moderation='intensity_trend'`
+and no `variance_prior_group_column`, each of the four cells contributes an
+anchor point per feature to the variance trend.
+
+```python
+config = ptk.StatisticalConfig()
+config.statistical_test_method = 'moderated_linear_model'
+config.analysis_type           = 'interaction'
+config.moderation              = 'intensity_trend'
+
+config.group_column  = 'Collection'
+config.group_labels  = ['Venous', 'Capillary']   # ref, alt
+config.paired_column = 'Hours'
+config.paired_label1 = '1'                        # reference level
+config.paired_label2 = '25'
+
+config.subject_column = 'Subject'                 # optional
+config.variance_prior_group_column = 'sample_type'   # optional QC/pool prior
+config.variance_prior_groups       = ['reference']
+
+config.log_transform_before_stats = 'auto'
+config.validate()
+
+results = ptk.run_comprehensive_statistical_analysis(
+    data, sample_meta_dict, config, protein_annotations=annot,
+)
+```
+
+Unlike the mixed-effects `interaction` route, this path does not use
+`interaction_terms`; the two factors and their levels come from
+`group_column`/`group_labels` and `paired_column`/`paired_label1`/`paired_label2`.
+Residual df is `n - 4` without a subject block or covariates.
 
 ## Mixed-effects model (repeated measures)
 
@@ -473,8 +528,8 @@ See [08-enrichment.md](08-enrichment.md) for the full enrichment workflow.
 | `paired_label1` | str | Baseline/before label in `paired_column` |
 | `paired_label2` | str | Follow-up/after label in `paired_column` |
 | `time_column` | str | Numeric time/dose column for `linear_trend`/`longitudinal` |
-| `interaction_terms` | list | Mixed-effects interaction terms (e.g. `['Group', 'Visit']`) |
-| `covariates` | list | Additional covariates to control for (e.g. `['Age', 'Sex']`). Honored by `mixed_effects` for all designs, and by `moderated_linear_model` for `analysis_type='unpaired'`. See [Covariate adjustment](#covariate-adjustment). |
+| `interaction_terms` | list | Mixed-effects interaction terms (e.g. `['Group', 'Visit']`). Not used by the moderated `interaction` path, which reads `group_labels` and `paired_label1`/`paired_label2` instead |
+| `covariates` | list | Additional covariates to control for (e.g. `['Age', 'Sex']`). Honored by `mixed_effects` for all designs, and by `moderated_linear_model` for `analysis_type` in `'unpaired'`, `'linear_trend'`, and `'interaction'`. See [Covariate adjustment](#covariate-adjustment). |
 | `log_transform_before_stats` | str/bool | `'auto'`, `True`, `False` - see [Log transformation](#log-transformation) |
 | `log_base` | str | `'log2'` (default), `'log10'`, `'ln'` |
 | `correction_method` | str | `'fdr_bh'` (BH), `'bonferroni'`, `'fdr_by'`, etc. |

@@ -1034,6 +1034,169 @@ class TestModeratedLinearTrend:
         assert int((result["n_group1"] + result["n_group2"]).max()) == 47
 
 
+def _make_interaction_fixture(n_per_cell=4, n_features=200, n_planted=10, effect=1.5, seed=7):
+    """Build a 2 x 2 (Group x Visit) fixture for moderated interaction tests.
+
+    The first ``n_planted`` features carry a pure interaction (+``effect`` only in
+    the Treatment/Post cell). The next ``n_planted`` carry large Group and Visit
+    main effects but no interaction, so a correct interaction test must leave them
+    null. Each subject is measured at both visits, nested within one group.
+
+    Returns
+    -------
+    log_data : pd.DataFrame
+        Log2 feature intensities (rows = features, columns = samples).
+    metadata_df : pd.DataFrame
+        Sample / Subject / Group / Visit metadata.
+    config : StatisticalConfig
+        Pre-populated for a limma-moderated interaction fit on log data.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for group in ("Control", "Treatment"):
+        for i in range(n_per_cell):
+            subject = f"{group[0]}{i}"
+            for visit in ("Pre", "Post"):
+                rows.append({"Sample": f"{subject}_{visit}", "Subject": subject, "Group": group, "Visit": visit})
+    metadata_df = pd.DataFrame(rows)
+    is_treat = metadata_df["Group"].eq("Treatment").to_numpy(dtype=float)
+    is_post = metadata_df["Visit"].eq("Post").to_numpy(dtype=float)
+
+    values = rng.normal(10.0, 0.3, size=(n_features, len(metadata_df)))
+    values[:n_planted] += effect * (is_treat * is_post)
+    values[n_planted : 2 * n_planted] += 2.0 * is_treat + 1.5 * is_post
+    features = [f"P{i:04d}" for i in range(n_features)]
+    log_data = pd.DataFrame(values, index=features, columns=metadata_df["Sample"])
+
+    config = StatisticalConfig()
+    config.analysis_type = "interaction"
+    config.statistical_test_method = "moderated_linear_model"
+    config.moderation = "limma"
+    config.group_column = "Group"
+    config.group_labels = ["Control", "Treatment"]
+    config.paired_column = "Visit"
+    config.paired_label1 = "Pre"
+    config.paired_label2 = "Post"
+    config.log_transform_before_stats = False
+    return log_data, metadata_df, config
+
+
+def _difference_of_differences(log_data, metadata_df):
+    cell = metadata_df.set_index("Sample")[["Group", "Visit"]].loc[log_data.columns]
+    means = log_data.T.groupby([cell["Group"], cell["Visit"]]).mean().T
+    return (means[("Treatment", "Post")] - means[("Control", "Post")]) - (
+        means[("Treatment", "Pre")] - means[("Control", "Pre")]
+    )
+
+
+class TestModeratedInteraction:
+    """2 x 2 difference-of-differences test in the moderated linear model."""
+
+    def test_logfc_equals_difference_of_cell_mean_differences(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        result = run_moderated_linear_model(log_data, metadata_df, config).set_index("Protein")
+        expected = _difference_of_differences(log_data, metadata_df)
+        np.testing.assert_allclose(result.loc[expected.index, "logFC"], expected, atol=1e-10)
+
+    def test_residual_df_is_samples_minus_four_cells(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        result = run_moderated_linear_model(log_data, metadata_df, config)
+        assert (result["residual_df"] == len(metadata_df) - 4).all()
+
+    def test_planted_interaction_detected_and_main_effects_ignored(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        result = run_moderated_linear_model(log_data, metadata_df, config).set_index("Protein")
+        planted = [f"P{i:04d}" for i in range(10)]
+        main_only = [f"P{i:04d}" for i in range(10, 20)]
+        top = set(result.sort_values("P.Value").head(10).index)
+        assert len(top & set(planted)) >= 9
+        # Large main effects without interaction must not leak into the contrast.
+        assert result.loc[main_only, "logFC"].abs().max() < 0.75
+        assert result.loc[main_only, "P.Value"].min() > 1e-3
+
+    def test_nested_subject_block_keeps_estimate_and_drops_aliased_column(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        without_subjects = run_moderated_linear_model(log_data, metadata_df, config).set_index("Protein")
+        config.subject_column = "Subject"
+        with_subjects = run_moderated_linear_model(log_data, metadata_df, config).set_index("Protein")
+        # Balanced design: the subject block changes the variance, not the estimate.
+        np.testing.assert_allclose(with_subjects["logFC"], without_subjects["logFC"], atol=1e-10)
+        # 8 subjects nested in 2 groups: 8 subject means + 1 visit + 1 interaction = 10 params.
+        assert (with_subjects["residual_df"] == len(metadata_df) - 10).all()
+
+    def test_intensity_trend_prior_uses_one_group_per_cell(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        config.moderation = "intensity_trend"
+        config._raw_feature_data = np.exp2(log_data)
+        result = run_moderated_linear_model(log_data, metadata_df, config)
+        points = get_intensity_trend_points(result)
+        assert points["group"].nunique() == 4
+        assert {"intensity_s0_sq", "intensity_used"} <= set(result.columns)
+
+    def test_missing_cell_raises(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        keep = ~(metadata_df["Group"].eq("Treatment") & metadata_df["Visit"].eq("Post"))
+        metadata_df = metadata_df.loc[keep]
+        with pytest.raises(ValueError, match="all four"):
+            run_moderated_linear_model(log_data[metadata_df["Sample"]], metadata_df, config)
+
+    def test_confounded_covariate_raises_not_estimable(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        metadata_df = metadata_df.assign(
+            TreatPost=(metadata_df["Group"].eq("Treatment") & metadata_df["Visit"].eq("Post")).astype(float)
+        )
+        config.covariates = ["TreatPost"]
+        with pytest.raises(ValueError, match="not estimable"):
+            run_moderated_linear_model(log_data, metadata_df, config)
+
+    def test_validate_accepts_moderated_interaction_without_formula_terms(self):
+        _, _, config = _make_interaction_fixture()
+        assert config.interaction_terms == []
+        assert config.validate()
+
+    def test_validate_requires_paired_labels_for_moderated_interaction(self):
+        _, _, config = _make_interaction_fixture()
+        config.paired_label2 = None
+        with pytest.raises(ValueError, match="paired_label1 and paired_label2"):
+            config.validate()
+
+    def test_validate_still_requires_formula_terms_for_mixed_effects_interaction(self):
+        _, _, config = _make_interaction_fixture()
+        config.statistical_test_method = "mixed_effects"
+        config.subject_column = "Subject"
+        with pytest.raises(ValueError, match="interaction_terms"):
+            config.validate()
+
+    def test_dispatcher_runs_interaction_with_reference_pool_prior(self):
+        log_data, metadata_df, config = _make_interaction_fixture()
+        rng = np.random.default_rng(3)
+        pools = [f"Pool_{i}" for i in range(3)]
+        pool_values = pd.DataFrame(rng.normal(10.0, 0.1, size=(len(log_data), 3)), index=log_data.index, columns=pools)
+        raw = np.exp2(pd.concat([log_data, pool_values], axis=1))
+        # The dispatcher reads samples from column 6 onward (5 standard annotation columns).
+        annotation_columns = ["Protein", "Description", "Protein Gene", "UniProt_Accession", "UniProt_Entry_Name"]
+        annotations = pd.DataFrame({column: raw.index for column in annotation_columns})
+        normalized_data = pd.concat([annotations, raw.reset_index(drop=True)], axis=1)
+        sample_metadata = {
+            row.Sample: {"Group": row.Group, "Visit": row.Visit, "sample_type": "experimental"}
+            for row in metadata_df.itertuples()
+        }
+        sample_metadata.update({p: {"Group": np.nan, "Visit": np.nan, "sample_type": "reference"} for p in pools})
+        config.moderation = "intensity_trend"
+        config.log_transform_before_stats = "auto"
+        config.variance_prior_group_column = "sample_type"
+        config.variance_prior_groups = ["reference"]
+        config.validate()
+
+        result = run_comprehensive_statistical_analysis(normalized_data, sample_metadata, config).set_index("Protein")
+
+        expected = _difference_of_differences(log_data, metadata_df)
+        # The 'auto' log transform adds a small pseudocount, so agreement is close, not exact.
+        np.testing.assert_allclose(result.loc[expected.index, "logFC"], expected, atol=0.02)
+        assert (result["residual_df"] == len(metadata_df) - 4).all()
+        assert "adj.P.Val" in result.columns
+
+
 class TestModerationOptionValidation:
     def test_invalid_moderation_raises(self):
         feature_data, metadata_df, config = _make_limma_fixture()

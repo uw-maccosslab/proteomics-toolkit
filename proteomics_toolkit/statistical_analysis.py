@@ -159,7 +159,9 @@ class StatisticalConfig:
     - 'unpaired': Unpaired group comparison (requires group_column, group_labels)
     - 'linear_trend': Linear trend over time/dose (requires time_column, tests slope != 0)
     - 'longitudinal': Any change over time (requires time_column, F-test on time as factor)
-    - 'interaction': Group × Time interaction (requires group_column, paired_column, interaction_terms)
+    - 'interaction': Group × Time interaction. Mixed-effects requires group_column, paired_column,
+      interaction_terms; moderated_linear_model requires group_column, two group_labels,
+      paired_column, paired_label1, paired_label2 (a 2 x 2 difference-of-differences test)
 
     Note: 'dose_response' is accepted as an alias for 'linear_trend' for backward compatibility.
     """
@@ -314,7 +316,14 @@ class StatisticalConfig:
                 raise ValueError("interaction analysis requires group_column and group_labels")
             if not self.paired_column:
                 raise ValueError("interaction analysis requires paired_column")
-            if not self.interaction_terms:
+            if self.statistical_test_method == "moderated_linear_model":
+                # The moderated path fits a fixed 2 x 2 factorial, so it needs the two
+                # levels of each factor rather than formula terms.
+                if len(self.group_labels) < 2:
+                    raise ValueError("moderated interaction analysis requires two group_labels")
+                if self.paired_label1 is None or self.paired_label2 is None:
+                    raise ValueError("moderated interaction analysis requires paired_label1 and paired_label2")
+            elif not self.interaction_terms:
                 raise ValueError("interaction analysis requires interaction_terms")
             if self.statistical_test_method == "mixed_effects" and not self.subject_column:
                 raise ValueError("Mixed-effects interaction analysis requires subject_column")
@@ -386,7 +395,7 @@ def prepare_metadata_dataframe(sample_metadata_dict, sample_columns, config):
         # Only require if we're using interaction terms that include the group column
         # or if analysis_type indicates group comparison
         if (config.interaction_terms and config.group_column in config.interaction_terms) or (
-            hasattr(config, "analysis_type") and config.analysis_type in ["paired", "unpaired"]
+            hasattr(config, "analysis_type") and config.analysis_type in ["paired", "unpaired", "interaction"]
         ):
             required_cols.append(config.group_column)
 
@@ -1233,6 +1242,48 @@ def _build_covariate_design(meta, covariates):
     return meta_kept, design_df.to_numpy(dtype=float), cov_col_names
 
 
+def _drop_aliased_columns(X, tested_index=1):
+    """Drop design columns that are linear combinations of earlier ones.
+
+    Mirrors R's ``lm`` handling of aliased terms: columns are kept left to
+    right only when they add rank, so a subject block nested inside a group
+    factor (which absorbs the group main effect) loses one redundant column
+    instead of making ``X'X`` singular. The column space, and therefore the
+    estimate of every retained coefficient that is estimable, is unchanged.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Full design matrix (samples x columns).
+    tested_index : int
+        Column holding the coefficient under test. It must be estimable,
+        i.e. not in the span of the other columns.
+
+    Returns
+    -------
+    tuple[np.ndarray, int]
+        The reduced design matrix and the new index of the tested column.
+
+    Raises
+    ------
+    ValueError
+        If the tested coefficient is not estimable from this design.
+    """
+    full_rank = np.linalg.matrix_rank(X)
+    if np.linalg.matrix_rank(np.delete(X, tested_index, axis=1)) == full_rank:
+        raise ValueError(
+            "The tested coefficient is not estimable: its design column is a linear "
+            "combination of the other columns (check for empty design cells or a "
+            "subject/covariate block that is confounded with it)."
+        )
+    kept = []
+    for j in range(X.shape[1]):
+        candidate = kept + [j]
+        if np.linalg.matrix_rank(X[:, candidate]) == len(candidate):
+            kept.append(j)
+    return X[:, kept], kept.index(tested_index)
+
+
 def _fit_moderated_t(feature_data, metadata_df, config):
     """Fit per-feature linear model and compute moderated t-statistics.
 
@@ -1256,7 +1307,9 @@ def _fit_moderated_t(feature_data, metadata_df, config):
     config : StatisticalConfig
         Needs ``analysis_type``, ``group_column``, ``group_labels`` (for
         unpaired), ``subject_column`` + ``paired_column`` +
-        ``paired_label1``/``paired_label2`` (for paired).
+        ``paired_label1``/``paired_label2`` (for paired), or
+        ``group_column`` + two ``group_labels`` + ``paired_column`` +
+        ``paired_label1``/``paired_label2`` (for interaction).
 
     Returns
     -------
@@ -1273,10 +1326,10 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         ``d0``      - global prior degrees of freedom (scalar)
     """
     analysis_type = config.analysis_type
-    if analysis_type not in ("unpaired", "paired", "linear_trend"):
+    if analysis_type not in ("unpaired", "paired", "linear_trend", "interaction"):
         raise ValueError(
             f"moderated_linear_model currently supports analysis_type in "
-            f"('unpaired', 'paired', 'linear_trend'); got {analysis_type!r}."
+            f"('unpaired', 'paired', 'linear_trend', 'interaction'); got {analysis_type!r}."
         )
 
     # Identify samples that are in both the feature matrix and the metadata
@@ -1341,6 +1394,55 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         X = np.column_stack([np.ones_like(treat), treat, subj_mat])
         contrast = np.zeros(X.shape[1])
         contrast[1] = 1.0
+
+    elif analysis_type == "interaction":
+        paired_col = config.paired_column
+        if not group_col or len(group_labels or []) < 2:
+            raise ValueError("interaction moderated_linear_model requires group_column and two group_labels")
+        if not paired_col or config.paired_label1 is None or config.paired_label2 is None:
+            raise ValueError(
+                "interaction moderated_linear_model requires paired_column, paired_label1, and paired_label2"
+            )
+        group_ref, group_alt = (str(label) for label in group_labels[:2])
+        level_ref, level_alt = str(config.paired_label1), str(config.paired_label2)
+        keep = meta[group_col].astype(str).isin([group_ref, group_alt]) & meta[paired_col].astype(str).isin(
+            [level_ref, level_alt]
+        )
+        meta = meta.loc[keep]
+        meta, cov_matrix, cov_col_names = _build_covariate_design(meta, list(getattr(config, "covariates", []) or []))
+        sample_cols = meta.index.tolist()
+        group_ind = (meta[group_col].astype(str) == group_alt).astype(float).values
+        level_ind = (meta[paired_col].astype(str) == level_alt).astype(float).values
+        cell_sizes = pd.Series(list(zip(group_ind, level_ind))).value_counts()
+        if len(cell_sizes) < 4:
+            raise ValueError(
+                f"interaction requires samples in all four {group_col} x {paired_col} cells "
+                f"({group_ref}/{group_alt} x {level_ref}/{level_alt}); found {len(cell_sizes)}."
+            )
+        # Design: intercept + interaction + group + level (+ subject block + covariates).
+        # The interaction sits at index 1 so it is never the column dropped as aliased,
+        # and its coefficient is the difference of differences
+        # (alt - ref at level_alt) - (alt - ref at level_ref).
+        design_blocks = [np.ones_like(group_ind), group_ind * level_ind, group_ind, level_ind]
+        subj_col = config.subject_column
+        if subj_col and subj_col in meta.columns:
+            subjects = meta[subj_col].astype(str).values
+            unique_subjects = sorted(set(subjects))
+            subj_mat = np.zeros((len(subjects), max(len(unique_subjects) - 1, 0)))
+            for j, s in enumerate(unique_subjects[1:]):
+                subj_mat[:, j] = (subjects == s).astype(float)
+            design_blocks.append(subj_mat)
+        if cov_matrix.shape[1] > 0:
+            design_blocks.append(cov_matrix)
+            print(f"  Adjusting for covariates: {cov_col_names}")
+        X, tested_index = _drop_aliased_columns(np.column_stack(design_blocks), tested_index=1)
+        if X.shape[0] <= X.shape[1]:
+            raise ValueError(
+                f"interaction needs more than {X.shape[1]} samples for the design "
+                f"[{X.shape[1]} cols] to leave residual df; got {X.shape[0]}."
+            )
+        contrast = np.zeros(X.shape[1])
+        contrast[tested_index] = 1.0
 
     else:  # linear_trend
         time_col = config.time_column or config.dose_column
@@ -1655,10 +1757,10 @@ def _per_feature_group_stats(feature_data, metadata_df, config):
     view passed to the moderated-t fit).
     """
     analysis_type = config.analysis_type
-    if analysis_type not in ("unpaired", "paired", "linear_trend"):
+    if analysis_type not in ("unpaired", "paired", "linear_trend", "interaction"):
         raise ValueError(
             "intensity_trend moderation requires analysis_type in "
-            f"('unpaired', 'paired', 'linear_trend'); got {analysis_type!r}."
+            f"('unpaired', 'paired', 'linear_trend', 'interaction'); got {analysis_type!r}."
         )
 
     sample_cols = [c for c in feature_data.columns if c in set(metadata_df["Sample"])]
@@ -1702,6 +1804,16 @@ def _per_feature_group_stats(feature_data, metadata_df, config):
         meta = meta.loc[keep]
         sample_cols = meta.index.tolist()
         group_labels_by_sample = meta[paired_col].astype(str).tolist()
+    elif analysis_type == "interaction":
+        # One group per design cell (group x paired level), so the trend sees
+        # within-cell variance rather than variance inflated by the effects.
+        group_col, paired_col = config.group_column, config.paired_column
+        groups = [str(g) for g in config.group_labels[:2]]
+        levels = [str(config.paired_label1), str(config.paired_label2)]
+        keep = meta[group_col].astype(str).isin(groups) & meta[paired_col].astype(str).isin(levels)
+        meta = meta.loc[keep]
+        sample_cols = meta.index.tolist()
+        group_labels_by_sample = (meta[group_col].astype(str) + "|" + meta[paired_col].astype(str)).tolist()
     else:  # linear_trend: one "group" per unique time value
         time_col = config.time_column or config.dose_column
         # Validation was already done by `_fit_moderated_t`; defensive check here too.
@@ -1955,8 +2067,25 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     statistics on the treatment coefficient are adjusted for those
     covariates. Categorical covariates (non-numeric dtype) are
     dummy-encoded via patsy. Samples missing any covariate value are
-    listwise-deleted before the fit. ``analysis_type='paired'`` and
-    ``'linear_trend'`` do not yet apply covariates in this function.
+    listwise-deleted before the fit. ``'linear_trend'`` and
+    ``'interaction'`` also accept covariates; ``'paired'`` does not yet.
+
+    Interaction mode
+    ~~~~~~~~~~~~~~~~
+    Set ``config.analysis_type='interaction'`` with ``config.group_column``
+    + two ``config.group_labels`` (reference, alternative) and
+    ``config.paired_column`` + ``config.paired_label1`` /
+    ``config.paired_label2`` to fit the 2 x 2 factorial
+    ``feature ~ group + level + group:level (+ optional subject block +
+    covariates)`` and test the ``group:level`` coefficient. ``logFC`` is
+    the difference of differences
+    ``(alt - ref at paired_label2) - (alt - ref at paired_label1)``, i.e.
+    how much the group effect changes between the two levels. All four
+    cells must contain samples. Design columns that are aliased (for
+    example a subject block nested in the group factor) are dropped
+    automatically. With ``moderation='intensity_trend'`` and no
+    ``variance_prior_group_column``, each of the four cells contributes an
+    anchor point per feature to the variance trend.
 
     Linear-trend mode
     ~~~~~~~~~~~~~~~~~
@@ -1984,8 +2113,8 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         Must contain a ``Sample`` column matching ``feature_data``
         columns and the group/paired/time columns referenced by ``config``.
     config : StatisticalConfig
-        ``analysis_type`` must be ``"unpaired"``, ``"paired"``, or
-        ``"linear_trend"``. Reads ``config.moderation``,
+        ``analysis_type`` must be ``"unpaired"``, ``"paired"``,
+        ``"linear_trend"``, or ``"interaction"``. Reads ``config.moderation``,
         ``config.robust``, ``config.peptide_count_column``, and the
         intensity-trend settings. ``"linear_trend"`` additionally
         requires ``config.time_column`` and (optionally for
@@ -2565,12 +2694,12 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
         if config.covariates:
             print(f"  Covariates: {config.covariates}")
     elif config.statistical_test_method == "moderated_linear_model" and config.covariates:
-        if config.analysis_type in ("unpaired", "linear_trend"):
+        if config.analysis_type in ("unpaired", "linear_trend", "interaction"):
             print(f"  Covariates: {config.covariates}")
         else:
             print(
                 f"  Warning: covariates ignored - moderated_linear_model "
-                f"applies covariates only for analysis_type in ('unpaired', 'linear_trend') "
+                f"applies covariates only for analysis_type in ('unpaired', 'linear_trend', 'interaction') "
                 f"(got {config.analysis_type!r})."
             )
 
