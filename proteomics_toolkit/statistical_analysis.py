@@ -224,9 +224,9 @@ class StatisticalConfig:
         # ``moderation`` selects the variance prior:
         #   - "limma"             : global prior (Smyth 2004)
         #   - "deqms"             : per-feature prior conditioned on peptide count (Zhu 2020)
-        #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend;
-        #                           equivalent to limma's ``trend=TRUE`` and the recommended
-        #                           default for DIA/DDA MS data.
+        #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend,
+        #                           with the trend's level and d0 fitted to the design
+        #                           residuals; the recommended default for DIA/DDA MS data.
         #   - "intensity_peptide_trend" : additive two-stage prior, LOWESS on
         #                           log(mean intensity) plus LOWESS on log(peptide count).
         #                           Peptide count carries variance information that
@@ -240,24 +240,27 @@ class StatisticalConfig:
         self.moderation = "intensity_trend"
         self.robust = False
 
-        # Source of the (feature, group) cloud that drives the
-        # ``intensity_trend`` LOWESS prior. Default ``None`` reproduces the
-        # historical behaviour: groups come from the design (the two values of
+        # Source of the (feature, group) cloud that gives the ``intensity_trend``
+        # LOWESS prior its SHAPE - how variance changes with intensity. Default
+        # ``None`` takes the groups from the design (the two values of
         # ``paired_column`` for paired analyses, the two ``group_labels`` for
         # unpaired, or the unique ``time_column`` values for linear-trend).
-        # That means the "within-group" SD includes any biological
-        # heterogeneity within those design groups (e.g. inter-subject
-        # variability) on top of pure technical noise, which can over-shrink
-        # genuine biology in studies where the design groups are not nominal
-        # replicates.
         #
-        # When ``variance_prior_group_column`` is set, the prior is fit
-        # instead from samples grouped by the named metadata column - intended
-        # for dedicated technical replicate classes (BatchQC, BatchRef,
-        # pooled QC, system suitability, etc.). The per-feature OLS fit on
-        # study samples is unchanged; only the variance prior changes.
-        # ``variance_prior_groups`` optionally restricts which values of the
-        # column are used.
+        # When ``variance_prior_group_column`` is set, the shape is fit instead
+        # on samples grouped by the named metadata column - intended for
+        # dedicated technical replicate classes (BatchQC, BatchRef, pooled QC,
+        # system suitability, etc.), which carry no biology and so trace the
+        # intensity dependence cleanly. ``variance_prior_groups`` optionally
+        # restricts which values of the column are used.
+        #
+        # Either way, only the shape comes from these groups. How HIGH the
+        # trend sits, and how much weight it gets (d0), are then fitted to the
+        # design's own residual variances (see _calibrate_trend_to_design),
+        # because neither source measures the noise a given design is tested
+        # against: technical replicates under-state it whenever the residual
+        # carries biology, and design groups over-state it under a paired or
+        # within-subject design, whose subject block removes between-subject
+        # spread that the groups still contain.
         #
         # Example::
         #
@@ -1631,6 +1634,57 @@ def _fit_limma_prior(s2_valid, d_valid, robust=False, winsor_sigma=4.0):
     return s0_sq, d0
 
 
+def _calibrate_trend_to_design(fit, trend_shape, robust=False):
+    """Fit an intensity trend's LEVEL and the prior df to the design's residual variances.
+
+    The intensity trend says how a feature's variance should depend on its
+    intensity. It says nothing reliable about how large that variance is for
+    the model actually being fitted, because the samples it is estimated from
+    are not the residuals that model is tested against:
+
+    - Technical replicates (``variance_prior_group_column``) carry only
+      instrument and processing noise. A study residual also carries
+      biology - between-subject spread in an unpaired design, week-to-week
+      variation within a person in a paired one - so this trend sits too
+      LOW. On a serum cohort the study residuals ran ~2x above it.
+    - Design groups contain between-subject spread that a paired or
+      within-subject model's subject block removes, so there the trend sits
+      too HIGH (~0.7x on the same cohort).
+    - A LOWESS of log(variance) is biased low by the log of a chi-square
+      draw, badly so for small groups: at two samples per group the mean of
+      log(chi2_1 / 1) is -1.27, a factor of 0.28.
+
+    Before this calibration the trend was used at whatever level its source
+    gave, with d0 estimated separately from the design residuals around
+    their own global mean. The two were then mismatched: d0 was measured
+    against one level and applied to another. When d0 came out large, the
+    posterior variance was the technical variance outright.
+
+    The fix treats the trend as a per-feature covariate offset and estimates
+    the level and d0 together, by Smyth's method of moments on the ratio
+    ``s2 / trend``. This is limma's ``fitFDist`` with the covariate curve
+    supplied rather than spline-fitted: ``level`` is the scalar the trend is
+    multiplied by, and ``d0`` measures how tightly the residuals follow the
+    scaled trend.
+
+    Args:
+        fit: Result of :func:`_fit_moderated_t`, giving ``s2`` and ``df``.
+        trend_shape: Per-feature prior variance from the trend, aligned to
+            ``fit["features"]``, in the model's log space.
+        robust: Winsorize as in :func:`_fit_limma_prior`.
+
+    Returns:
+        ``(level, d0)``. The prior variance is ``level * trend_shape``.
+    """
+    s2 = np.asarray(fit["s2"], dtype=float)
+    d = np.asarray(fit["df"], dtype=float)
+    shape = np.asarray(trend_shape, dtype=float)
+    ok = np.isfinite(s2) & (s2 > 0) & np.isfinite(d) & (d > 0) & np.isfinite(shape) & (shape > 0)
+    if ok.sum() < 2:
+        raise ValueError("Not enough features with a valid residual variance and trend value to calibrate the prior.")
+    return _fit_limma_prior(s2[ok] / shape[ok], d[ok], robust=robust)
+
+
 def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
     """Convert a ``_fit_moderated_t`` result + per-feature prior into a
     DataFrame in the project's standard schema."""
@@ -1860,14 +1914,18 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config, pepti
     The two predictors are only weakly correlated, so a single backfitting
     pass is sufficient.
 
-    This is the Python equivalent of limma's ``trend=TRUE``. Each
-    (feature, group) pair contributes one point to the LOWESS fit:
+    This gives the prior its SHAPE only. The caller multiplies it by a level
+    fitted to the design's residuals (:func:`_calibrate_trend_to_design`),
+    because the groups it is fitted on are not the residuals the model is
+    tested against. Each (feature, group) pair contributes one point to the
+    LOWESS fit:
     Y = log(within-group variance on raw intensities),
     X = log(within-group mean intensity).
 
     Returns a tuple ``(s0_sq_per_feature, fg_points)`` where:
-      - ``s0_sq_per_feature`` is a per-feature prior variance **in the
-        log-intensity space used by the moderated-t fit**. The LOWESS
+      - ``s0_sq_per_feature`` is a per-feature trend variance **in the
+        log-intensity space used by the moderated-t fit**, before
+        calibration. The LOWESS
         gives us a variance in raw-intensity space; we convert to
         log-space via the delta-method approximation
         ``var_log = var_raw / mean_raw^2``, then combine across groups
@@ -2026,33 +2084,46 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
       (Zhu et al. 2020). Protein-level only; reads
       ``config.peptide_count_column`` (default ``"n_peptides"``).
     - ``"intensity_trend"`` *(default)* - per-feature prior conditioned
-      on the intensity trend. Python equivalent of limma's
-      ``trend=TRUE``; recommended for MS data because variance is
-      clearly intensity-dependent.
+      on the intensity trend; recommended for MS data because variance is
+      clearly intensity-dependent. Like limma's ``trend=TRUE`` it scales
+      the prior per feature and estimates the prior df around that trend,
+      but the trend's shape is a LOWESS on raw intensities rather than a
+      spline on log expression.
 
-    Intensity-trend prior source
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    By default, the ``intensity_trend`` LOWESS is fit on within-group SD
-    where "group" comes from the analysis design: the two
-    ``paired_column`` values (paired), the two ``group_labels`` (unpaired),
-    or the unique ``time_column`` values (linear_trend). In studies where
-    the design groups are not biological replicates (e.g. a paired
-    pre/post analysis where each "T1" group still spans many subjects
-    with real biological heterogeneity), that within-group SD includes
-    both technical noise *and* between-subject biology, which inflates
-    the prior and conservatively over-shrinks real signal.
+    Intensity-trend prior: shape, level and weight
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The prior is built in two steps.
 
-    Set ``config.variance_prior_group_column`` to a metadata column
-    identifying dedicated technical-replicate classes (BatchQC, BatchRef,
-    pooled QC, system suitability) to fit the prior on pure technical
-    variance instead. Optionally restrict the values used via
-    ``config.variance_prior_groups``. The study-sample per-feature OLS
-    fit is unchanged; only the variance prior changes. The QC samples
-    must be included in the ``sample_metadata`` passed to
-    :func:`run_comprehensive_statistical_analysis`; they are
-    automatically excluded from the design fit (since they don't match
-    ``paired_label1/2`` or ``group_labels``) but remain available for
-    the prior.
+    1. **Shape.** A LOWESS of ``log(within-group variance)`` on
+       ``log(within-group mean intensity)``. By default the groups come
+       from the design: the two ``paired_column`` values (paired), the
+       two ``group_labels`` (unpaired), or the unique ``time_column``
+       values (linear_trend). Set ``config.variance_prior_group_column``
+       to a metadata column identifying dedicated technical-replicate
+       classes (BatchQC, BatchRef, pooled QC, system suitability) to take
+       the shape from those instead; optionally restrict the values used
+       via ``config.variance_prior_groups``. The QC samples must be
+       included in the ``sample_metadata`` passed to
+       :func:`run_comprehensive_statistical_analysis`; they are
+       automatically excluded from the design fit (since they don't match
+       ``paired_label1/2`` or ``group_labels``) but remain available for
+       the prior.
+    2. **Level and weight.** The trend is multiplied by a single factor,
+       and the prior df ``d0`` is estimated, both from the design's own
+       residual variances (:func:`_calibrate_trend_to_design`). Neither
+       source measures the noise the design is tested against: technical
+       replicates under-state it whenever the residual carries biology,
+       and design groups over-state it under a paired or within-subject
+       model, whose subject block removes between-subject spread the
+       groups still contain. The fitted factor is reported as
+       ``intensity_trend_level``; on a serum cohort it was ~2 for a
+       QC/reference trend and ~0.7 for a design-group one.
+
+    Before v26.8.0 step 2 was missing: the trend was used at its source's
+    level, and ``d0`` was estimated around the residuals' global mean.
+    With a technical-replicate source that made between-subject tests
+    optimistic (6.3% of null p-values below 0.05 rather than 5%, measured
+    on random 5 vs 5 splits of one timepoint).
 
     When ``config.robust`` is True, the prior hyperparameters
     ``(s0^2, d0)`` are estimated with Huber-style Winsorization so a
@@ -2129,7 +2200,10 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         of the following depending on moderation:
 
         - deqms: ``peptide_count_used``, ``deqms_s0_sq``
-        - intensity_trend: ``intensity_s0_sq``, ``intensity_used``
+        - intensity_trend: ``intensity_s0_sq`` (the prior variance used),
+          ``intensity_trend_shape`` (the trend before calibration),
+          ``intensity_trend_level`` (the factor between them),
+          ``intensity_used``
 
     Raises
     ------
@@ -2214,10 +2288,15 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         if use_peptides:
             counts_aligned = counts_per_feature.reindex(fit["features"]).to_numpy(dtype=float)
             print(f"  Peptide-count stage enabled from column {count_col!r}")
-        s0_sq_per_feature, fg_points = _fit_intensity_trend_prior(
+        trend_shape, fg_points = _fit_intensity_trend_prior(
             fit, raw_data, metadata_for_trend, config, peptide_counts=counts_aligned
         )
-        df = _moderated_results_df(fit, s0_sq_per_feature, fit["d0"], config)
+        # The trend gives the shape only; its level and the prior df are fitted to this
+        # design's residuals. See _calibrate_trend_to_design for why neither source's own
+        # level is the right one.
+        trend_level, d0 = _calibrate_trend_to_design(fit, trend_shape, robust=bool(config.robust))
+        s0_sq_per_feature = trend_level * trend_shape
+        df = _moderated_results_df(fit, s0_sq_per_feature, d0, config)
         # Summary intensity per feature: mean of per-group means (raw scale).
         per_feature_intensity = (
             fg_points.groupby("feature_idx", sort=True)["mean_intensity"]
@@ -2227,9 +2306,14 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         )
         df["intensity_used"] = per_feature_intensity
         df["intensity_s0_sq"] = s0_sq_per_feature
+        df["intensity_trend_shape"] = trend_shape
+        df["intensity_trend_level"] = trend_level
         if use_peptides and counts_aligned is not None:
             df["peptide_count_used"] = counts_aligned
         df["limma_s0_sq"] = fit["s0_sq"]
+        # The level rides with the points so the plot can draw the prior used from the points
+        # alone, even after the results have been filtered or their columns narrowed.
+        fg_points["intensity_trend_level"] = trend_level
         # Stash the per-(feature, group) points for the diagnostic plot inside
         # an _AttrsPayload wrapper. The wrapper opts out of pandas' attrs
         # deepcopy-on-propagation (which would dominate iterrows runtime for a
@@ -2240,7 +2324,8 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         df.attrs["intensity_trend_points"] = _AttrsPayload(fg_points.to_dict("records"))
         print(
             f"Done: intensity_trend-mode moderated t completed for {len(df)} features; "
-            f"d0={fit['d0']:.3g}, limma s0^2={fit['s0_sq']:.3g}"
+            f"d0={d0:.3g}, trend scaled x{trend_level:.3g} to the design residuals, "
+            f"limma s0^2={fit['s0_sq']:.3g}"
         )
         return df
 
@@ -2282,8 +2367,10 @@ def get_intensity_trend_points(results_df):
 
     The returned DataFrame has columns ``feature_idx``, ``feature_id``,
     ``group``, ``n_samples``, ``mean_intensity``, ``sd_intensity``,
-    ``predicted_sd``, ``predicted_variance_raw``, and
-    ``predicted_variance_logspace``.
+    ``predicted_sd``, ``predicted_variance_raw``,
+    ``predicted_variance_logspace``, and ``intensity_trend_level`` (the
+    factor the trend was scaled by to fit the design residuals, the same on
+    every row).
 
     Raises
     ------
@@ -2725,7 +2812,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
             f"Use statistical_test_method='moderated_linear_model' with "
             f"config.moderation='limma' (for the former limma_like behaviour), "
             f"'deqms' (for the former deqms_like behaviour), or "
-            f"'intensity_trend' (new default; Python equivalent of limma's trend=TRUE)."
+            f"'intensity_trend' (the default, an intensity-dependent prior)."
         )
     else:
         raise ValueError(
