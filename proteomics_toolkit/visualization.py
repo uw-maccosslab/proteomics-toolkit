@@ -3700,6 +3700,12 @@ def plot_variance_vs_intensity(
     expect exactly 1; values between 1 and 2 are typical and are precisely
     why a nonparametric prior is preferred over either parametric extreme.
 
+    The solid curve is the trend fitted on the points shown, which sets the
+    prior's SHAPE. Its level is then fitted to the design's own residual
+    variances, and when that moves it the curve actually used is drawn dashed.
+    For a QC/reference source the dashed curve sits above the cloud, by the
+    biology the pools do not carry.
+
     The right panel shows the residual after the intensity stage against
     peptide count when ``moderation="intensity_peptide_trend"`` was used,
     so the value of the second stage is visible. With plain
@@ -3753,6 +3759,13 @@ def plot_variance_vs_intensity(
     order = np.argsort(log_mean)
     ax.plot(log_mean[order], yhat[order], color="crimson", linewidth=2.5,
             label="LOWESS prior (intensity stage)")
+    # The trend fixes the shape; its level is fitted to the design residuals afterwards. Drawing
+    # both shows how far the points the trend came from sit from the noise the test uses - for a
+    # QC/reference source the dashed curve sits above the cloud, by the biology the pools lack.
+    level = float(results["intensity_trend_level"].iloc[0]) if "intensity_trend_level" in results.columns else 1.0
+    if np.isfinite(level) and level > 0 and not np.isclose(level, 1.0):
+        ax.plot(log_mean[order], yhat[order] + np.log(level), color="crimson", linestyle="--", linewidth=1.8,
+                label=f"prior used: trend x {level:.2f}, fitted to the design")
 
     # Reference slopes anchored at the cloud centre, for regime reading.
     slope = float(np.polyfit(log_mean, log_var, 1)[0])

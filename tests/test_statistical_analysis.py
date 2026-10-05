@@ -6,6 +6,7 @@ import pytest
 
 from proteomics_toolkit.statistical_analysis import (
     StatisticalConfig,
+    _calibrate_trend_to_design,
     _fit_limma_prior,
     _sanitize_formula_term,
     _trigamma_inverse,
@@ -1206,16 +1207,14 @@ class TestModerationOptionValidation:
 
 
 class TestVariancePriorGroupColumn:
-    """Tests for the ``variance_prior_group_column`` option that sources the
-    intensity_trend LOWESS from a separate sample pool (typically dedicated
-    technical-replicate classes) instead of the design groups.
+    """Tests for the ``variance_prior_group_column`` option that takes the
+    intensity_trend LOWESS SHAPE from a separate sample pool (typically
+    dedicated technical-replicate classes) instead of the design groups.
 
-    Why this matters: when the design groups are not nominal replicates
-    (e.g. a paired pre/post analysis where each timepoint group still spans
-    many subjects), the design within-group SD bakes in inter-subject
-    biology that the prior should not be calibrating against. Pointing the
-    prior at QC / reference samples gives a cleaner technical-noise floor
-    and a less conservative test.
+    The pools trace how variance depends on intensity without any biology in
+    the way. They do not say how large the variance is for the design being
+    tested, which is why the trend's level is fitted to the design residuals
+    afterwards; see TestTrendCalibration.
     """
 
     @staticmethod
@@ -1294,24 +1293,36 @@ class TestVariancePriorGroupColumn:
         config._raw_feature_data = raw_data
         return log_data, raw_data, metadata_df, config
 
-    def test_qc_prior_produces_lower_s0_sq_than_design_prior(self):
-        """The headline behaviour: with QC samples that have lower technical
-        variance than the design within-group spread, the QC-sourced prior
-        should yield a smaller intensity_s0_sq, which propagates to smaller
-        posterior variances and larger |t|."""
+    def test_prior_level_is_fitted_to_the_design_whichever_source(self):
+        """The two sources are wrong in opposite directions, and the calibration
+        corrects both.
+
+        In this fixture the within-subject residual is the 0.3 study noise. The
+        QC pools carry only 0.1 noise, so their trend sits far BELOW the
+        residuals. The design groups are the five weeks, and each spans all
+        eight subjects, whose 0.6 intercepts the subject block removes, so their
+        trend sits far ABOVE. Until v26.8.0 each was used at its own level. The
+        QC prior then shrank every residual toward technical noise. This test
+        once asserted exactly that, as the option's headline behavior: smaller
+        posterior variances and larger |t|.
+        """
         log_data, _, meta, config = self._fixture()
-
-        # Default: design within-group SD (one group per unique week)
         res_default = run_moderated_linear_model(log_data, meta, config)
-
-        # New option: prior from QC samples only
         config.variance_prior_group_column = "QC_Category"
         config.variance_prior_groups = ["BatchQC", "BatchRef"]
         res_qc = run_moderated_linear_model(log_data, meta, config)
 
-        assert np.nanmedian(res_qc["intensity_s0_sq"]) < np.nanmedian(res_default["intensity_s0_sq"])
-        assert np.nanmedian(res_qc["posterior_s2"]) < np.nanmedian(res_default["posterior_s2"])
-        assert np.nanmedian(np.abs(res_qc["t"])) > np.nanmedian(np.abs(res_default["t"]))
+        assert res_default["intensity_trend_level"].iloc[0] < 0.5  # design groups over-state
+        assert res_qc["intensity_trend_level"].iloc[0] > 4.0  # technical pools under-state
+
+        # After calibration both priors sit at the residuals' own level, so the
+        # source no longer decides how much every test is shrunk.
+        median_resid = np.nanmedian(res_default["residual_s2"])
+        for res in (res_default, res_qc):
+            assert 0.7 < np.nanmedian(res["intensity_s0_sq"]) / median_resid < 1.4
+            assert 0.7 < np.nanmedian(res["posterior_s2"]) / median_resid < 1.4
+        ratio_t = np.nanmedian(np.abs(res_qc["t"])) / np.nanmedian(np.abs(res_default["t"]))
+        assert 0.9 < ratio_t < 1.1
 
     def test_default_unchanged_when_option_not_set(self):
         """Backward compatibility: leaving variance_prior_group_column as
@@ -1395,6 +1406,128 @@ class TestVariancePriorGroupColumn:
         # Prior cloud must have used only the QC samples.
         pts = get_intensity_trend_points(result)
         assert set(pts["group"].unique()) == {"BatchQC"}
+
+
+class TestTrendCalibration:
+    """The intensity trend's level and the prior df are fitted to the design residuals.
+
+    Calibration is checked where it matters: the share of null p-values below
+    0.05. A calibrated test gives about 5%. Before v26.8.0 the trend was used at
+    its source's level, with d0 estimated separately around the residuals' global
+    mean. On these same simulations that gave:
+
+    | design   | trend source  | null p < 0.05 before | after |
+    |----------|---------------|----------------------|-------|
+    | unpaired | QC pools      | 40%                  | 4.9%  |
+    | unpaired | design groups | 7.4%                 | 5.0%  |
+    | paired   | QC pools      | 18.5%                | 4.7%  |
+    | paired   | design groups | 0.17%                | 5.1%  |
+
+    (means over five seeds of 2,000 features). The pools under-state the noise
+    by all the biology they lack. Small design groups under-state it through
+    the log-chi-square bias of a LOWESS on log variance. Design groups under a
+    paired model over-state it by the between-subject spread the subject block
+    removes, which left the toolkit's default paired test with almost no false
+    positives and correspondingly little power.
+    """
+
+    @staticmethod
+    def _null_fixture(design, seed=0, n_feat=2000, n_subj=6, bio=0.4, tech=0.15, n_qc=8):
+        """No true effects. Biology `bio` between people, heteroscedastic technical noise."""
+        rng = np.random.default_rng(seed)
+        level = rng.uniform(8, 20, size=n_feat)
+        tech_f = tech * (1.6 - 0.06 * (level - 8))  # noise falls with abundance
+        if design == "unpaired":
+            samples = [f"S{j:02d}" for j in range(2 * n_subj)]
+            groups = ["A"] * n_subj + ["B"] * n_subj
+            subjects = samples
+            study = (level[:, None] + rng.normal(0, bio, size=(n_feat, 2 * n_subj))
+                     + tech_f[:, None] * rng.normal(size=(n_feat, 2 * n_subj)))
+        else:
+            samples = [f"P{j:02d}_{t}" for t in ("T1", "T2") for j in range(n_subj)]
+            groups = ["T1"] * n_subj + ["T2"] * n_subj
+            subjects = [f"P{j:02d}" for _ in range(2) for j in range(n_subj)]
+            person = rng.normal(0, bio, size=(n_feat, n_subj))
+            # Some biology within a person too, which no pooled injection carries.
+            study = (level[:, None] + np.hstack([person, person])
+                     + 0.5 * bio * rng.normal(size=(n_feat, 2 * n_subj))
+                     + tech_f[:, None] * rng.normal(size=(n_feat, 2 * n_subj)))
+        qc = [f"QC{j}" for j in range(n_qc)]
+        values = np.hstack([study, level[:, None] + tech_f[:, None] * rng.normal(size=(n_feat, n_qc))])
+        features = [f"F{i:05d}" for i in range(n_feat)]
+        columns = samples + qc
+        log_data = pd.DataFrame(values, index=features, columns=columns)
+        meta = pd.DataFrame({
+            "Sample": columns,
+            "Group": groups + [np.nan] * n_qc,
+            "Subject": subjects + qc,
+            "Category": ["Study"] * len(samples) + ["Pool"] * n_qc,
+        })
+        config = StatisticalConfig()
+        config.statistical_test_method = "moderated_linear_model"
+        config.moderation = "intensity_trend"
+        config.log_transform_before_stats = False
+        config._raw_feature_data = pd.DataFrame(2.0 ** values, index=features, columns=columns)
+        if design == "unpaired":
+            config.analysis_type = "unpaired"
+            config.group_column = "Group"
+            config.group_labels = ["A", "B"]
+        else:
+            config.analysis_type = "paired"
+            config.subject_column = "Subject"
+            config.paired_column = config.group_column = "Group"
+            config.paired_label1, config.paired_label2 = "T1", "T2"
+            config.group_labels = ["T1", "T2"]
+        return log_data, meta, config
+
+    @pytest.mark.parametrize("design", ["unpaired", "paired"])
+    @pytest.mark.parametrize("source", ["pools", "design groups"])
+    def test_null_p_values_are_calibrated(self, design, source):
+        log_data, meta, config = self._null_fixture(design)
+        if source == "pools":
+            config.variance_prior_group_column = "Category"
+            config.variance_prior_groups = ["Pool"]
+        res = run_moderated_linear_model(log_data, meta, config)
+        frac = float((res["P.Value"] < 0.05).mean())
+        # 2,000 independent null features: the binomial SD of the share is 0.005,
+        # so this is about +/-4 SD around the nominal 5%.
+        assert 0.03 < frac < 0.07, f"{design}, trend from {source}: {frac:.1%} of null p < 0.05"
+
+    def test_level_direction_follows_what_the_source_lacks(self):
+        """Pools lack biology, so they are scaled UP. Paired design groups carry the
+        between-subject spread the model removes, so they are scaled DOWN."""
+        log_data, meta, config = self._null_fixture("paired")
+        res_groups = run_moderated_linear_model(log_data, meta, config)
+        config.variance_prior_group_column = "Category"
+        config.variance_prior_groups = ["Pool"]
+        res_pools = run_moderated_linear_model(log_data, meta, config)
+        assert res_pools["intensity_trend_level"].iloc[0] > 1.5
+        assert res_groups["intensity_trend_level"].iloc[0] < 0.6
+
+    def test_prior_used_is_the_level_times_the_shape(self):
+        log_data, meta, config = self._null_fixture("unpaired", n_feat=300)
+        res = run_moderated_linear_model(log_data, meta, config)
+        np.testing.assert_allclose(
+            res["intensity_s0_sq"], res["intensity_trend_level"] * res["intensity_trend_shape"], rtol=1e-12)
+        # And it is what the posterior was built from.
+        d0 = res["posterior_df"] - res["residual_df"]
+        expected = (d0 * res["intensity_s0_sq"] + res["residual_df"] * res["residual_s2"]) / res["posterior_df"]
+        np.testing.assert_allclose(res["posterior_s2"], expected, rtol=1e-12)
+
+    def test_calibration_recovers_a_known_level_and_prior_df(self):
+        """Draw true variances from the prior the model assumes - level * shape * d0 / chi2(d0) - and
+        sample variances around them. The fit must return that level and d0."""
+        rng = np.random.default_rng(11)
+        n, d, d0_true, level_true = 20000, 6.0, 8.0, 2.5
+        shape = np.exp(rng.uniform(-4, 0, size=n))  # an arbitrary per-feature trend
+        sigma2 = level_true * shape * d0_true / rng.chisquare(d0_true, size=n)
+        s2 = sigma2 * rng.chisquare(d, size=n) / d
+        fit = {"s2": s2, "df": np.full(n, d)}
+        level, d0 = _calibrate_trend_to_design(fit, shape)
+        assert level == pytest.approx(level_true, rel=0.05)
+        assert d0 == pytest.approx(d0_true, rel=0.15)
+        # It IS the limma prior fit on the ratio, nothing more.
+        assert (level, d0) == _fit_limma_prior(s2 / shape, np.full(n, d))
 
 
 class TestLimmaPriorRobust:

@@ -317,12 +317,23 @@ class TestPlotVarianceVsIntensity:
         # the linear-space data.
         config._raw_feature_data = data
 
-        return ptk.run_moderated_linear_model(data, metadata_df, config)
+        # The model is fitted on log2, as the dispatcher would hand it. This fixture once
+        # passed the linear values here, which fitted residuals in intensity units against a
+        # log-space trend; calibrating the trend to those residuals scaled it by 1.6e9.
+        return ptk.run_moderated_linear_model(np.log2(data), metadata_df, config)
 
     def test_basic_intensity_diagnostic(self):
         result = self._build_intensity_trend_result()
         fig = plot_variance_vs_intensity(result)
         assert isinstance(fig, plt.Figure)
+
+    def test_draws_the_prior_actually_used_when_calibration_moved_it(self):
+        """The fitted trend is only the shape; the curve the test used is that times
+        intensity_trend_level, and the plot has to show it or it shows the wrong prior."""
+        result = self._build_intensity_trend_result()
+        level = float(result["intensity_trend_level"].iloc[0])
+        labels = plot_variance_vs_intensity(result).axes[0].get_legend_handles_labels()[1]
+        assert any(lab.startswith("prior used: trend x") for lab in labels) == (not np.isclose(level, 1.0))
 
     def test_missing_attrs_raises(self):
         results = pd.DataFrame({"Protein": ["P0"]})

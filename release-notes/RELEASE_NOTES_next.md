@@ -2,7 +2,11 @@
 
 ## Overview
 
-<!-- One paragraph: what this release is about. -->
+The intensity-trend variance prior is now calibrated to the design being tested. The trend
+still supplies the shape (how noise changes with intensity), but its level and the prior
+degrees of freedom are fitted to the design's own residual variances. Before this release,
+moderated tests were optimistic when the prior came from QC or reference injections. They were
+nearly powerless for a paired or within-subject analysis on the default design-group prior.
 
 ## New Features
 
@@ -10,7 +14,20 @@
 
 ## Bug Fixes
 
-<!-- Description of the bug and its impact, then what was fixed. -->
+- **The intensity-trend prior was used at the wrong level, so moderated p-values were
+  miscalibrated in both directions.** `moderation="intensity_trend"` (the default) and
+  `"intensity_peptide_trend"` took the prior's scale from a LOWESS fitted on within-group
+  variances. They took its weight, `d0`, separately, from the design residuals around their
+  own global mean. Those groups are not the residuals the model is tested against. QC and
+  reference pools (`variance_prior_group_column`) lack the biology a study residual carries, so
+  their trend sits too low. Design groups under a paired or within-subject model contain the
+  between-subject spread the subject block removes, so their trend sits too high. On simulated
+  null data, the share of p-values below 0.05 was 40% (unpaired, QC prior), 18.5% (paired, QC
+  prior) and 0.17% (paired, default prior), where a calibrated test gives 5%. The trend is now
+  multiplied by a level fitted, together with `d0`, to `residual_s2 / trend`. This is Smyth's
+  method of moments with the trend as a covariate offset (limma's `fitFDist` with the curve
+  supplied). All four cases now give 4.7-5.1%. See "Where the intensity prior's level and weight
+  come from" in `docs/06-statistical-analysis.md`.
 
 ## Performance
 
@@ -19,14 +36,33 @@
 
 ## Breaking Changes
 
-<!-- Any changes that require user action (config format changes, removed
-options, renamed APIs, etc). Omit this section if there are no breaking
-changes. -->
+- **P-values from `intensity_trend` and `intensity_peptide_trend` change.** A QC- or
+  reference-sourced prior gets less optimistic. A paired or within-subject analysis on the
+  default prior gets more powerful. An unpaired analysis on the default prior barely moves.
+  There is no switch back, because the old estimator is miscalibrated in both directions. Pin
+  `proteomics-toolkit==26.7.1` to reproduce an earlier result.
+- `intensity_s0_sq` is now the prior variance the test used, after calibration. The
+  uncalibrated trend is the new `intensity_trend_shape` column, and the factor between them is
+  `intensity_trend_level`.
 
 ## Testing
 
-<!-- New or changed test coverage. -->
+- `TestTrendCalibration` checks the share of null p-values below 0.05 for unpaired and paired
+  designs, with the trend from QC pools and from design groups. The tests use 2,000 simulated
+  features with no true effect, heteroscedastic technical noise, and between-person biology
+  that the pools lack. It also checks that the level moves in the direction each source's bias
+  predicts, and that a known level and `d0` are recovered.
+- `test_qc_prior_produces_lower_s0_sq_than_design_prior` asserted the old behavior as the
+  option's headline: a QC prior gives smaller posterior variances and larger |t|. It is replaced
+  by `test_prior_level_is_fitted_to_the_design_whichever_source`.
+- The variance-plot fixture in `tests/test_visualization.py` fitted the model on linear
+  intensities against a log-space trend. Calibration exposed it by scaling the trend by 1.6e9.
+  It now fits on log2, as the dispatcher does.
 
 ## Documentation
 
-<!-- Docs added or updated. -->
+- `docs/06-statistical-analysis.md` explains the shape, level and weight of the intensity prior,
+  with the before-and-after calibration numbers, and documents `variance_prior_group_column`.
+  It no longer calls `intensity_trend` the Python equivalent of limma's `trend=TRUE`.
+- `plot_variance_vs_intensity` draws the prior actually used (dashed) beside the fitted trend
+  when calibration moved it.

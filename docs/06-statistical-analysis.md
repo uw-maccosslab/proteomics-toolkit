@@ -149,7 +149,7 @@ and applies one of four empirical-Bayes variance priors selected via
 | Moderation | Prior shape | When to pick |
 |---|---|---|
 | `"intensity_peptide_trend"` | Additive two-stage LOWESS: `log(var) = f1(log mean intensity) + f2(log peptide count)`. | **Most accurate for protein-level rollup data.** Requires a peptide-count column. |
-| `"intensity_trend"` *(default)* | Nonparametric LOWESS of `log(variance)` on `log(mean intensity)`; the Python equivalent of limma's `trend=TRUE`. | Good default for MS data. Works at protein *and* peptide level. |
+| `"intensity_trend"` *(default)* | Nonparametric LOWESS of `log(variance)` on `log(mean intensity)` for the shape, scaled to the design's residuals ([below](#where-the-intensity-priors-level-and-weight-come-from)). | Good default for MS data. Works at protein *and* peptide level. |
 | `"limma"` | Single global prior (Smyth 2004). | Use when the variance-intensity trend is flat, or as a conservative baseline. |
 | `"deqms"` | Prior conditioned on peptide count alone (Zhu et al. 2020). | Protein-level only. See the caveat below before preferring it. |
 
@@ -279,14 +279,128 @@ ptk.plot_variance_vs_peptide_count(results)
 Output DataFrames include extra columns: `residual_s2`, `residual_df`,
 `posterior_s2`, `posterior_df`, `limma_s0_sq`, plus one of
 `deqms_s0_sq` + `peptide_count_used` or
-`intensity_s0_sq` + `intensity_used` depending on moderation
-(`intensity_peptide_trend` adds `peptide_count_used` as well). The
+`intensity_s0_sq` + `intensity_trend_shape` + `intensity_trend_level` +
+`intensity_used` depending on moderation
+(`intensity_peptide_trend` adds `peptide_count_used` as well).
+`intensity_s0_sq` is the prior variance the test used, which is
+`intensity_trend_level * intensity_trend_shape`. The
 `intensity_trend` and `intensity_peptide_trend` results also carry a
 per-(feature, group) long-form DataFrame on
 `results.attrs["intensity_trend_points"]`, accessible via
 `ptk.get_intensity_trend_points(results)`, with columns
 `intensity_log_var_hat` and — for the combined mode —
 `peptide_log_var_adj` giving each stage's contribution.
+
+### Where the intensity prior's level and weight come from
+
+A moderated t replaces each feature's own variance estimate, which is noisy
+with few samples, by a weighted average of that estimate and a prior:
+
+```
+posterior_s2 = (d0 * prior + residual_df * residual_s2) / (d0 + residual_df)
+```
+
+The prior has two parts. Its **scale** is the variance expected for a feature
+at that intensity. Its **weight**, `d0`, says how far to trust that scale over
+the feature's own estimate. The intensity prior gets them from different
+places:
+
+1. **The shape comes from groups of samples.** The LOWESS of
+   `log(within-group variance)` on `log(within-group mean intensity)` is fitted
+   on the design groups, or on dedicated QC and reference injections when
+   `variance_prior_group_column` is set (see below). This says how noise
+   changes with intensity: low-abundance features are noisier.
+2. **The level and the weight come from the design's residuals.** The trend is
+   multiplied by one factor, reported as `intensity_trend_level`, and `d0` is
+   estimated at the same time, by fitting the residual variances against the
+   trend. This is Smyth's (2004) method of moments on `residual_s2 / trend`,
+   which is limma's `fitFDist` with the covariate curve supplied rather than
+   fitted.
+
+Step 2 exists because no source of groups measures the noise a design is
+tested against:
+
+- **QC and reference pools** carry instrument and processing noise only. A
+  study residual also carries biology: between-person spread in an unpaired
+  design, and week-to-week variation within a person in a paired one. Their
+  trend sits too **low**.
+- **Design groups under a paired or within-subject model** contain the
+  between-subject spread that the model's subject block removes. Their trend
+  sits too **high**.
+- **Small groups** bias the trend low regardless of source. A LOWESS fits the
+  mean of `log(variance)`, and the log of a chi-square draw averages below the
+  log of its mean: by a factor of 0.81 at six samples per group, and 0.28 at two.
+
+**Before v26.8.0 there was no step 2.** The trend was used at whatever level
+its source gave, and `d0` was estimated separately, from the residuals around
+their own global mean. That `d0` was then applied to a different level. When it
+came out large, the posterior variance was the QC pools' technical variance
+outright. On simulated null data with known truth (2,000 features, five seeds),
+the share of null p-values below 0.05 was:
+
+| Design | Trend from | Before v26.8.0 | v26.8.0 |
+|---|---|---|---|
+| unpaired, 6 vs 6 | QC pools | 40% | 4.9% |
+| unpaired, 6 vs 6 | design groups (default) | 7.4% | 5.0% |
+| paired, 6 subjects | QC pools | 18.5% | 4.7% |
+| paired, 6 subjects | design groups (default) | 0.17% | 5.1% |
+
+A calibrated test gives 5%. The paired default was the worst case for power: it
+almost never found anything, false or true. These simulations are in
+`tests/test_statistical_analysis.py::TestTrendCalibration`.
+
+On a real longitudinal serum cohort (3,595 proteins, 10 subjects at weeks 0, 2, 4, 6 and 12, 12
+reference and QC injections), 40 permutations of each null design gave:
+
+| Null test | Trend from | Before v26.8.0 | v26.8.0 |
+|---|---|---|---|
+| unpaired 5 vs 5, random split of week 0 | QC pools | 6.1% | 4.6% |
+| unpaired 5 vs 5 | design groups | 4.5% | 4.5% |
+| paired week 0 vs 12, labels flipped within subject | QC pools | 7.0% | 5.8% |
+| paired week 0 vs 12 | design groups | 4.4% | 5.5% |
+| trend over weeks, shuffled within subject | QC pools | 5.1% | 4.8% |
+| trend over weeks | design groups | 4.5% | 4.8% |
+| trend, random weeks on week-0 samples (between-subject) | QC pools | 6.3% | 4.8% |
+| trend, random weeks on week-0 samples | design groups | 6.2% | 4.8% |
+
+The real cohort's `d0` is small (about 2.5 against 9 to 39 residual df), so its errors were
+modest. The fitted level was about 2 for the QC pools and about 0.7 for paired and within-subject
+design groups. Both paired rows stay slightly above 5% after the change, under either source, and
+that residue is not explained by the prior.
+
+**What changes for an existing analysis.** P-values move, in a direction set by
+the design and the source. A QC-sourced prior gets less optimistic. A paired or
+within-subject analysis on design groups gets more powerful. An unpaired
+analysis on design groups barely moves. To reproduce a result from an earlier
+version, pin that version (`proteomics-toolkit==26.7.1`); there is no switch
+back, because the old estimator is miscalibrated in both directions.
+
+`ptk.plot_variance_vs_intensity(results)` draws the fitted trend solid and,
+when the level is not 1, the prior actually used dashed.
+
+### Taking the shape from QC or reference injections (`variance_prior_group_column`)
+
+Dedicated technical replicates, such as pooled QC, inter-batch references or
+system-suitability injections, trace the intensity dependence of the noise
+without any biology in the way. To fit the trend's shape on them, name the
+metadata column that identifies them, and optionally which of its values
+count:
+
+```python
+config.variance_prior_group_column = 'Sample Category'
+config.variance_prior_groups       = ['Inter-Experiment Reference', 'Inter-Batch Reference']
+```
+
+Each value is its own group, so two different materials are not pooled into
+one variance. Include those samples in the `sample_metadata` passed to
+`run_comprehensive_statistical_analysis`. They usually lack the design's
+columns (no `Week`, no group label), so the design fit drops them, but the
+prior still sees them.
+
+This changes the shape only. The level is fitted to the design either way, so
+pointing the prior at QC pools cannot make the residual noise look like
+technical noise. Expect `intensity_trend_level` above 1 with this option: the
+study's noise is higher than the pools' by the biology the pools lack.
 
 ### Covariate adjustment
 
