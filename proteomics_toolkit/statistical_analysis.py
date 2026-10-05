@@ -224,9 +224,9 @@ class StatisticalConfig:
         # ``moderation`` selects the variance prior:
         #   - "limma"             : global prior (Smyth 2004)
         #   - "deqms"             : per-feature prior conditioned on peptide count (Zhu 2020)
-        #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend;
-        #                           equivalent to limma's ``trend=TRUE`` and the recommended
-        #                           default for DIA/DDA MS data.
+        #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend,
+        #                           with the trend's level and d0 fitted to the design
+        #                           residuals; the recommended default for DIA/DDA MS data.
         #   - "intensity_peptide_trend" : additive two-stage prior, LOWESS on
         #                           log(mean intensity) plus LOWESS on log(peptide count).
         #                           Peptide count carries variance information that
@@ -2311,6 +2311,9 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         if use_peptides and counts_aligned is not None:
             df["peptide_count_used"] = counts_aligned
         df["limma_s0_sq"] = fit["s0_sq"]
+        # The level rides with the points so the plot can draw the prior used from the points
+        # alone, even after the results have been filtered or their columns narrowed.
+        fg_points["intensity_trend_level"] = trend_level
         # Stash the per-(feature, group) points for the diagnostic plot inside
         # an _AttrsPayload wrapper. The wrapper opts out of pandas' attrs
         # deepcopy-on-propagation (which would dominate iterrows runtime for a
@@ -2364,8 +2367,10 @@ def get_intensity_trend_points(results_df):
 
     The returned DataFrame has columns ``feature_idx``, ``feature_id``,
     ``group``, ``n_samples``, ``mean_intensity``, ``sd_intensity``,
-    ``predicted_sd``, ``predicted_variance_raw``, and
-    ``predicted_variance_logspace``.
+    ``predicted_sd``, ``predicted_variance_raw``,
+    ``predicted_variance_logspace``, and ``intensity_trend_level`` (the
+    factor the trend was scaled by to fit the design residuals, the same on
+    every row).
 
     Raises
     ------
@@ -2807,7 +2812,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
             f"Use statistical_test_method='moderated_linear_model' with "
             f"config.moderation='limma' (for the former limma_like behaviour), "
             f"'deqms' (for the former deqms_like behaviour), or "
-            f"'intensity_trend' (new default; Python equivalent of limma's trend=TRUE)."
+            f"'intensity_trend' (the default, an intensity-dependent prior)."
         )
     else:
         raise ValueError(

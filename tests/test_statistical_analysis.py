@@ -1325,8 +1325,9 @@ class TestVariancePriorGroupColumn:
         assert 0.9 < ratio_t < 1.1
 
     def test_default_unchanged_when_option_not_set(self):
-        """Backward compatibility: leaving variance_prior_group_column as
-        None must reproduce the historical design-group prior bit-for-bit."""
+        """Leaving variance_prior_group_column unset and setting it (and
+        variance_prior_groups) explicitly to None must give bit-for-bit
+        identical results: both take the trend's shape from the design groups."""
         log_data, _, meta, config = self._fixture()
         res_a = run_moderated_linear_model(log_data, meta, config)
         # Explicitly set both override knobs to None and re-run.
@@ -1513,6 +1514,10 @@ class TestTrendCalibration:
         d0 = res["posterior_df"] - res["residual_df"]
         expected = (d0 * res["intensity_s0_sq"] + res["residual_df"] * res["residual_s2"]) / res["posterior_df"]
         np.testing.assert_allclose(res["posterior_s2"], expected, rtol=1e-12)
+        # The trend points carry the same level, so the diagnostic plot can draw the prior used
+        # from the points alone.
+        pts = get_intensity_trend_points(res)
+        np.testing.assert_allclose(pts["intensity_trend_level"], res["intensity_trend_level"].iloc[0], rtol=0)
 
     def test_calibration_recovers_a_known_level_and_prior_df(self):
         """Draw true variances from the prior the model assumes - level * shape * d0 / chi2(d0) - and

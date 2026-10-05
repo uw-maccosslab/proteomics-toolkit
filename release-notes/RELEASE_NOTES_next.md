@@ -65,4 +65,9 @@ nearly powerless for a paired or within-subject analysis on the default design-g
   with the before-and-after calibration numbers, and documents `variance_prior_group_column`.
   It no longer calls `intensity_trend` the Python equivalent of limma's `trend=TRUE`.
 - `plot_variance_vs_intensity` draws the prior actually used (dashed) beside the fitted trend
-  when calibration moved it.
+  when calibration moved it. With `intensity_peptide_trend` the dashed curve is the intensity
+  stage at the fitted level, since each protein's peptide adjustment cannot be drawn as a curve.
+- `docs/06-statistical-analysis.md` records a known limitation to revisit, in this toolkit and in
+  Skyline-PRISM together: a single level cannot tilt the trend, so in simulation a QC-sourced
+  prior still left null p-values graded by intensity (2.9% to 7.9% across intensity thirds)
+  while averaging 5%.

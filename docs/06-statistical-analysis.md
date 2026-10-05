@@ -368,6 +368,27 @@ modest. The fitted level was about 2 for the QC pools and about 0.7 for paired a
 design groups. Both paired rows stay slightly above 5% after the change, under either source, and
 that residue is not explained by the prior.
 
+**Known limitation, to revisit: one level for every intensity.** The level and `d0` are single
+numbers, so the calibration can raise or lower the trend but cannot tilt it. When the shape comes
+from samples whose noise has a different makeup from the study residual, the two differ in slope
+as well as height. QC pools carry only technical noise, which falls steeply with intensity, while
+a study residual adds biology that is roughly the same at every intensity. In the simulations
+above, each case averaged about 5%, but split into intensity thirds (low / mid / high) the share
+of null p-values below 0.05 was:
+
+| Design | Trend from | Low | Mid | High |
+|---|---|---|---|---|
+| unpaired, 6 vs 6 | QC pools | 2.9% | 4.1% | 7.9% |
+| paired, 6 subjects | QC pools | 3.2% | 4.3% | 6.7% |
+| paired, 6 subjects | design groups (default) | 7.2% | 4.6% | 3.4% |
+
+The fitted `d0` limits the damage, because a mismatched shape lowers it: 22 rather than about 170
+in the unpaired QC case. On the serum cohort, where `d0` was about 2.5, the prior carries only
+6-22% of each protein's variance, so the effect there should be much smaller. It has not been
+measured on real data. In simulation, fitting a slope on `log(trend)` as well as the level removed
+the gradient (4.2-5.6% in every third). Skyline-PRISM uses the same estimator and is pinned to this
+one at 1e-9, so any change here has to be made in both together.
+
 **What changes for an existing analysis.** P-values move, in a direction set by
 the design and the source. A QC-sourced prior gets less optimistic. A paired or
 within-subject analysis on design groups gets more powerful. An unpaired
@@ -376,7 +397,10 @@ version, pin that version (`proteomics-toolkit==26.7.1`); there is no switch
 back, because the old estimator is miscalibrated in both directions.
 
 `ptk.plot_variance_vs_intensity(results)` draws the fitted trend solid and,
-when the level is not 1, the prior actually used dashed.
+when the level is not 1, the prior actually used dashed. With
+`intensity_peptide_trend` the dashed curve is the intensity stage at the
+fitted level; each protein's peptide-count adjustment is shown in the right
+panel.
 
 ### Taking the shape from QC or reference injections (`variance_prior_group_column`)
 

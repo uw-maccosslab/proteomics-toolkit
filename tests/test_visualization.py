@@ -284,9 +284,10 @@ class TestPlotVarianceVsPeptideCount:
 
 
 class TestPlotVarianceVsIntensity:
-    def _build_intensity_trend_result(self):
+    def _build_intensity_trend_result(self, peptides=False):
         """Produce a results DataFrame with the attrs payload that the
-        diagnostic plot expects."""
+        diagnostic plot expects. With ``peptides=True`` the fit is
+        ``intensity_peptide_trend`` on a varying ``n_peptides`` column."""
         import proteomics_toolkit as ptk
 
         rng = np.random.default_rng(5)
@@ -320,7 +321,11 @@ class TestPlotVarianceVsIntensity:
         # The model is fitted on log2, as the dispatcher would hand it. This fixture once
         # passed the linear values here, which fitted residuals in intensity units against a
         # log-space trend; calibrating the trend to those residuals scaled it by 1.6e9.
-        return ptk.run_moderated_linear_model(np.log2(data), metadata_df, config)
+        log_data = np.log2(data)
+        if peptides:
+            config.moderation = "intensity_peptide_trend"
+            log_data["n_peptides"] = rng.integers(1, 25, size=n_feat)
+        return ptk.run_moderated_linear_model(log_data, metadata_df, config)
 
     def test_basic_intensity_diagnostic(self):
         result = self._build_intensity_trend_result()
@@ -334,6 +339,28 @@ class TestPlotVarianceVsIntensity:
         level = float(result["intensity_trend_level"].iloc[0])
         labels = plot_variance_vs_intensity(result).axes[0].get_legend_handles_labels()[1]
         assert any(lab.startswith("prior used: trend x") for lab in labels) == (not np.isclose(level, 1.0))
+
+    def test_peptide_mode_labels_the_dashed_curve_as_the_intensity_stage(self):
+        """With a peptide stage, each feature's prior also carries an adjustment that depends on
+        peptide count, not intensity, so the dashed curve is only the intensity stage at the fitted
+        level and must not claim to be the prior used."""
+        from proteomics_toolkit.statistical_analysis import get_intensity_trend_points
+
+        result = self._build_intensity_trend_result(peptides=True)
+        assert np.any(get_intensity_trend_points(result)["peptide_log_var_adj"] != 0)  # stage is active
+        assert not np.isclose(result["intensity_trend_level"].iloc[0], 1.0)
+        labels = plot_variance_vs_intensity(result).axes[0].get_legend_handles_labels()[1]
+        assert not any(lab.startswith("prior used") for lab in labels)
+        assert any(lab.startswith("intensity stage x") for lab in labels)
+
+    def test_draws_the_prior_used_after_results_are_filtered_or_narrowed(self):
+        """The level travels with the trend points, so results filtered to no rows, or cut down to
+        a few columns, still plot the calibrated prior instead of crashing or silently dropping it."""
+        result = self._build_intensity_trend_result()
+        assert not np.isclose(result["intensity_trend_level"].iloc[0], 1.0)
+        for subset in (result[result["P.Value"] < 0], result[["Protein", "P.Value"]]):
+            labels = plot_variance_vs_intensity(subset).axes[0].get_legend_handles_labels()[1]
+            assert any(lab.startswith("prior used: trend x") for lab in labels)
 
     def test_missing_attrs_raises(self):
         results = pd.DataFrame({"Protein": ["P0"]})

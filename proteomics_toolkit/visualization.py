@@ -3704,7 +3704,9 @@ def plot_variance_vs_intensity(
     prior's SHAPE. Its level is then fitted to the design's own residual
     variances, and when that moves it the curve actually used is drawn dashed.
     For a QC/reference source the dashed curve sits above the cloud, by the
-    biology the pools do not carry.
+    biology the pools do not carry. With ``intensity_peptide_trend`` the
+    dashed curve is the intensity stage at the fitted level; each feature's
+    prior then also carries its peptide-count adjustment from the right panel.
 
     The right panel shows the residual after the intensity stage against
     peptide count when ``moderation="intensity_peptide_trend"`` was used,
@@ -3762,10 +3764,18 @@ def plot_variance_vs_intensity(
     # The trend fixes the shape; its level is fitted to the design residuals afterwards. Drawing
     # both shows how far the points the trend came from sit from the noise the test uses - for a
     # QC/reference source the dashed curve sits above the cloud, by the biology the pools lack.
-    level = float(results["intensity_trend_level"].iloc[0]) if "intensity_trend_level" in results.columns else 1.0
+    # The level is read from the points, which travel with the results through filtering.
+    level = float(pts["intensity_trend_level"].iloc[0]) if "intensity_trend_level" in pts.columns else 1.0
     if np.isfinite(level) and level > 0 and not np.isclose(level, 1.0):
+        # With an active peptide stage, each feature's prior also carries its peptide adjustment
+        # (right panel). That depends on peptide count, not intensity, so it cannot be drawn as a
+        # curve here; this one is only the intensity stage at the fitted level.
+        pep_stage = "peptide_log_var_adj" in pts.columns and bool(
+            np.any(pts["peptide_log_var_adj"].to_numpy(dtype=float)[mask] != 0))
+        label = (f"intensity stage x {level:.2f}, fitted to the design" if pep_stage
+                 else f"prior used: trend x {level:.2f}, fitted to the design")
         ax.plot(log_mean[order], yhat[order] + np.log(level), color="crimson", linestyle="--", linewidth=1.8,
-                label=f"prior used: trend x {level:.2f}, fitted to the design")
+                label=label)
 
     # Reference slopes anchored at the cloud centre, for regime reading.
     slope = float(np.polyfit(log_mean, log_var, 1)[0])
