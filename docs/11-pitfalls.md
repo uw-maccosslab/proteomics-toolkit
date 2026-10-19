@@ -6,7 +6,7 @@
 |---|---|
 | `Patient_Number` is `float` (84.0) | Convert to string when building `sample_metadata`: `str(int(v))` |
 | PRISM batch suffix in column names | Use `ptk.strip_batch_suffix()` to map to metadata sample names — see [02-data-import.md](02-data-import.md#prism-parquet) |
-| No significant proteins at FDR < 0.05 | Try `use_adjusted_pvalue='unadjusted'`, or use `statistical_test_method='moderated_linear_model'` (with `moderation='intensity_trend'`, `'limma'`, or `'deqms'`) for small sample sizes — see [06-statistical-analysis.md](06-statistical-analysis.md#moderated-linear-model--limma-deqms-or-intensity_trend) |
+| No significant proteins at FDR < 0.05 | Try `use_adjusted_pvalue='unadjusted'`, or use `statistical_test_method='moderated_linear_model'` (with `moderation='limma_trend'`, the default, or `'limma'` or `'deqms'`) for small sample sizes — see [06-statistical-analysis.md](06-statistical-analysis.md#moderated-linear-model) |
 | Log transform applied twice | Set `log_transform_before_stats=False` if data is already log-transformed — see [06-statistical-analysis.md § Log transformation](06-statistical-analysis.md#log-transformation) |
 | `SampleMatchingError` | Call `ptk.validate_metadata_data_consistency()` — see [03-metadata.md](03-metadata.md#validating-metadatadata-consistency) |
 | Mixed-effects model fails | Ensure `n ≥ 8` per protein and `subject_column` has no NaNs |

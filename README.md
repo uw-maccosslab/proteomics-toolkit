@@ -13,7 +13,7 @@ A Python toolkit for analyzing mass spectrometry-based proteomics data, supporti
 - **data_import**: Load Skyline CSV, PRISM parquet, or DIA-NN `pg_matrix.tsv` data, handle batch suffixes, manage sample metadata
 - **preprocessing**: Protein identifier parsing, sample classification, data quality assessment
 - **normalization**: Seven normalization methods (median, VSN, quantile, MAD, z-score, RLR, LOESS)
-- **statistical_analysis**: Differential protein analysis — t-tests, Wilcoxon, Mann-Whitney, mixed-effects, moderated linear model with empirical-Bayes variance shrinkage (limma / DEqMS / intensity-trend)
+- **statistical_analysis**: Differential protein analysis — t-tests, Wilcoxon, Mann-Whitney, mixed-effects, moderated linear model with empirical-Bayes variance shrinkage (limma-trend by default; limma / DEqMS / intensity-trend)
 - **visualization**: Publication-ready plots — volcano, PCA, box plots, heatmaps, correlation, trajectories, bi-clustered sample clustermaps, UMAP, PCA loadings
 - **enrichment**: Gene set enrichment via Enrichr API
 - **temporal_clustering**: K-means clustering of temporal protein trends
@@ -186,11 +186,13 @@ results = ptk.run_comprehensive_statistical_analysis(
 
 For small sample sizes, prefer empirical Bayes variance shrinkage: set
 `config.statistical_test_method = 'moderated_linear_model'` and choose a
-`config.moderation` prior — `'intensity_trend'` (default; works on proteins
-or peptides), `'limma'` (global prior), or `'deqms'` (protein-level only;
-uses the `n_peptides` column from PRISM output to build a
-peptide-count-conditioned variance prior). See
-[docs/06-statistical-analysis.md](docs/06-statistical-analysis.md#moderated-linear-model--limma-deqms-or-intensity_trend)
+`config.moderation` prior — `'limma_trend'` (default; limma's
+`eBayes(trend=TRUE)`, works on proteins or peptides), `'limma'` (global
+prior), or `'deqms'` (protein-level only; uses the `n_peptides` column from
+PRISM output to build a peptide-count-conditioned variance prior).
+`'intensity_trend'`, the default until 26.9.0, is deprecated: it is
+calibrated on average but tilted by intensity. See
+[docs/06-statistical-analysis.md](docs/06-statistical-analysis.md#moderated-linear-model)
 for details.
 
 ### Paired comparison (before/after per subject)
@@ -293,7 +295,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 ### statistical_analysis.py
 - `StatisticalConfig` — Configuration class (zero-arg constructor, set attributes individually)
 - `run_comprehensive_statistical_analysis()` — Main analysis entry point (dispatches by `statistical_test_method`)
-- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='intensity_trend'` / `'limma'` / `'deqms'`); supports covariate adjustment for `analysis_type='unpaired'`
+- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='limma_trend'` (default) / `'limma'` / `'deqms'` / `'intensity_peptide_trend'` / `'intensity_trend'` (deprecated)); supports covariate adjustment for `analysis_type='unpaired'`
 - `get_intensity_trend_points()` — Recover the per-(feature, group) diagnostic points DataFrame from a moderated `intensity_trend` results object
 - `compute_paired_fold_changes()` — Build a per-subject fold-change matrix for paired designs (used as input to the classification module)
 - `display_analysis_summary()` — Print/return summary of results
@@ -323,7 +325,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `plot_grouped_trajectories()` — Line plots for temporal/dose-response data
 - `plot_protein_profile()` — Single protein expression profile
 - `plot_peptide_coverage_map()` — Peptide positions along a protein sequence with optional coloring by abundance / fold-change
-- `plot_variance_vs_intensity()` — Diagnostic for the `intensity_trend` moderation prior
+- `plot_variance_vs_intensity()` — Diagnostic for the intensity-trend moderation priors (`intensity_trend`, deprecated, and `intensity_peptide_trend`)
 - `plot_variance_vs_peptide_count()` — Diagnostic for the DEqMS moderation prior
 
 ### enrichment.py

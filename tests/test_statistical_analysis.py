@@ -1,5 +1,9 @@
 """Tests for the statistical_analysis module."""
 
+import json
+import warnings
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -101,6 +105,7 @@ class TestStatisticalConfig:
         assert config.p_value_threshold == 0.05
         assert config.fold_change_threshold == 1.5
         assert config.correction_method == "fdr_bh"
+        assert config.moderation == "limma_trend"
 
     def test_validate_raises_without_analysis_type(self):
         config = StatisticalConfig()
@@ -633,6 +638,268 @@ class TestModeratedLinearModelIntensityTrend:
         parent_payload = result.attrs.get("intensity_trend_points")
         for _, row in rows[:3]:
             assert row.attrs.get("intensity_trend_points") is parent_payload
+
+    def test_warns_that_it_is_deprecated_and_why(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "intensity_trend"
+        with pytest.warns(FutureWarning, match="intensity_trend' is deprecated") as caught:
+            run_moderated_linear_model(feature_data, metadata_df, config)
+        message = str(caught[0].message)
+        # The reason, not just the fact: a user deciding whether to keep it needs both.
+        for phrase in ("QC/reference pools", "tilted by intensity", "bright", "dim", "prior degrees of freedom"):
+            assert phrase in message
+
+
+# ---------------------------------------------------------------------------
+# limma-trend (the default prior) and limma's df cap, against R limma itself
+# ---------------------------------------------------------------------------
+
+_LIMMA_GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "limma_ebayes.json").read_text(encoding="utf-8"))
+
+
+def _floats(values):
+    return np.array([float(v) for v in values], dtype=float)
+
+
+def _run_golden_case(case):
+    """Hand one golden matrix to the toolkit with the design its sample labels describe."""
+    expr = np.array([_floats(row) for row in case["expr"]])
+    samples = [f"S{j:02d}" for j in range(expr.shape[1])]
+    features = [f"F{i:03d}" for i in range(expr.shape[0])]
+    metadata_df = pd.DataFrame({"Sample": samples})
+    config = StatisticalConfig()
+    config.statistical_test_method = "moderated_linear_model"
+    config.moderation = "limma_trend" if case["trend"] else "limma"
+    config.analysis_type = case["analysis_type"]
+    if case["analysis_type"] == "unpaired":
+        metadata_df["Group"] = case["group"]
+        config.group_column, config.group_labels = "Group", ["A", "B"]
+    elif case["analysis_type"] == "paired":
+        metadata_df["Subject"], metadata_df["Time"] = case["subject"], case["time"]
+        config.subject_column, config.paired_column = "Subject", "Time"
+        config.paired_label1, config.paired_label2 = "Pre", "Post"
+    else:
+        metadata_df["Week"] = _floats(case["time"])
+        config.time_column = "Week"
+    result = run_moderated_linear_model(pd.DataFrame(expr, index=features, columns=samples), metadata_df, config)
+    return result.set_index("Protein").loc[features]
+
+
+class TestLimmaEbayesGolden:
+    """The moderated t against R limma 3.66.0's own ``lmFit`` + ``eBayes``, called whole.
+
+    ``tests/fixtures/limma_ebayes.json`` is written by ``generate_limma_ebayes.R`` beside it, which
+    imports nothing from the toolkit. It pins the two things limma defines and the toolkit must
+    reproduce: the limma-trend prior (``eBayes(trend=TRUE)``, the default since 26.9.0) and the cap
+    on the moderated t's degrees of freedom, ``df.total = pmin(df.residual + df.prior,
+    sum(df.residual))``, which the toolkit did not apply before 26.9.0.
+
+    Tolerances, and why they differ:
+
+    - ``AveExpr`` and ``total_df`` are a mean and a minimum: 1e-12 relative.
+    - ``logFC`` and ``t`` come out of the least-squares fit, which R solves by QR and the toolkit
+      through ``inv(X'X)``. Both are accurate to a few ulps of the data, but a coefficient near
+      zero is a difference of two values near 20, so they are held to 1e-10 absolute plus 1e-10
+      relative rather than to a purely relative bound that an effect of 1e-15 could never meet.
+    - The prior df, the prior variance, the posterior variance and the p-value all pass through
+      the inverse trigamma, a Newton solve that both limma and the toolkit stop at a relative step
+      of 1e-8. Newton converges quadratically, so the solution is far better than its last step
+      (measured agreement is ~1e-13), but 1e-9 relative is the bound that does not rely on that.
+    """
+
+    @pytest.mark.parametrize("case", _LIMMA_GOLDEN["cases"], ids=[c["name"] for c in _LIMMA_GOLDEN["cases"]])
+    def test_matches_limma(self, case):
+        result = _run_golden_case(case)
+
+        assert np.allclose(result["AveExpr"], _floats(case["amean"]), rtol=1e-12, atol=0)
+        assert np.allclose(result["residual_df"], _floats(case["df_residual"]), rtol=0, atol=0)
+        assert np.allclose(result["logFC"], _floats(case["logfc"]), rtol=1e-10, atol=1e-10)
+        assert np.allclose(result["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10)
+
+        expected_d0 = float(case["df_prior"])
+        d0 = (result["posterior_df"] - result["residual_df"]).to_numpy(dtype=float)
+        if np.isinf(expected_d0):
+            assert np.isinf(d0).all()
+        else:
+            assert np.allclose(d0, expected_d0, rtol=1e-9, atol=0)
+
+        prior_column = "limma_trend_s0_sq" if case["trend"] else "limma_s0_sq"
+        assert np.allclose(result[prior_column], _floats(case["s2_prior"]), rtol=1e-9, atol=0)
+        assert np.allclose(result["posterior_s2"], _floats(case["s2_post"]), rtol=1e-9, atol=0)
+        assert np.allclose(result["total_df"], _floats(case["df_total"]), rtol=1e-12, atol=0)
+        assert np.allclose(result["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
+
+    @pytest.mark.parametrize(
+        "name", ["global_infinite_prior", "global_large_finite_prior", "trend_infinite_prior", "trend_five_features"]
+    )
+    def test_df_cap_binds_where_limma_says_it_does(self, name):
+        """The binding cases really reach the cap, so the golden cannot pass with it missing."""
+        case = next(c for c in _LIMMA_GOLDEN["cases"] if c["name"] == name)
+        result = _run_golden_case(case)
+        pooled = float(case["df_pooled"])
+        assert (result["posterior_df"] > pooled).all()
+        assert np.allclose(result["total_df"], pooled, rtol=0, atol=0)
+        # Read on the uncapped df, the same t gives a smaller p - what the toolkit reported before.
+        from scipy.stats import t as student_t
+
+        moved = result["t"].abs() > 1e-8  # a t of 0 has p = 1 on any df
+        uncapped = 2.0 * student_t.sf(np.abs(result["t"][moved]), df=result["posterior_df"][moved])
+        assert (uncapped < result["P.Value"][moved]).all()
+
+    def test_spline_df_follows_limma(self):
+        """Every branch of limma's spline df, 1 + (n >= 3) + (n >= 6) + (n >= 30), is reached."""
+        assert {c["spline_df"] for c in _LIMMA_GOLDEN["cases"] if c["trend"]} == {2, 3, 4}
+
+    @pytest.mark.parametrize("name", ["global_infinite_prior", "trend_infinite_prior"])
+    def test_a_feature_missing_an_arm_is_left_out_of_the_prior_and_the_pool(self, name):
+        """A deliberate difference from limma, pinned so it cannot drift.
+
+        Rows observed only in arm B have no estimable contrast. The toolkit reports them as NaN
+        and leaves them out of the prior and the pooled df, so the rest of the result is exactly
+        what limma gives on the complete features alone - the golden case, where the cap binds.
+        limma would fit those rows at reduced rank and put their variance into the prior as well
+        as their df into the pool (on 8 + 8 such features: pooled 48 rather than 32, and the prior
+        variance 0.181 -> 0.173), so counting their df alone would match limma's cap on a prior
+        that is not limma's. See "Degrees of freedom: limma's cap" in the docs.
+        """
+        case = next(c for c in _LIMMA_GOLDEN["cases"] if c["name"] == name)
+        expr = np.array([_floats(row) for row in case["expr"]])
+        b_only = expr + np.random.default_rng(11).normal(0.0, 0.7, size=expr.shape)
+        b_only[:, :3] = np.nan
+        both = dict(case, expr=[[repr(float(v)) for v in row] for row in np.vstack([expr, b_only])])
+        result = _run_golden_case(both)
+
+        n = expr.shape[0]
+        missing_arm = result.iloc[n:]
+        assert missing_arm[["t", "P.Value", "residual_df", "total_df"]].isna().all().all()
+        complete = result.iloc[:n]
+        assert np.allclose(complete["total_df"], float(case["df_pooled"]), rtol=0, atol=0)
+        assert np.allclose(complete["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10)
+        assert np.allclose(complete["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
+
+
+class TestLimmaTrendDefault:
+    def test_default_prior_is_limma_trend(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config = StatisticalConfig()
+        config.analysis_type, config.group_column = "unpaired", "Group"
+        config.group_labels = ["Control", "Treatment"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # the default must not be the deprecated prior
+            result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert (result["test_method"] == "moderated_linear_model[limma_trend]").all()
+        assert result["limma_trend_s0_sq"].notna().all()
+        # The prior follows intensity: it is not one number.
+        assert result["limma_trend_s0_sq"].nunique() > 1
+
+    def test_ranks_differential_features_first(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "limma_trend"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        top10 = set(result.sort_values("P.Value").head(10)["Protein"])
+        assert top10 == {f"P{i:04d}" for i in range(10)}
+
+    def test_variance_prior_group_column_is_not_silently_ignored(self):
+        """Until 26.9.0 this setting shaped the default prior; under limma-trend it does nothing."""
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.variance_prior_group_column = "Group"
+        with pytest.warns(UserWarning, match="variance_prior_group_column='Group' is used only by"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_robust_downweights_an_outlying_variance(self):
+        feature_data, metadata_df, config = _make_limma_fixture(total_rows=200)
+        feature_data.iloc[100:104] = feature_data.iloc[100:104] * 1.0 + np.random.default_rng(9).normal(
+            0, 8, size=(4, feature_data.shape[1])
+        )
+        config.moderation = "limma_trend"
+        plain = run_moderated_linear_model(feature_data, metadata_df, config)
+        config.robust = True
+        robust = run_moderated_linear_model(feature_data, metadata_df, config)
+        d0 = lambda r: float((r["posterior_df"] - r["residual_df"]).iloc[0])  # noqa: E731
+        # Four wildly noisy features widen the spread of log-variances and so shrink the prior df;
+        # Winsorizing them away gives a larger d0 (more moderation for everyone else).
+        assert d0(robust) > d0(plain)
+
+
+def _calibration_null(seed, n_features=2000, n_per_arm=5, n_controls=8):
+    """A null with the variance structure real data has, as Skyline-PRISM's PriorCalibrationTests.
+
+    Technical variance on the log2 scale falls with intensity towards a floor, as a CV does, and is
+    all the QC and reference pools carry. Study samples add biological variance that is flat on the
+    log scale (a constant CV). Each component varies per feature (a scaled inverse chi-square on
+    10 df), so the true prior df is finite. Returns the LOG2 matrix [A | B | reference | QC], its
+    metadata, and each feature's intensity quintile.
+    """
+    rng = np.random.default_rng(seed)
+    level = rng.uniform(14.0, 28.0, n_features)
+    tech = (0.0049 + 0.25 * np.exp(-(level - 14.0) / 2.5)) * 10.0 / rng.chisquare(10, n_features)
+    bio = 0.09 * 10.0 / rng.chisquare(10, n_features)
+    n_design = 2 * n_per_arm
+    design = (
+        level[:, None]
+        + np.sqrt(bio)[:, None] * rng.standard_normal((n_features, n_design))
+        + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_design))
+    )
+    reference = level[:, None] + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_controls))
+    qc = level[:, None] - 1.0 + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_controls))
+    expr = np.hstack([design, reference, qc])
+
+    samples = [f"S{j:02d}" for j in range(expr.shape[1])]
+    features = [f"F{i:04d}" for i in range(n_features)]
+    metadata_df = pd.DataFrame(
+        {
+            "Sample": samples,
+            "Group": ["A"] * n_per_arm + ["B"] * n_per_arm + [None] * (2 * n_controls),
+            "Category": ["Design"] * n_design + ["Reference"] * n_controls + ["QC"] * n_controls,
+        }
+    )
+    quintile = pd.Series(np.argsort(np.argsort(level)) * 5 // n_features, index=features)
+    return pd.DataFrame(expr, index=features, columns=samples), metadata_df, quintile
+
+
+class TestPriorCalibrationByIntensity:
+    """The property the default prior was chosen for: calibrated BY INTENSITY, not just overall.
+
+    A prior can give 5% of null p-values below 0.05 on average while being optimistic for bright
+    features and conservative for dim ones, the two cancelling - which is what the pool-shaped
+    intensity trend does, and what every earlier calibration check, measuring the overall rate
+    only, missed.
+
+    Six seeded draws of 2,000 features, unpaired 5 vs 5, give 2,400 features per intensity
+    quintile: the binomial sd of a 5% rate is then 0.44%, so the 3.5-6.5% bounds on limma-trend
+    are more than three sd wide on each side. The same simulation in Skyline-PRISM measured
+    limma-trend at 4.7-5.8% in every quintile and the pool-shaped trend at 1.9% in the dimmest and
+    7.4% in the brightest, so the 3-point bound on its tilt has about 2.5 points of margin.
+    """
+
+    @pytest.mark.slow  # ~35 s: twelve fits of 2,000 features
+    def test_limma_trend_is_calibrated_by_intensity_and_the_pool_shaped_trend_is_not(self):
+        hits = {"limma_trend": np.zeros(5), "intensity_trend": np.zeros(5)}
+        counts = np.zeros(5)
+        for draw in range(6):
+            log_data, metadata_df, quintile = _calibration_null(20261018 + draw)
+            counts += np.bincount(quintile.to_numpy(), minlength=5)
+            for moderation in hits:
+                config = StatisticalConfig()
+                config.analysis_type, config.group_column, config.group_labels = "unpaired", "Group", ["A", "B"]
+                config.moderation = moderation
+                if moderation == "intensity_trend":
+                    config.variance_prior_group_column = "Category"
+                    config.variance_prior_groups = ["Reference", "QC"]
+                    config._raw_feature_data = 2.0**log_data
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", FutureWarning)
+                    result = run_moderated_linear_model(log_data, metadata_df, config)
+                significant = result.set_index("Protein")["P.Value"] < 0.05
+                hits[moderation] += np.bincount(quintile[significant[significant].index].to_numpy(), minlength=5)
+
+        limma_rate = hits["limma_trend"] / counts
+        pool_rate = hits["intensity_trend"] / counts
+        assert ((limma_rate > 0.035) & (limma_rate < 0.065)).all(), f"limma-trend by quintile: {limma_rate}"
+        assert pool_rate[4] - pool_rate[0] > 0.03, (
+            f"the pool-shaped trend no longer tilts ({pool_rate[0]:.3f} dimmest, {pool_rate[4]:.3f} brightest); "
+            f"the reason it is deprecated needs revisiting"
+        )
 
 
 def _make_confounded_fixture(
@@ -1493,6 +1760,15 @@ class TestTrendCalibration:
         # 2,000 independent null features: the binomial SD of the share is 0.005,
         # so this is about +/-4 SD around the nominal 5%.
         assert 0.03 < frac < 0.07, f"{design}, trend from {source}: {frac:.1%} of null p < 0.05"
+
+    @pytest.mark.parametrize("design", ["unpaired", "paired"])
+    def test_limma_trend_null_p_values_are_calibrated(self, design):
+        """The default prior on the same nulls. It takes nothing from the pools or the groups."""
+        log_data, meta, config = self._null_fixture(design)
+        config.moderation = "limma_trend"
+        res = run_moderated_linear_model(log_data, meta, config)
+        frac = float((res["P.Value"] < 0.05).mean())
+        assert 0.03 < frac < 0.07, f"{design}, limma-trend: {frac:.1%} of null p < 0.05"
 
     def test_level_direction_follows_what_the_source_lacks(self):
         """Pools lack biology, so they are scaled UP. Paired design groups carry the

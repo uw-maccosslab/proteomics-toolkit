@@ -222,11 +222,19 @@ class StatisticalConfig:
         # Moderated linear-model settings (used when
         # ``statistical_test_method="moderated_linear_model"``).
         # ``moderation`` selects the variance prior:
+        #   - "limma_trend"       : limma's eBayes(trend=TRUE) - a spline of the residual
+        #                           log-variance on each feature's mean log expression,
+        #                           fitted to this design's own residuals, with the prior
+        #                           df estimated around it. The default from 26.9.0.
         #   - "limma"             : global prior (Smyth 2004)
         #   - "deqms"             : per-feature prior conditioned on peptide count (Zhu 2020)
-        #   - "intensity_trend"   : per-feature prior conditioned on mean-intensity trend,
-        #                           with the trend's level and d0 fitted to the design
-        #                           residuals; the recommended default for DIA/DDA MS data.
+        #   - "intensity_trend"   : DEPRECATED. Per-feature prior whose shape is a LOWESS
+        #                           on the QC/reference pools (or the design groups), with
+        #                           only its level and d0 fitted to the design residuals.
+        #                           Calibrated on average but tilted by intensity -
+        #                           optimistic for bright features, conservative for dim
+        #                           ones - and it roughly halves the prior df. Kept so an
+        #                           earlier result can be reproduced; it warns when used.
         #   - "intensity_peptide_trend" : additive two-stage prior, LOWESS on
         #                           log(mean intensity) plus LOWESS on log(peptide count).
         #                           Peptide count carries variance information that
@@ -236,10 +244,13 @@ class StatisticalConfig:
         #                           protein-level rollup data. Requires
         #                           ``peptide_count_column`` in the data.
         # ``robust`` enables Huber-style Winsorization of per-feature log(s^2) when
-        # estimating the prior hyperparameters, matching limma's ``robust=TRUE``.
-        self.moderation = "intensity_trend"
+        # estimating the prior hyperparameters, with the intent of limma's ``robust=TRUE``.
+        self.moderation = "limma_trend"
         self.robust = False
 
+        # Used only by the intensity-trend priors ("intensity_trend",
+        # "intensity_peptide_trend"); any other moderation ignores it and warns.
+        #
         # Source of the (feature, group) cloud that gives the ``intensity_trend``
         # LOWESS prior its SHAPE - how variance changes with intensity. Default
         # ``None`` takes the groups from the design (the two values of
@@ -1685,9 +1696,141 @@ def _calibrate_trend_to_design(fit, trend_shape, robust=False):
     return _fit_limma_prior(s2[ok] / shape[ok], d[ok], robust=robust)
 
 
+def _natural_spline_basis(x, df, at=None):
+    """Natural cubic spline basis spanning the same space as R's ``splines::ns(x, df, intercept=TRUE)``.
+
+    limma's ``fitFDist`` fits its variance trend in that space, and the fit depends on the basis
+    only through its column span: a least-squares fit's fitted values and residual sum of squares
+    are the same for every basis of one space. R builds the space from B-splines; this builds it
+    from the truncated-power form (Hastie, Tibshirani and Friedman, *Elements of Statistical
+    Learning*, eq. 5.4-5.5), which is shorter and spans the same functions: cubic between the
+    knots, linear beyond the boundary knots, with the boundary knots at the range of ``x`` and
+    ``df - 2`` interior knots at its quantiles (R's default type-7 quantiles, numpy's default).
+
+    Args:
+        x: Covariate values the knots are placed from.
+        df: Number of basis columns, the intercept included (at least 2; 2 is a straight line).
+        at: Points to evaluate the basis at. Defaults to ``x``.
+
+    Returns:
+        Array of shape ``(len(at), df)``, or fewer columns if interior knots tie (a degenerate
+        covariate that real mean intensities do not produce).
+    """
+    x = np.asarray(x, dtype=float)
+    at = x if at is None else np.asarray(at, dtype=float)
+    lo, hi = float(np.min(x)), float(np.max(x))
+    interior = np.quantile(x, np.linspace(0.0, 1.0, df)[1:-1]) if df > 2 else np.empty(0)
+    interior = np.unique(interior[(interior > lo) & (interior < hi)])
+    # On the unit interval: cubes of log2 intensities near 30 are ~3e4 and cost precision, and an
+    # affine change of x maps the spline space onto itself, so nothing else changes.
+    span = hi - lo
+    u = (at - lo) / span
+    knots = (np.concatenate([[lo], interior, [hi]]) - lo) / span
+
+    def truncated(j):
+        cube = np.clip(u - knots[j], 0.0, None) ** 3 - np.clip(u - knots[-1], 0.0, None) ** 3
+        return cube / (knots[-1] - knots[j])
+
+    last = len(knots) - 2
+    columns = [np.ones_like(u), u] + [truncated(j) - truncated(last) for j in range(last)]
+    return np.column_stack(columns)
+
+
+def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0):
+    """Fit limma's ``eBayes(trend=TRUE)`` prior: a scale that follows mean expression, and its df.
+
+    This is limma's ``fitFDist`` with a covariate. Each feature's ``log(s^2)``, corrected for the
+    bias of a log chi-square (``- digamma(d/2) + log(d/2)``), is regressed on a natural cubic
+    spline of ``covariate`` - in limma, the feature's mean log expression (``Amean``) - with
+    ``1 + (n >= 3) + (n >= 6) + (n >= 30)`` spline df over the ``n`` usable features, capped at
+    the number of distinct covariate values. The residual mean square about the spline, less the
+    sampling variance of a log chi-square, gives the prior df by the same trigamma inversion as
+    the global prior, and the spline gives the prior scale per feature. With fewer than two
+    spline df the fit falls back to the global prior, as limma's does.
+
+    Unlike the intensity trend, nothing here comes from a separate set of samples: the curve is
+    fitted to the residual variances of the design being tested, so it follows whatever mix of
+    technical and biological variance that design leaves.
+
+    limma 3.58 and later switch to a different estimator (``fitFDistUnequalDF1``) when the
+    residual df differ between features, as they do with missing values. This keeps
+    ``fitFDist``'s moments throughout, as limma did before 3.58 and as the toolkit's global prior
+    (:func:`_fit_limma_prior`) always has; with complete data, where every feature has the same
+    df, the two are the same.
+
+    Args:
+        s2: Residual variance per feature.
+        d: Residual degrees of freedom per feature.
+        covariate: Mean log expression per feature (``AveExpr``).
+        robust: Winsorize the log-variances' departures from the spline at
+            ``winsor_sigma`` MAD-scaled deviations before the moment fit, the toolkit's own
+            robust scheme (as in :func:`_fit_limma_prior`), not limma's ``fitFDistRobustly``.
+        winsor_sigma: Winsorization threshold, in sigma-equivalents of the MAD.
+
+    Returns:
+        ``(s0_sq, d0)``: the prior variance per feature, aligned to ``s2`` (NaN where the
+        covariate is missing), and the prior df, which may be ``inf``.
+
+    Raises:
+        ValueError: If fewer than two features have a usable variance.
+    """
+    from scipy.special import polygamma
+
+    s2 = np.asarray(s2, dtype=float)
+    d = np.asarray(d, dtype=float)
+    covariate = np.asarray(covariate, dtype=float)
+    ok = np.isfinite(s2) & (s2 > 0) & np.isfinite(d) & (d > 0) & np.isfinite(covariate)
+    n_ok = int(ok.sum())
+    if n_ok < 2:
+        raise ValueError("Not enough features with valid residual variances to fit empirical Bayes prior.")
+
+    spline_df = min(1 + (n_ok >= 3) + (n_ok >= 6) + (n_ok >= 30), len(np.unique(covariate[ok])))
+    if spline_df < 2:
+        s0_sq, d0 = _fit_limma_prior(s2[ok], d[ok], robust=robust, winsor_sigma=winsor_sigma)
+        return np.full(len(s2), s0_sq), d0
+
+    basis = _natural_spline_basis(covariate[ok], spline_df)
+    d_ok = d[ok]
+    e = np.log(s2[ok]) - polygamma(0, d_ok / 2.0) + np.log(d_ok / 2.0)
+    coef, _, rank, _ = np.linalg.lstsq(basis, e, rcond=None)
+    if robust:
+        fitted = basis @ coef
+        departure = e - fitted
+        center = float(np.median(departure))
+        mad = float(np.median(np.abs(departure - center)))
+        if mad > 0:
+            threshold = winsor_sigma * 1.4826 * mad
+            e = fitted + np.clip(departure, center - threshold, center + threshold)
+            coef, _, rank, _ = np.linalg.lstsq(basis, e, rcond=None)
+    resid = e - basis @ coef
+    # lm.fit's mean(effects[-(1:rank)]^2): the residual mean square on n - rank df.
+    e_var = float(resid @ resid / (n_ok - rank) - np.mean(polygamma(1, d_ok / 2.0)))
+
+    # The curve at every feature with a covariate, including any left out of the fit (a zero or
+    # missing variance), as limma predicts the spline at those.
+    e_mean = np.full(len(s2), np.nan)
+    has_covariate = np.isfinite(covariate)
+    e_mean[has_covariate] = _natural_spline_basis(covariate[ok], spline_df, at=covariate[has_covariate]) @ coef
+
+    if not np.isfinite(e_var) or e_var <= 0:
+        return np.exp(e_mean), float(np.inf)
+    d0_half = _trigamma_inverse(e_var)
+    s0_sq = np.exp(e_mean + polygamma(0, d0_half) - np.log(d0_half))
+    return s0_sq, 2.0 * d0_half
+
+
 def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
     """Convert a ``_fit_moderated_t`` result + per-feature prior into a
-    DataFrame in the project's standard schema."""
+    DataFrame in the project's standard schema.
+
+    The p-value is read on limma's ``df.total``: the posterior df,
+    ``residual_df + d0``, capped at the residual df pooled over every
+    feature fitted (``eBayes``: ``pmin(df.residual + df.prior,
+    sum(df.residual))``). Uncapped, an infinite ``d0`` reads the t off a
+    normal, claiming more certainty than all the residuals together hold.
+    The cap binds whenever ``d0`` is infinite, and otherwise only when few
+    features are tested and ``d0`` is large.
+    """
     from scipy.stats import t as student_t
 
     features = fit["features"]
@@ -1708,12 +1851,20 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
             s0_sq_per_feature,  # limit d0 -> inf
         )
         df_post = np.where(np.isfinite(d0_arr), df_resid + d0_arr, np.inf)
+        # limma's sum(df.residual), pooled over the features fitted here - the features the
+        # prior was estimated from. limma also fits a feature whose contrast cannot be estimated
+        # (an arm entirely missing) and puts its variance into the prior and its df into this
+        # pool. The toolkit leaves such a feature out of both, so the cap stays the information
+        # the prior actually used; counting its df alone would give limma's cap on a prior that
+        # is not limma's. See "Degrees of freedom: limma's cap" in docs/06-statistical-analysis.md.
+        df_pooled = float(np.nansum(df_resid))
+        df_total = np.where(np.isfinite(df_resid), np.minimum(df_post, df_pooled), np.nan)
         se = np.sqrt(s2_post * v_c)
         t_mod = beta / se
         # Two-sided p-value
         p_mod = np.where(
             np.isfinite(t_mod),
-            2.0 * student_t.sf(np.abs(t_mod), df=df_post),
+            2.0 * student_t.sf(np.abs(t_mod), df=df_total),
             np.nan,
         )
 
@@ -1723,7 +1874,7 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
     n_group1 = np.where(beta < 0, n_samples, n_samples // 2)
     n_group2 = n_samples - n_group1
 
-    moderation = getattr(config, "moderation", "limma")
+    moderation = getattr(config, "moderation", "limma_trend")
     method_label = f"moderated_linear_model[{moderation}]"
 
     # Global limma prior variance (broadcast for column storage). For
@@ -1755,6 +1906,7 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
             "residual_df": df_resid,
             "posterior_s2": s2_post,
             "posterior_df": df_post,
+            "total_df": df_total,
             "limma_s0_sq": limma_s0_sq_col,
             "test_method": method_label,
         }
@@ -2072,26 +2224,77 @@ class _AttrsPayload:
         return f"_AttrsPayload(len={len(self._payload)})"
 
 
+# A FutureWarning rather than a DeprecationWarning: Python hides a DeprecationWarning raised
+# inside a library unless the caller opts in, and the people who need to see this one are
+# running notebooks, not developing against the toolkit.
+_INTENSITY_TREND_DEPRECATION = (
+    "moderation='intensity_trend' is deprecated and will be removed in a future release; the default "
+    "is now 'limma_trend' (limma's eBayes(trend=TRUE)). The intensity trend takes its shape from the "
+    "QC/reference pools or the design groups and fits only its level to the residuals, so it is "
+    "calibrated on average but tilted by intensity: optimistic for bright features and conservative "
+    "for dim ones (6-9% of null p-values below 0.05 in the brightest fifth, 2-5% in the dimmest), and "
+    "it roughly halves the prior degrees of freedom, losing power (52% vs 71% of true two-fold effects "
+    "found at 5% FDR in simulation, unpaired 5 vs 5). limma-trend fits its curve to the contrast's own "
+    "residual variances and was calibrated at every intensity in every design tested. Use "
+    "'intensity_trend' only to reproduce an earlier result."
+)
+
+
 def run_moderated_linear_model(feature_data, metadata_df, config):
     """Per-feature linear model with empirical-Bayes variance moderation.
 
     Unified entry point for limma-/DEqMS-style moderated differential
     analysis. ``config.moderation`` selects the prior shape:
 
+    - ``"limma_trend"`` *(default)* - limma's ``eBayes(trend=TRUE)``: the
+      prior variance follows a natural-spline curve of the residual
+      log-variance on each feature's mean log expression (``AveExpr``),
+      fitted to this design's own residuals, and the prior df is
+      estimated around that curve. Works on protein- or peptide-level
+      input; no extra columns needed.
     - ``"limma"`` - global prior (Smyth 2004). Works on protein- or
       peptide-level input; no extra columns needed.
     - ``"deqms"`` - per-feature prior conditioned on peptide count
       (Zhu et al. 2020). Protein-level only; reads
       ``config.peptide_count_column`` (default ``"n_peptides"``).
-    - ``"intensity_trend"`` *(default)* - per-feature prior conditioned
-      on the intensity trend; recommended for MS data because variance is
-      clearly intensity-dependent. Like limma's ``trend=TRUE`` it scales
-      the prior per feature and estimates the prior df around that trend,
-      but the trend's shape is a LOWESS on raw intensities rather than a
-      spline on log expression.
+    - ``"intensity_trend"`` - **deprecated**, and warns when used. A
+      per-feature prior whose shape is a LOWESS on raw intensities of the
+      QC/reference pools or the design groups, with only its level and
+      the prior df fitted to the design residuals. It was the default
+      until 26.9.0 and is kept so an earlier result can be reproduced.
 
-    Intensity-trend prior: shape, level and weight
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Why limma-trend is the default
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The intensity trend's overall false-positive rate is right - about
+    5% of null p-values below 0.05 - but split by intensity it is not:
+    on random-label nulls (a 327-peptide cohort and a 3,595-protein serum
+    cohort, unpaired, paired and trend designs, plus simulations) it gave
+    6-9% in the brightest fifth of features and 2-5% in the dimmest, the
+    two cancelling in the average. On the log2 scale a feature's variance
+    is roughly (CV / ln 2)^2; the pools carry technical noise only, whose
+    CV falls with intensity, while study samples add biology with a
+    roughly constant CV, flat on the log scale. One scale factor cannot
+    fit a falling curve to a flatter one, so the pool curve sits too low
+    for bright features and too high for dim ones. The mismatch also
+    roughly halves the fitted prior df, and with it the power: in
+    simulation it found 52% of true two-fold effects at 5% FDR against
+    limma-trend's 71% (unpaired 5 vs 5). limma-trend fits its curve to
+    the contrast's own residual variances, and was calibrated at every
+    intensity in every design tested. The measurements are in
+    Skyline-PRISM's ``docs/differential-analysis.md``, "Why limma-trend
+    is the default".
+
+    Degrees of freedom
+    ~~~~~~~~~~~~~~~~~~
+    P-values are read on ``total_df``, limma's ``df.total``: the
+    posterior df (``residual_df + d0``) capped at the residual df pooled
+    over every feature fitted. The cap binds whenever ``d0`` is infinite
+    and otherwise only on a small feature set with a large ``d0``. It
+    applies to every moderation; before 26.9.0 the toolkit used the
+    uncapped df, so its p-values there were smaller than limma's.
+
+    Intensity-trend prior (deprecated): shape, level and weight
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     The prior is built in two steps.
 
     1. **Shape.** A LOWESS of ``log(within-group variance)`` on
@@ -2123,7 +2326,9 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     level, and ``d0`` was estimated around the residuals' global mean.
     With a technical-replicate source that made between-subject tests
     optimistic (6.3% of null p-values below 0.05 rather than 5%, measured
-    on random 5 vs 5 splits of one timepoint).
+    on random 5 vs 5 splits of one timepoint). Step 2 put the overall
+    rate right; the tilt by intensity described above is in step 1's
+    shape, which no single level can correct, and is why it is deprecated.
 
     When ``config.robust`` is True, the prior hyperparameters
     ``(s0^2, d0)`` are estimated with Huber-style Winsorization so a
@@ -2196,9 +2401,13 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     pd.DataFrame
         Per-feature results with columns: Protein, logFC, AveExpr, t,
         P.Value, B, n_group1, n_group2, residual_s2, residual_df,
-        posterior_s2, posterior_df, limma_s0_sq, test_method. Plus one
-        of the following depending on moderation:
+        posterior_s2, posterior_df (``residual_df + d0``), total_df (the
+        df the p-value is read on: ``posterior_df`` capped at the pooled
+        residual df), limma_s0_sq, test_method. Plus one of the following
+        depending on moderation:
 
+        - limma_trend: ``limma_trend_s0_sq`` (the prior variance used, per
+          feature); ``limma_s0_sq`` is then the global prior, for comparison
         - deqms: ``peptide_count_used``, ``deqms_s0_sq``
         - intensity_trend: ``intensity_s0_sq`` (the prior variance used),
           ``intensity_trend_shape`` (the trend before calibration),
@@ -2211,10 +2420,28 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         If ``config.moderation`` is unrecognized or a required column is
         missing.
     """
-    moderation = str(getattr(config, "moderation", "intensity_trend")).lower()
-    valid_modes = {"limma", "deqms", "intensity_trend", "intensity_peptide_trend"}
+    moderation = str(getattr(config, "moderation", "limma_trend")).lower()
+    valid_modes = {"limma", "limma_trend", "deqms", "intensity_trend", "intensity_peptide_trend"}
     if moderation not in valid_modes:
         raise ValueError(f"config.moderation must be one of {sorted(valid_modes)}; got {moderation!r}.")
+
+    if moderation == "intensity_trend":
+        warnings.warn(_INTENSITY_TREND_DEPRECATION, FutureWarning, stacklevel=2)
+    if getattr(config, "variance_prior_group_column", None) and moderation not in (
+        "intensity_trend",
+        "intensity_peptide_trend",
+    ):
+        # The setting chose where the intensity trend's shape came from. Until 26.9.0 that was
+        # the default prior, so a config that sets it was written for that prior; saying nothing
+        # would run a different prior while the config still reads as if the pools were used.
+        warnings.warn(
+            f"config.variance_prior_group_column={config.variance_prior_group_column!r} is used only by "
+            f"moderation='intensity_trend' or 'intensity_peptide_trend' and is ignored under "
+            f"moderation={moderation!r}. limma-trend, the default since 26.9.0, fits its prior to the "
+            f"design's own residuals and needs no QC/reference samples.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     if moderation == "deqms":
         count_col = getattr(config, "peptide_count_column", "n_peptides")
@@ -2223,7 +2450,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
                 f"moderation='deqms' requires a peptide-count column ({count_col!r}) "
                 f"in feature_data. Either supply protein-level data with that column, "
                 f"set config.peptide_count_column to an existing column, or use "
-                f"moderation='intensity_trend' or 'limma'."
+                f"moderation='limma_trend' or 'limma'."
             )
         counts_per_feature = feature_data[count_col].copy()
         intensity_data = feature_data.drop(columns=[count_col])
@@ -2248,7 +2475,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
                     f"moderation='intensity_peptide_trend' requires a peptide-count column "
                     f"({count_col!r}) in feature_data. Either supply protein-level data with "
                     f"that column, set config.peptide_count_column to an existing column, or "
-                    f"use moderation='intensity_trend'."
+                    f"use moderation='limma_trend'."
                 )
             counts_per_feature = feature_data[count_col].copy()
             feature_data = feature_data.drop(columns=[count_col])
@@ -2327,6 +2554,18 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
             f"d0={d0:.3g}, trend scaled x{trend_level:.3g} to the design residuals, "
             f"limma s0^2={fit['s0_sq']:.3g}"
         )
+        return df
+
+    if moderation == "limma_trend":
+        print(f"Running moderated linear model (moderation='limma_trend', robust={bool(config.robust)})...")
+        fit = _fit_moderated_t(feature_data, metadata_df, config)
+        s0_sq_per_feature, d0 = _fit_limma_trend_prior(
+            fit["s2"], fit["df"], fit["ave_expr"], robust=bool(config.robust)
+        )
+        df = _moderated_results_df(fit, s0_sq_per_feature, d0, config)
+        df["limma_trend_s0_sq"] = s0_sq_per_feature
+        df["limma_s0_sq"] = fit["s0_sq"]
+        print(f"Done: limma_trend-mode moderated t completed for {len(df)} features; d0={d0:.3g}")
         return df
 
     # moderation == "limma"
@@ -2700,7 +2939,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
     # ``normalized_data`` so the log-transform step doesn't alter them.
     extra_cols = []
     is_moderated = config.statistical_test_method == "moderated_linear_model"
-    moderation = getattr(config, "moderation", "intensity_trend")
+    moderation = getattr(config, "moderation", "limma_trend")
     if is_moderated and moderation in ("deqms", "intensity_peptide_trend"):
         count_col = getattr(config, "peptide_count_column", "n_peptides")
         if count_col in statistical_data.columns:
@@ -2812,7 +3051,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
             f"Use statistical_test_method='moderated_linear_model' with "
             f"config.moderation='limma' (for the former limma_like behaviour), "
             f"'deqms' (for the former deqms_like behaviour), or "
-            f"'intensity_trend' (the default, an intensity-dependent prior)."
+            f"'limma_trend' (the default, limma's eBayes(trend=TRUE))."
         )
     else:
         raise ValueError(
