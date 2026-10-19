@@ -226,7 +226,7 @@ class StatisticalConfig:
         #                           log-variance on each feature's mean log expression,
         #                           fitted to this design's own residuals, with the prior
         #                           df estimated around it. The default from 26.9.0.
-        #   - "limma_trend_peptides" : PROTEIN LEVEL ONLY. limma-trend with log peptide count
+        #   - "limma_trend_intensity_n_peptides" : PROTEIN LEVEL ONLY. limma-trend with log peptide count
         #                           as a second covariate: the residual log-variance is
         #                           fitted on a spline of AveExpr plus a spline of
         #                           log(peptide count), so the prior follows both, all from
@@ -1744,7 +1744,7 @@ def _natural_spline_basis(x, df, at=None):
 
 
 def _peptide_count_basis(log_counts, at=None):
-    """The peptide-count columns ``limma_trend_peptides`` adds to limma-trend's spline.
+    """The peptide-count columns ``limma_trend_intensity_n_peptides`` adds to limma-trend's spline.
 
     A natural cubic spline of log peptide count with one interior knot, at the median, without
     its constant column (the intensity spline already carries one): two columns, the span of R's
@@ -1857,7 +1857,7 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log
     (:func:`_fit_limma_prior`) always has; with complete data, where every feature has the same
     df, the two are the same.
 
-    With ``log_counts`` this is ``limma_trend_peptides``: the same regression with log peptide
+    With ``log_counts`` this is ``limma_trend_intensity_n_peptides``: the same regression with log peptide
     count as a second covariate beside the intensity spline (:func:`_peptide_count_basis`), so
     the prior scale follows intensity and peptide count together and the prior df is measured
     around both. limma's ``fitFDist`` accepts one covariate only; this is its algebra with a
@@ -1874,7 +1874,7 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log
             ``winsor_sigma`` MAD-scaled deviations before the moment fit, the toolkit's own
             robust scheme (as in :func:`_fit_limma_prior`), not limma's ``fitFDistRobustly``.
         winsor_sigma: Winsorization threshold, in sigma-equivalents of the MAD.
-        log_counts: Log peptide count per feature, for ``limma_trend_peptides``; every value must
+        log_counts: Log peptide count per feature, for ``limma_trend_intensity_n_peptides``; every value must
             be finite (the caller validates protein-level counts first).
 
     Returns:
@@ -2385,7 +2385,7 @@ _INTENSITY_PEPTIDE_TREND_DEPRECATION = (
     "peptides and 6.7% for the most, finding 55% of true two-fold effects at 5% FDR against limma-trend's "
     "69% (unpaired 5 vs 5); with a design-group shape, 8.4% dimmest and 2.9% brightest (paired, 6 "
     "subjects). limma-trend was calibrated by intensity in every case, though it does not use peptide "
-    "counts (see docs/06-statistical-analysis.md); for protein-level data, 'limma_trend_peptides' fits "
+    "counts (see docs/06-statistical-analysis.md); for protein-level data, 'limma_trend_intensity_n_peptides' fits "
     "intensity and peptide count to the residuals and was calibrated by both. Use "
     "'intensity_peptide_trend' only to reproduce an earlier result."
 )
@@ -2403,7 +2403,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
       fitted to this design's own residuals, and the prior df is
       estimated around that curve. Works on protein- or peptide-level
       input; no extra columns needed.
-    - ``"limma_trend_peptides"`` - **protein level only.** limma-trend
+    - ``"limma_trend_intensity_n_peptides"`` - **protein level only.** limma-trend
       with the protein's log peptide count as a second covariate: the
       residual log-variance is regressed on a natural spline of
       ``AveExpr`` and one of log peptide count, both fitted to this
@@ -2472,7 +2472,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
 
     limma-trend with peptide count (protein level only)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ``"limma_trend_peptides"`` fits peptide count to the residuals instead
+    ``"limma_trend_intensity_n_peptides"`` fits peptide count to the residuals instead
     of taking its shape from pools or groups. At matched intensity a
     protein's residual variance falls with its peptide count - measurement
     error averages over peptides - but less than 1/n, because biology does
@@ -2485,7 +2485,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     spike-ins against limma-trend's 23% (unpaired 5 vs 5). It is not the
     default: it needs a peptide count per protein, and a peptide has none.
     The estimator is :func:`_fit_limma_trend_prior` with ``log_counts``,
-    pinned to R limma by ``tests/fixtures/limma_trend_peptides.json``.
+    pinned to R limma by ``tests/fixtures/limma_trend_intensity_n_peptides.json``.
 
     Degrees of freedom
     ~~~~~~~~~~~~~~~~~~
@@ -2611,7 +2611,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
 
         - limma_trend: ``limma_trend_s0_sq`` (the prior variance used, per
           feature); ``limma_s0_sq`` is then the global prior, for comparison
-        - limma_trend_peptides: ``limma_trend_peptides_s0_sq`` (the prior
+        - limma_trend_intensity_n_peptides: ``limma_trend_intensity_n_peptides_s0_sq`` (the prior
           variance used), ``peptide_count_used``
         - deqms: ``peptide_count_used``, ``deqms_s0_sq``
         - intensity_trend: ``intensity_s0_sq`` (the prior variance used),
@@ -2631,7 +2631,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     valid_modes = {
         "limma",
         "limma_trend",
-        "limma_trend_peptides",
+        "limma_trend_intensity_n_peptides",
         "deqms",
         "intensity_trend",
         "intensity_peptide_trend",
@@ -2661,14 +2661,9 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
 
     if moderation == "deqms":
         count_col = getattr(config, "peptide_count_column", "n_peptides")
-        if count_col not in feature_data.columns:
-            raise ValueError(
-                f"moderation='deqms' requires a peptide-count column ({count_col!r}) "
-                f"in feature_data. Either supply protein-level data with that column, "
-                f"set config.peptide_count_column to an existing column, or use "
-                f"moderation='limma_trend' or 'limma'."
-            )
-        counts_per_feature = feature_data[count_col].copy()
+        # Protein level only, like limma_trend_intensity_n_peptides: until this check DEqMS ran
+        # on anything with a count-shaped column, including peptide rows given their protein's count.
+        counts_per_feature = _protein_level_peptide_counts(feature_data, count_col, moderation)
         intensity_data = feature_data.drop(columns=[count_col])
         print(f"Running moderated linear model (moderation='deqms', robust={bool(config.robust)})...")
         fit = _fit_moderated_t(intensity_data, metadata_df, config)
@@ -2784,10 +2779,13 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         print(f"Done: limma_trend-mode moderated t completed for {len(df)} features; d0={d0:.3g}")
         return df
 
-    if moderation == "limma_trend_peptides":
+    if moderation == "limma_trend_intensity_n_peptides":
         count_col = getattr(config, "peptide_count_column", "n_peptides")
         counts = _protein_level_peptide_counts(feature_data, count_col, moderation)
-        print(f"Running moderated linear model (moderation='limma_trend_peptides', robust={bool(config.robust)})...")
+        print(
+            f"Running moderated linear model (moderation='limma_trend_intensity_n_peptides', "
+            f"robust={bool(config.robust)})..."
+        )
         fit = _fit_moderated_t(feature_data.drop(columns=[count_col]), metadata_df, config)
         counts_aligned = counts.reindex(fit["features"]).to_numpy(dtype=float)
         s0_sq_per_feature, d0 = _fit_limma_trend_prior(
@@ -2795,9 +2793,9 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         )
         df = _moderated_results_df(fit, s0_sq_per_feature, d0, config)
         df["peptide_count_used"] = counts_aligned
-        df["limma_trend_peptides_s0_sq"] = s0_sq_per_feature
+        df["limma_trend_intensity_n_peptides_s0_sq"] = s0_sq_per_feature
         df["limma_s0_sq"] = fit["s0_sq"]
-        print(f"Done: limma_trend_peptides-mode moderated t completed for {len(df)} features; d0={d0:.3g}")
+        print(f"Done: limma_trend_intensity_n_peptides-mode moderated t completed for {len(df)} features; d0={d0:.3g}")
         return df
 
     # moderation == "limma"
@@ -3172,7 +3170,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
     extra_cols = []
     is_moderated = config.statistical_test_method == "moderated_linear_model"
     moderation = getattr(config, "moderation", "limma_trend")
-    if is_moderated and moderation in ("deqms", "intensity_peptide_trend", "limma_trend_peptides"):
+    if is_moderated and moderation in ("deqms", "intensity_peptide_trend", "limma_trend_intensity_n_peptides"):
         count_col = getattr(config, "peptide_count_column", "n_peptides")
         if count_col in statistical_data.columns:
             extra_cols.append(count_col)

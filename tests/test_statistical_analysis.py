@@ -464,6 +464,29 @@ class TestModeratedLinearModelDeqms:
         expected = {f"P{i:04d}" for i in range(10)}
         assert top10 == expected
 
+    @pytest.mark.parametrize(
+        "spoil, message",
+        [
+            ("constant", "for protein-level analysis only"),
+            ("repeated_ids", "repeat a feature identifier"),
+            ("fractional", "whole numbers of 1 or more"),
+            ("missing", "have no peptide count"),
+        ],
+    )
+    def test_refuses_input_that_is_not_protein_level(self, spoil, message):
+        """DEqMS conditions on peptides per protein, so it refuses what limma_trend_intensity_n_peptides does."""
+        feature_data, metadata_df, config = _ltp_fixture()
+        config.moderation = "deqms"
+        if spoil == "constant":
+            feature_data["n_peptides"] = 1
+        elif spoil == "repeated_ids":
+            feature_data.index = [f"P{i // 4:04d}" for i in range(len(feature_data))]
+        else:
+            feature_data["n_peptides"] = feature_data["n_peptides"].astype(float)
+            feature_data.iloc[3, feature_data.columns.get_loc("n_peptides")] = 2.5 if spoil == "fractional" else np.nan
+        with pytest.raises(ValueError, match=message):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
 
 class TestModeratedLinearModelIntensityPeptideTrend:
     """The additive intensity + peptide-count variance prior.
@@ -812,11 +835,11 @@ class TestLimmaTrendDefault:
 
 
 # ---------------------------------------------------------------------------
-# limma_trend_peptides: limma-trend with log peptide count as a second covariate (protein level only)
+# limma_trend_intensity_n_peptides: limma-trend with log peptide count as a second covariate (protein level only)
 # ---------------------------------------------------------------------------
 
 _LTP_GOLDEN = json.loads(
-    (Path(__file__).parent / "fixtures" / "limma_trend_peptides.json").read_text(encoding="utf-8")
+    (Path(__file__).parent / "fixtures" / "limma_trend_intensity_n_peptides.json").read_text(encoding="utf-8")
 )
 
 
@@ -827,7 +850,7 @@ def _run_ltp_golden_case(case):
     metadata_df = pd.DataFrame({"Sample": samples})
     config = StatisticalConfig()
     config.statistical_test_method = "moderated_linear_model"
-    config.moderation = "limma_trend_peptides"
+    config.moderation = "limma_trend_intensity_n_peptides"
     config.analysis_type = case["analysis_type"]
     if case["analysis_type"] == "unpaired":
         metadata_df["Group"] = case["group"]
@@ -845,12 +868,13 @@ def _run_ltp_golden_case(case):
     return result.set_index("Protein").loc[features]
 
 
-class TestLimmaTrendPeptidesGolden:
-    """``limma_trend_peptides`` against R limma 3.66.0, built from limma's own pieces.
+class TestLimmaTrendIntensityNPeptidesGolden:
+    """``limma_trend_intensity_n_peptides`` against R limma 3.66.0, built from limma's own pieces.
 
-    ``tests/fixtures/limma_trend_peptides.json`` is written by ``generate_limma_trend_peptides.R``,
-    which imports nothing from the toolkit. limma's ``fitFDist`` takes one covariate, so the
-    generator transcribes it with the design ``cbind(ns(Amean, df, intercept = TRUE),
+    ``tests/fixtures/limma_trend_intensity_n_peptides.json`` is written by
+    ``generate_limma_trend_intensity_n_peptides.R``, which imports nothing from the toolkit.
+    limma's ``fitFDist`` takes one covariate, so the generator transcribes it with the design
+    ``cbind(ns(Amean, df, intercept = TRUE),
     ns(log(n_peptides), df = 2))`` - or ``log(n_peptides)`` when the counts take two values - and,
     before writing each case, checks that the same transcription without the count block
     reproduces limma's ``eBayes(trend = TRUE)`` to 1e-12. The tolerances are TestLimmaEbayesGolden's,
@@ -874,7 +898,8 @@ class TestLimmaTrendPeptidesGolden:
             assert np.isinf(d0).all()
         else:
             assert np.allclose(d0, expected_d0, rtol=1e-9, atol=0)
-        assert np.allclose(result["limma_trend_peptides_s0_sq"], _floats(case["s2_prior"]), rtol=1e-9, atol=0)
+        prior = result["limma_trend_intensity_n_peptides_s0_sq"]
+        assert np.allclose(prior, _floats(case["s2_prior"]), rtol=1e-9, atol=0)
         assert np.allclose(result["posterior_s2"], _floats(case["s2_post"]), rtol=1e-9, atol=0)
         assert np.allclose(result["total_df"], _floats(case["df_total"]), rtol=1e-12, atol=0)
         assert np.allclose(result["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
@@ -897,11 +922,11 @@ def _ltp_fixture(counts=None, seed=11):
     feature_data, metadata_df, config = _make_limma_fixture(total_rows=80, seed=seed)
     rng = np.random.default_rng(seed)
     feature_data["n_peptides"] = rng.integers(1, 30, size=len(feature_data)) if counts is None else counts
-    config.moderation = "limma_trend_peptides"
+    config.moderation = "limma_trend_intensity_n_peptides"
     return feature_data, metadata_df, config
 
 
-class TestLimmaTrendPeptidesProteinLevelOnly:
+class TestLimmaTrendIntensityNPeptidesProteinLevelOnly:
     """A prior conditioned on peptide count is for protein-level data only, and must refuse anything else.
 
     A peptide has no peptide count, so peptide-level input must never be run through this prior,
@@ -912,8 +937,8 @@ class TestLimmaTrendPeptidesProteinLevelOnly:
         feature_data, metadata_df, config = _ltp_fixture()
         result = run_moderated_linear_model(feature_data, metadata_df, config)
         assert len(result) == len(feature_data)  # the count column is not a sample
-        assert (result["test_method"] == "moderated_linear_model[limma_trend_peptides]").all()
-        assert result["limma_trend_peptides_s0_sq"].notna().all()
+        assert (result["test_method"] == "moderated_linear_model[limma_trend_intensity_n_peptides]").all()
+        assert result["limma_trend_intensity_n_peptides_s0_sq"].notna().all()
         aligned = result.set_index("Protein")["peptide_count_used"]
         assert (aligned == feature_data["n_peptides"].reindex(aligned.index)).all()
 
@@ -988,7 +1013,7 @@ class TestLimmaTrendPeptidesProteinLevelOnly:
         counts = np.where(rng.random(80) < 0.6, 1, rng.integers(2, 30, size=80))
         feature_data, metadata_df, config = _ltp_fixture(counts=counts)
         result = run_moderated_linear_model(feature_data, metadata_df, config)
-        assert np.isfinite(result["limma_trend_peptides_s0_sq"]).all()
+        assert np.isfinite(result["limma_trend_intensity_n_peptides_s0_sq"]).all()
         assert _peptide_count_basis(np.log(counts.astype(float))).shape[1] == 1
 
     def test_robust_downweights_an_outlying_variance(self):
@@ -1161,7 +1186,7 @@ def _protein_null_pvalues(log_data, metadata_df, info, design, moderation, sourc
     data = log_data
     if moderation.startswith("intensity"):
         config._raw_feature_data = 2.0**log_data
-    if moderation in ("deqms", "intensity_peptide_trend", "limma_trend_peptides"):
+    if moderation in ("deqms", "intensity_peptide_trend", "limma_trend_intensity_n_peptides"):
         data = log_data.assign(n_peptides=info["n_peptides"])
     with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):
         warnings.simplefilter("ignore", FutureWarning)
@@ -1288,8 +1313,8 @@ class TestIntensityPeptideTrendCalibration:
         )
 
 
-class TestLimmaTrendPeptidesCalibration:
-    """What ``limma_trend_peptides`` is for: calibrated by intensity AND by peptide count.
+class TestLimmaTrendIntensityNPeptidesCalibration:
+    """What ``limma_trend_intensity_n_peptides`` is for: calibrated by intensity AND by peptide count.
 
     On the same protein-level null that shows limma-trend tilting by peptide count (7.8% of null
     p < 0.05 for the fewest-peptide fifth, 2.6% for the most, unpaired), fitting log peptide count
@@ -1304,7 +1329,7 @@ class TestLimmaTrendPeptidesCalibration:
     @pytest.mark.slow  # ~3 s each: twelve fits of 2,000 proteins
     @pytest.mark.parametrize("design", ["unpaired", "paired"])
     def test_calibrated_by_intensity_and_by_peptide_count(self, design):
-        by_intensity, by_count, d0 = _protein_null_rates(design, "limma_trend_peptides")
+        by_intensity, by_count, d0 = _protein_null_rates(design, "limma_trend_intensity_n_peptides")
         assert ((by_intensity > 0.035) & (by_intensity < 0.065)).all(), f"by intensity: {by_intensity}"
         assert ((by_count > 0.035) & (by_count < 0.065)).all(), f"by peptide count: {by_count}"
         # The count term takes up real spread, so the prior is trusted more than limma-trend's.

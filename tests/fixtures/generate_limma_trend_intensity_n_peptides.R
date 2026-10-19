@@ -1,10 +1,10 @@
 #!/usr/bin/env Rscript
 #
-# Generates limma_trend_peptides.json: the reference for moderation="limma_trend_peptides".
+# Generates limma_trend_intensity_n_peptides.json: the reference for moderation="limma_trend_intensity_n_peptides".
 #
 # That prior is limma-trend with a second covariate. limma's fitFDist regresses each feature's
 # bias-corrected log residual variance on a natural spline of its mean log expression (Amean);
-# limma_trend_peptides regresses it on that spline AND a natural spline of the protein's log
+# limma_trend_intensity_n_peptides regresses it on that spline AND a natural spline of the protein's log
 # peptide count, then estimates the prior df around the combined curve by the same trigamma
 # inversion. limma itself cannot be called whole for this - fitFDist, squeezeVar and eBayes all
 # take a single covariate vector - so the reference is built from limma's own pieces:
@@ -30,13 +30,13 @@
 #   BiocManager::install("limma")
 #
 # Run from the repository root (on Windows, Rscript.exe is in the R installation's bin folder):
-#   Rscript tests/fixtures/generate_limma_trend_peptides.R
+#   Rscript tests/fixtures/generate_limma_trend_intensity_n_peptides.R
 #
 # Generated with R 4.5.1 and limma 3.66.0; the versions that ran are written into the fixture.
 
 suppressPackageStartupMessages(library(limma))
 
-out_path <- file.path("tests", "fixtures", "limma_trend_peptides.json")
+out_path <- file.path("tests", "fixtures", "limma_trend_intensity_n_peptides.json")
 if (!dir.exists(dirname(out_path))) stop("run from the repository root: ", dirname(out_path), " not found")
 
 # Floats are JSON strings of 17 significant digits, as in limma_ebayes.json.

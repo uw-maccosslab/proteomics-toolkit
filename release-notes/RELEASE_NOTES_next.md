@@ -8,7 +8,7 @@ prior for `statistical_test_method="moderated_linear_model"` is now limma-trend 
 calibrated on average but tilted by intensity: optimistic for bright features, conservative for
 dim ones, and it found fewer true effects. `intensity_peptide_trend`, which adds a peptide-count
 stage to the intensity trend, is deprecated too: the peptide stage keeps the tilt and adds one
-by peptide count. For protein-level data, the new `limma_trend_peptides` fits intensity and
+by peptide count. For protein-level data, the new `limma_trend_intensity_n_peptides` fits intensity and
 peptide count to the residuals together. Moderated p-values are also now read on limma's capped
 degrees of freedom, for every prior. Both are pinned to R limma 3.66.0, and both match
 Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
@@ -24,7 +24,7 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   paired, linear-trend and interaction designs, with covariates and `robust=True`. Results carry
   the prior used per feature as `limma_trend_s0_sq`, with `limma_s0_sq` as the global prior for
   comparison.
-- **`moderation="limma_trend_peptides"`, for protein-level analysis only.** limma-trend with the
+- **`moderation="limma_trend_intensity_n_peptides"`, for protein-level analysis only.** limma-trend with the
   protein's log peptide count as a second covariate: the residual log-variance is regressed on
   limma-trend's spline of `AveExpr` plus a natural spline of log peptide count, both fitted to the
   design's own residuals, and the prior df is estimated around the combined curve. limma-trend
@@ -38,7 +38,7 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   `config.peptide_count_column` (default `n_peptides`) and **refuses input that is not
   protein-level** - a missing, fractional or sub-1 count, counts that never vary, or rows that
   repeat a feature identifier - rather than run on it or fall back to limma-trend. Results carry
-  `limma_trend_peptides_s0_sq` and `peptide_count_used`. It is not the default.
+  `limma_trend_intensity_n_peptides_s0_sq` and `peptide_count_used`. It is not the default.
 - **New `total_df` column** on every moderated result: the degrees of freedom the p-value was
   read on (see Bug Fixes). `posterior_df` keeps `residual_df + d0`.
 
@@ -97,6 +97,12 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   rather than silently.
 - **P-values change wherever the df cap binds, under every prior** (see Bug Fixes). The t
   statistics, posterior variances and prior df are unchanged.
+- **`moderation="deqms"` now refuses input that is not protein-level**, with the same checks as
+  `limma_trend_intensity_n_peptides`: a missing, fractional or sub-1 peptide count, counts that
+  never vary, or rows that repeat a feature identifier (through
+  `run_comprehensive_statistical_analysis`, the `Protein` column). It used to check only that the
+  count column existed, so it would run on peptide rows given their protein's count. Valid
+  protein-level input gives the same results as before.
 
 ## Testing
 
@@ -118,20 +124,20 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   peptide count (unpaired), the design-group-shaped one tilts the other way (paired), and
   limma-trend stays within 3.5-6.5% in every intensity fifth while tilting by peptide count. Each
   tilt bound is 2 points, more than three binomial sd. Marked `slow` (about 90 s together).
-- `TestLimmaTrendPeptidesGolden` pins `limma_trend_peptides` to R limma 3.66.0:
-  `tests/fixtures/limma_trend_peptides.json`, written by
-  `tests/fixtures/generate_limma_trend_peptides.R`. limma's `fitFDist` takes one covariate, so the
+- `TestLimmaTrendIntensityNPeptidesGolden` pins `limma_trend_intensity_n_peptides` to R limma 3.66.0:
+  `tests/fixtures/limma_trend_intensity_n_peptides.json`, written by
+  `tests/fixtures/generate_limma_trend_intensity_n_peptides.R`. limma's `fitFDist` takes one covariate, so the
   generator transcribes it with the peptide-count columns added to its design and refuses to write
   a case unless the transcription without them reproduces limma's own `eBayes(trend = TRUE)` to
   1e-12. Six cases cover unpaired, paired and linear-trend designs, both Amean spline sizes (3 and
   4 columns), both count blocks (a spline, and a straight line for two distinct counts), and an
   infinite prior df where limma-trend's is finite. Measured agreement is about 1e-14 in the prior
   and posterior variances and the prior df, 3e-13 in the p-values.
-- `TestLimmaTrendPeptidesProteinLevelOnly` checks that it refuses peptide-level input: no count
+- `TestLimmaTrendIntensityNPeptidesProteinLevelOnly` checks that it refuses peptide-level input: no count
   column, missing, fractional or zero counts, counts without spread, and rows that repeat a
   feature identifier, directly and through `run_comprehensive_statistical_analysis`; and that it
   refuses too few proteins rather than dropping the counts.
-- `TestLimmaTrendPeptidesCalibration` holds it within 3.5-6.5% in every intensity fifth and every
+- `TestLimmaTrendIntensityNPeptidesCalibration` holds it within 3.5-6.5% in every intensity fifth and every
   peptide-count fifth of the protein-level null, unpaired and paired, with a larger prior df than
   limma-trend's. Marked `slow` (about 6 s).
 - `TestTrendCalibration` checks limma-trend's overall null rate on its unpaired and paired
@@ -153,7 +159,7 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   same comparison on random-label nulls and spike-ins of a 3,595-protein serum cohort. The
   peptide-count prior's earlier cross-validation figures are kept, with a note that they measure
   fit to technical replicates, not calibration on study samples.
-- `docs/06-statistical-analysis.md` documents `limma_trend_peptides` ("limma-trend with peptide
+- `docs/06-statistical-analysis.md` documents `limma_trend_intensity_n_peptides` ("limma-trend with peptide
   count (protein level only)"): what it fits, the protein-level checks and the one case they
   cannot see, the evidence from both cohorts, the shift of discoveries away from single-peptide
   proteins, and the golden.
