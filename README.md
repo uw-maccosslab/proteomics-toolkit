@@ -295,7 +295,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 ### statistical_analysis.py
 - `StatisticalConfig` — Configuration class (zero-arg constructor, set attributes individually)
 - `run_comprehensive_statistical_analysis()` — Main analysis entry point (dispatches by `statistical_test_method`)
-- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='limma_trend'` (default) / `'limma'` / `'deqms'`, or the deprecated `'intensity_peptide_trend'` / `'intensity_trend'`); supports covariate adjustment for `analysis_type='unpaired'`
+- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='limma_trend'` (default) / `'limma_trend_intensity_n_peptides'` (protein level only; recommended there) / `'limma'` / `'deqms'`, or the deprecated `'intensity_peptide_trend'` / `'intensity_trend'`); supports covariate adjustment for `analysis_type='unpaired'`
 - `get_intensity_trend_points()` — Recover the per-(feature, group) diagnostic points DataFrame from a moderated `intensity_trend` results object
 - `compute_paired_fold_changes()` — Build a per-subject fold-change matrix for paired designs (used as input to the classification module)
 - `display_analysis_summary()` — Print/return summary of results
