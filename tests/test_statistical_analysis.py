@@ -766,6 +766,33 @@ class TestLimmaEbayesGolden:
         """Every branch of limma's spline df, 1 + (n >= 3) + (n >= 6) + (n >= 30), is reached."""
         assert {c["spline_df"] for c in _LIMMA_GOLDEN["cases"] if c["trend"]} == {2, 3, 4}
 
+    @pytest.mark.parametrize("name", ["global_infinite_prior", "trend_infinite_prior"])
+    def test_a_feature_missing_an_arm_is_left_out_of_the_prior_and_the_pool(self, name):
+        """A deliberate difference from limma, pinned so it cannot drift.
+
+        Rows observed only in arm B have no estimable contrast. The toolkit reports them as NaN
+        and leaves them out of the prior and the pooled df, so the rest of the result is exactly
+        what limma gives on the complete features alone - the golden case, where the cap binds.
+        limma would fit those rows at reduced rank and put their variance into the prior as well
+        as their df into the pool (on 8 + 8 such features: pooled 48 rather than 32, and the prior
+        variance 0.181 -> 0.173), so counting their df alone would match limma's cap on a prior
+        that is not limma's. See "Degrees of freedom: limma's cap" in the docs.
+        """
+        case = next(c for c in _LIMMA_GOLDEN["cases"] if c["name"] == name)
+        expr = np.array([_floats(row) for row in case["expr"]])
+        b_only = expr + np.random.default_rng(11).normal(0.0, 0.7, size=expr.shape)
+        b_only[:, :3] = np.nan
+        both = dict(case, expr=[[repr(float(v)) for v in row] for row in np.vstack([expr, b_only])])
+        result = _run_golden_case(both)
+
+        n = expr.shape[0]
+        missing_arm = result.iloc[n:]
+        assert missing_arm[["t", "P.Value", "residual_df", "total_df"]].isna().all().all()
+        complete = result.iloc[:n]
+        assert np.allclose(complete["total_df"], float(case["df_pooled"]), rtol=0, atol=0)
+        assert np.allclose(complete["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10)
+        assert np.allclose(complete["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
+
 
 class TestLimmaTrendDefault:
     def test_default_prior_is_limma_trend(self):
