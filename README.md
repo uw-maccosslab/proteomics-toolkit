@@ -295,7 +295,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 ### statistical_analysis.py
 - `StatisticalConfig` — Configuration class (zero-arg constructor, set attributes individually)
 - `run_comprehensive_statistical_analysis()` — Main analysis entry point (dispatches by `statistical_test_method`)
-- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='limma_trend'` (default) / `'limma'` / `'deqms'` / `'intensity_peptide_trend'` / `'intensity_trend'` (deprecated)); supports covariate adjustment for `analysis_type='unpaired'`
+- `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation='limma_trend'` (default) / `'limma'` / `'deqms'`, or the deprecated `'intensity_peptide_trend'` / `'intensity_trend'`); supports covariate adjustment for `analysis_type='unpaired'`
 - `get_intensity_trend_points()` — Recover the per-(feature, group) diagnostic points DataFrame from a moderated `intensity_trend` results object
 - `compute_paired_fold_changes()` — Build a per-subject fold-change matrix for paired designs (used as input to the classification module)
 - `display_analysis_summary()` — Print/return summary of results
@@ -325,7 +325,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `plot_grouped_trajectories()` — Line plots for temporal/dose-response data
 - `plot_protein_profile()` — Single protein expression profile
 - `plot_peptide_coverage_map()` — Peptide positions along a protein sequence with optional coloring by abundance / fold-change
-- `plot_variance_vs_intensity()` — Diagnostic for the intensity-trend moderation priors (`intensity_trend`, deprecated, and `intensity_peptide_trend`)
+- `plot_variance_vs_intensity()` — Diagnostic for the deprecated intensity-trend moderation priors (`intensity_trend` and `intensity_peptide_trend`)
 - `plot_variance_vs_peptide_count()` — Diagnostic for the DEqMS moderation prior
 
 ### enrichment.py

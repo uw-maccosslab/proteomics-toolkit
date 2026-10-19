@@ -12,7 +12,7 @@ Recipes:
 - [Paired t-test](#paired-t-test-beforeafter-per-subject) (before/after per subject)
 - [Unpaired comparison](#unpaired-comparison) (two independent groups)
 - [PRISM data — unpaired](#prism-data--unpaired-comparison)
-- [Moderated linear model](#moderated-linear-model) (empirical Bayes variance shrinkage; limma-trend by default, or limma / deqms / intensity_peptide_trend / intensity_trend)
+- [Moderated linear model](#moderated-linear-model) (empirical Bayes variance shrinkage; limma-trend by default, or limma / deqms, or the deprecated intensity_peptide_trend / intensity_trend)
   - [Covariate adjustment](#covariate-adjustment) (unpaired only)
 - [Mixed-effects model](#mixed-effects-model-repeated-measures) (repeated measures)
 - [Linear trend over time](#linear-trend--dose-response) (dose-response)
@@ -148,10 +148,10 @@ and applies one of five empirical-Bayes variance priors selected via
 
 | Moderation | Prior shape | When to pick |
 |---|---|---|
-| `"limma_trend"` *(default)* | limma's `eBayes(trend=TRUE)`: a natural-spline curve of the residual `log(variance)` on each feature's mean log abundance (`AveExpr`), fitted to the design's own residuals, with the prior df estimated around it. | The default for MS data, at protein *and* peptide level. Calibrated at every intensity in every design tested ([below](#why-limma-trend-is-the-default)). Pinned to R limma. |
+| `"limma_trend"` *(default)* | limma's `eBayes(trend=TRUE)`: a natural-spline curve of the residual `log(variance)` on each feature's mean log abundance (`AveExpr`), fitted to the design's own residuals, with the prior df estimated around it. | The default for MS data, at protein *and* peptide level. Calibrated at every intensity in every design tested ([below](#why-limma-trend-is-the-default)). Pinned to R limma. It does not use peptide counts, and in simulation and on a serum cohort it tilted by them ([below](#does-the-peptide-count-stage-fix-it)). |
 | `"limma"` | Single global prior (Smyth 2004). | Use when the variance-intensity trend is flat, or as a conservative baseline. |
-| `"deqms"` | Prior conditioned on peptide count alone (Zhu et al. 2020). | Protein-level only. See the caveat below before preferring it. |
-| `"intensity_peptide_trend"` | Additive two-stage LOWESS: `log(var) = f1(log mean intensity) + f2(log peptide count)`, the shape from groups of samples and the level fitted to the residuals. | Protein-level rollup data with a peptide-count column. Its intensity stage is the intensity trend's, built the same way, and its calibration by intensity has not been measured. |
+| `"deqms"` | Prior conditioned on peptide count alone (Zhu et al. 2020). | Protein-level only. Calibrated by peptide count but tilted by intensity, in simulation and on a serum cohort ([below](#does-the-peptide-count-stage-fix-it)); see also the caveat below. |
+| `"intensity_peptide_trend"` *(deprecated)* | Additive two-stage LOWESS: `log(var) = f1(log mean intensity) + f2(log peptide count)`, the shape from groups of samples and the level fitted to the residuals. | Only to reproduce an earlier result; it warns when used. The peptide stage keeps the intensity trend's tilt and, from the pools, adds one by peptide count ([below](#does-the-peptide-count-stage-fix-it)). |
 | `"intensity_trend"` *(deprecated)* | LOWESS of `log(variance)` on `log(mean intensity)` over groups of samples (QC/reference pools, or the design groups) for the shape, scaled to the design's residuals ([below](#where-the-intensity-priors-level-and-weight-come-from)). | Only to reproduce an earlier result; it warns when used. Calibrated on average but tilted by intensity ([below](#why-limma-trend-is-the-default)). The default until 26.9.0. |
 
 **On the shape of the intensity prior.** `intensity_trend` makes *no*
@@ -179,14 +179,18 @@ largely independent information. Cross-validated RMSE on `log(variance)`,
 | **`"intensity_peptide_trend"`** | **0.831** | **+64.4%** |
 
 Note the trap in row two: peptide count *alone* is slightly **worse** than a
-flat prior. It helps only in addition to intensity, never instead of it, so
-`"deqms"` is not a substitute for `"intensity_peptide_trend"`.
+flat prior. It helps only in addition to intensity, never instead of it - which
+is also what the null simulation [below](#does-the-peptide-count-stage-fix-it)
+finds for `"deqms"`: calibrated by peptide count, tilted by intensity.
 
 These RMSEs measure how well each curve predicts the variance of technical
 replicates - the noise the pools carry. They do not say whether a test built
 on the curve is calibrated on study samples, which also carry biology; that
 is the question [Why limma-trend is the default](#why-limma-trend-is-the-default)
-answers, and where the intensity trend falls short.
+and [Does the peptide-count stage fix it?](#does-the-peptide-count-stage-fix-it)
+answer, and where both intensity priors fall short. Peptide count still
+belongs in a protein-level prior; what goes wrong is taking the curve's shape
+from samples that are not the residuals being tested.
 
 **Which abundance conditions the prior.** The intensity stage always uses the
 abundance of the feature actually being tested: protein abundance for a
@@ -248,15 +252,16 @@ results.sort_values('AveExpr').plot('AveExpr', 'limma_trend_s0_sq', ax=ax, color
 
 `ptk.plot_variance_vs_intensity(results)` draws the intensity priors'
 LOWESS and needs a result from `intensity_trend` or
-`intensity_peptide_trend`.
+`intensity_peptide_trend`, both deprecated.
 
-For the combined intensity + peptide prior with PRISM protein data (PRISM
-emits `n_peptides` in the protein parquet):
+To reproduce an earlier result with the deprecated combined intensity +
+peptide prior on PRISM protein data (PRISM emits `n_peptides` in the protein
+parquet):
 
 ```python
 # Include n_peptides alongside the annotation and sample columns.
-# (Check calibration by intensity on your own data before relying on it:
-# its intensity stage is built like the deprecated intensity trend's.)
+# Deprecated, and warns: tilted by intensity and by peptide count (see
+# "Does the peptide-count stage fix it?" below).
 data_with_counts = pd.concat([
     annot.reset_index(drop=True),
     protein_data[sample_cols].reset_index(drop=True),
@@ -378,6 +383,198 @@ for that case. With complete data the two are the same.
 The intensity trend is still available, so an earlier result can be
 reproduced, and warns when used.
 
+### Does the peptide-count stage fix it?
+
+No. `intensity_peptide_trend` adds a second LOWESS stage, on log(peptide
+count), to the intensity trend, and was not deprecated with it in 26.9.0
+because its calibration by intensity had not been measured. It now has, and it
+is deprecated too: it keeps the intensity trend's tilt, and with a pool-sourced
+shape it adds one by peptide count.
+
+The reason is the same as for the intensity trend, in a second direction.
+Both stages are fitted on the same groups of samples, with only the level and
+`d0` fitted to the residuals. A protein's technical noise averages down over
+its peptides, about as `1/n` for `n` peptides, and that is what the pools
+show - the -0.89 coefficient [above](#moderated-linear-model). But a protein's
+biology is a property of the protein, not of its peptides, and does not
+average down, so a study residual falls more slowly with peptide count than
+the pools do. Scaled to fit on average, the pools' peptide curve sits too low
+for proteins with many peptides and too high for those with few.
+
+**The simulation.** `_protein_calibration_null` in
+`tests/test_statistical_analysis.py` extends `_calibration_null`, the null
+`TestPriorCalibrationByIntensity` uses, to protein level:
+each protein has a peptide count (log-uniform from 1 to 64, median about 8,
+independent of intensity), technical variance that falls with intensity as
+before and is divided by the count (scaled so a protein at the median count
+matches the peptide-free null), and biology that does not depend on the count.
+Unpaired is 5 vs 5 with between-subject biology; paired is 6 subjects measured
+twice, with a subject effect the model removes and visit-to-visit biology
+(half the between-subject variance) that it does not. Eight reference and
+eight QC injections carry the technical variance only. Six draws of 2,000
+proteins give 2,400 per fifth, so a 5% rate has a binomial sd of 0.44 points.
+Each row's null rates and prior df are one call to `_protein_null_rates`;
+power is the share of true two-fold effects found at 5% FDR (Benjamini-Hochberg)
+with one in ten proteins changed, from `_protein_calibration_null(...,
+effect_fraction=0.1)` at seeds 20261100-20261105.
+
+The share of null p-values below 0.05 in the dimmest and brightest fifth of
+proteins, and in the fifth with the fewest and the most peptides (a calibrated
+test gives 5% in all four):
+
+| Unpaired, 5 vs 5 | intensity: dimmest -> brightest | peptides: fewest -> most | prior df | power (dimmest fifth) |
+|---|---|---|---|---|
+| `limma_trend` | 4.8% -> 4.7% | 7.8% -> 2.6% | 6.3 | 68.9% (39.1%) |
+| `deqms` | 6.8% -> 3.1% | 4.6% -> 4.1% | 4.7 | 63.8% (46.0%) |
+| `intensity_trend`, from pools | 2.7% -> 7.5% | 7.0% -> 3.9% | 3.0 | 57.5% (16.5%) |
+| `intensity_trend`, from design groups | 5.2% -> 4.5% | 7.8% -> 2.6% | 6.1 | 68.8% (40.3%) |
+| `intensity_peptide_trend`, from pools | 2.8% -> 6.2% | 3.0% -> 6.7% | 2.1 | 54.9% (26.6%) |
+| `intensity_peptide_trend`, from design groups | 4.9% -> 4.7% | 4.5% -> 4.7% | 9.5 | 71.6% (46.8%) |
+| prototype: limma-trend with peptide count (not in the toolkit) | 4.4% -> 4.8% | 4.3% -> 4.9% | 10.0 | 72.0% (46.4%) |
+
+| Paired, 6 subjects | intensity: dimmest -> brightest | peptides: fewest -> most | prior df | power (dimmest fifth) |
+|---|---|---|---|---|
+| `limma_trend` | 5.7% -> 4.4% | 9.0% -> 2.3% | 5.1 | 84.4% (55.6%) |
+| `deqms` | 8.8% -> 1.5% | 4.8% -> 4.3% | 3.5 | 80.0% (58.0%) |
+| `intensity_trend`, from pools | 3.3% -> 7.4% | 8.0% -> 3.4% | 3.2 | 72.2% (22.4%) |
+| `intensity_trend`, from design groups | 7.2% -> 3.5% | 8.8% -> 2.4% | 4.5 | 84.2% (59.6%) |
+| `intensity_peptide_trend`, from pools | 2.5% -> 6.7% | 2.5% -> 7.8% | 2.6 | 71.2% (36.0%) |
+| `intensity_peptide_trend`, from design groups | 8.4% -> 2.9% | 7.0% -> 3.2% | 6.9 | 86.2% (65.2%) |
+| prototype: limma-trend with peptide count (not in the toolkit) | 5.7% -> 4.1% | 4.9% -> 5.0% | 10.3 | 85.9% (62.4%) |
+
+Every overall rate in these tables was between 4.4% and 5.3%, which is why
+none of this shows without splitting. Read it by source, as for the intensity
+trend:
+
+- **From the pools,** `intensity_peptide_trend` is tilted by intensity in both
+  designs, about as much as the intensity trend (3.4 and 4.2 points from
+  dimmest to brightest, against its 4.8 and 4.1), and by peptide count the other
+  way round from it: optimistic for proteins with many peptides. It also has
+  the smallest prior df and the least power of anything tested.
+- **From the design groups** it is calibrated in an unpaired design, where the
+  groups' spread *is* the residual, and the best of the toolkit's priors
+  there in this simulation. In a paired design the groups carry the between-subject spread the
+  subject block removes, and it tilts the other way, as the intensity trend
+  does: 8.4% of null p-values below 0.05 in the dimmest fifth. Its paired
+  power is the highest in the table partly for that reason - a prior that is
+  optimistic for dim proteins finds more of them, true and false.
+
+Two checks on how much this depends on the simulation's choices. Dividing the
+biology by the peptide count too - the case most favorable to the pools'
+peptide curve, since it then has the residuals' slope - removes the
+peptide-count tilt and makes the intensity tilt worse: 1.8% -> 7.5% unpaired
+and 1.8% -> 8.1% paired from the pools, and 9.5% -> 2.4% paired from design
+groups. Making log peptide count track intensity (r = 0.57, against 0.34 on
+real data) leaves it much the same: 1.8% -> 7.4% and 1.3% -> 8.5% from the
+pools, 7.9% -> 3.8% paired from design groups, and a slight tilt (3.8% ->
+6.0%) even unpaired from design groups.
+
+**On a real cohort.** The same comparison on the serum cohort used
+[above](#why-limma-trend-is-the-default): PRISM's corrected protein matrix,
+3,595 protein groups with a median of 4 peptides (23% have one; log peptide
+count correlates 0.41 with intensity), 10 subjects on verapamil sampled at
+weeks 0, 2, 4, 6 and 12, 11 on liraglutide, and 6 reference and 6 QC
+injections. Three random-label nulls, 40 permutations each: unpaired 5 vs 5
+(random splits of the week-0 samples), unpaired 10 vs 11 (random splits of
+both studies' pre-drug samples), and paired week 0 vs 12 with the labels
+flipped at random within each subject. Peptide count is reported in bins
+rather than fifths here, because so many proteins tie at one peptide:
+
+| Null, prior | intensity: dimmest -> brightest fifth | peptides: 1 -> 10 or more | prior df |
+|---|---|---|---|
+| **unpaired 5 vs 5** | | | |
+| `limma_trend` | 5.0% -> 4.7% | 6.9% -> 3.0% | 3.4 |
+| `deqms` | 5.5% -> 3.8% | 3.9% -> 3.9% | 2.6 |
+| `intensity_peptide_trend`, from pools | 4.4% -> 5.9% | 5.2% -> 4.4% | 4.2 |
+| `intensity_peptide_trend`, from design groups | 4.5% -> 5.0% | 5.1% -> 4.1% | 4.9 |
+| prototype: limma-trend with peptide count | 4.9% -> 4.9% | 4.4% -> 4.2% | 5.2 |
+| **paired, week 0 vs 12** | | | |
+| `limma_trend` | 5.0% -> 4.6% | 6.8% -> 3.1% | 4.2 |
+| `deqms` | 5.5% -> 3.0% | 3.8% -> 4.0% | 2.5 |
+| `intensity_peptide_trend`, from pools | 5.1% -> 4.4% | 5.3% -> 4.2% | 6.0 |
+| `intensity_peptide_trend`, from design groups | 5.7% -> 3.1% | 5.7% -> 3.5% | 5.3 |
+| prototype: limma-trend with peptide count | 4.9% -> 4.6% | 4.3% -> 4.2% | 6.7 |
+| **unpaired 10 vs 11** | | | |
+| `limma_trend` | 5.2% -> 6.4% | 6.3% -> 5.1% | 4.5 |
+| `deqms` | 5.6% -> 5.9% | 4.8% -> 5.7% | 3.4 |
+| `intensity_peptide_trend`, from pools | 4.6% -> 7.4% | 5.1% -> 6.4% | 4.5 |
+| `intensity_peptide_trend`, from design groups | 5.2% -> 6.5% | 5.5% -> 5.7% | 5.7 |
+| prototype: limma-trend with peptide count | 5.4% -> 6.5% | 5.1% -> 5.9% | 6.2 |
+
+Permutations of one cohort share its proteins, so the uncertainty is the
+spread across permutations, not a binomial one: the standard error of a
+fifth's or a bin's rate is 0.1-0.3 points in the unpaired 5 vs 5 null, up to
+0.7 paired and up to 1.2 in the 10 vs 11 null, largest for bright and
+many-peptide proteins. It measures permutation noise on this cohort, not how
+another cohort would differ. The 10 vs 11 null runs a little high for every
+prior (5.2-5.5% overall, 6.4-7.4% in the brightest fifth), most likely because
+a random split mixes two studies' subjects unevenly; it is the weakest of the
+three.
+
+The real data agree with the simulation on what matters. Peptide count
+carries variance information that intensity does not: at matched intensity,
+the residual variance of a one-peptide protein is 2.3-2.9 times that of a
+four-peptide one, levelling off at about 0.6-0.7 times from ten peptides on,
+where biology dominates, and a spline in log peptide count removes 33-43% of
+the spread in log residual variance that the intensity curve leaves (an
+intensity x count interaction removes only 1-3 points more). limma-trend, which
+does not use it, tilts by it: the rate for one-peptide proteins exceeds the
+rate for those with ten or more by 3.9 points (standard error 0.24) unpaired
+5 vs 5 and 3.7 (0.50) paired, and by 1.3 (0.90) in the 10 vs 11 null. The
+pool-shaped `intensity_peptide_trend` tilts by intensity in both unpaired
+nulls (4.4% -> 5.9% and 4.6% -> 7.4%) though not in the paired one here, and
+the design-group shape tilts the other way paired (5.7% -> 3.1%), as in
+simulation; the peptide-count tilt the simulation shows for the pool shape is
+not visible on this cohort. DEqMS is again calibrated by peptide count and
+tilted by intensity. The prototype was within half a point of flat in both
+directions in the two stronger nulls, with prior df 50-60% above
+limma-trend's.
+
+A spike-in on the same splits - one protein in ten shifted, Benjamini-Hochberg
+at 5%, 20 permutations - puts a number on what the prototype would buy. At a
+two-fold change it found 28.0% of true effects against limma-trend's 23.0%
+unpaired 5 vs 5, 67.5% against 66.7% paired, and 52.5% against 52.1% unpaired
+10 vs 11; at a 1.5-fold change, 22.9% against 17.2% paired (the unpaired 5 vs
+5 split finds almost nothing at 1.5-fold under any prior). The realized false
+discovery proportion stayed at or under 5.3% for every prior, except in that
+1.5-fold unpaired 5 vs 5 case, where each prior called only a handful of
+proteins and the proportion means little. The gain is in
+proteins with many peptides (ten or more, unpaired 5 vs 5 at two-fold: 55.0%
+against 40.5%), and one-peptide proteins give some up (2.9% against 7.9%) -
+the proteins where limma-trend's null rate was 6.9%, so part of what it found
+there was false.
+
+**What this says about the other priors.** limma-trend was calibrated by
+intensity in every case (4.1-5.7% in every fifth of every variant), but it
+does not use peptide counts, so where variance falls with them it tilts by
+them: optimistic for proteins with few peptides, conservative for those with
+many (7.8% -> 2.6% unpaired, 9.0% -> 2.3% paired; 7.1% -> 1.4% and 9.2% ->
+0.8% when the biology falls with the count too). The intensity trend, which
+does not use peptide counts either, does the same. DEqMS is the mirror image:
+calibrated by peptide count and tilted by intensity (6.8% -> 3.1% unpaired,
+8.8% -> 1.5% paired). The serum cohort above shows the same limma-trend and
+DEqMS tilts on real data. limma-trend remains the default: it is calibrated by
+intensity at both protein and peptide level, and nothing in the toolkit yet
+corrects its peptide-count tilt without introducing another.
+
+The prototype rows are limma's `fitFDist` with log(peptide count) as a second
+covariate beside the intensity spline (a natural spline of 3 df in log count;
+a straight line did as well except where count tracked intensity, where it
+left 7.4% in the fewest-peptide fifth, paired), both fitted to the design's
+own residuals, so nothing comes from pools or groups. It was flat in both
+directions in every simulated variant (4.0-6.0% in every fifth) and on the
+serum cohort, had the largest prior df, and matched or beat the best power. It
+is not in the toolkit. If it is added, it is a protein-level prior only: a
+peptide has no peptide count, and the prior must refuse peptide-level input
+rather than run on it.
+
+`TestIntensityPeptideTrendCalibration` pins the three facts the deprecation
+and this section rest on: the pool-shaped `intensity_peptide_trend` tilts by
+intensity and by peptide count (unpaired), the design-group-shaped one tilts
+the other way paired, and limma-trend is calibrated by intensity on this null
+but tilts by peptide count. Each bound is 2 points, more than three binomial
+sd of a difference between two fifths.
+
 ### Degrees of freedom: limma's cap
 
 The moderated t's p-value is read on limma's `df.total`:
@@ -413,7 +610,7 @@ case for Skyline data - the two are the same.
 
 ### Where the intensity prior's level and weight come from
 
-This describes the deprecated `intensity_trend` (and `intensity_peptide_trend`).
+This describes the deprecated `intensity_trend` (and the deprecated `intensity_peptide_trend`).
 A moderated t replaces each feature's own variance estimate, which is noisy
 with few samples, by a weighted average of that estimate and a prior:
 
@@ -780,7 +977,7 @@ See [08-enrichment.md](08-enrichment.md) for the full enrichment workflow.
 |---|---|---|
 | `analysis_type` | str | **Required.** `'paired'`, `'unpaired'`, `'linear_trend'`, `'longitudinal'`, `'interaction'` |
 | `statistical_test_method` | str | `'paired_t'`, `'mixed_effects'`, `'welch_t'`, `'student_t'`, `'wilcoxon'`, `'mann_whitney'`, `'moderated_linear_model'` |
-| `moderation` | str | When `statistical_test_method='moderated_linear_model'`: `'limma_trend'` *(default)*, `'limma'`, `'deqms'`, `'intensity_peptide_trend'`, or `'intensity_trend'` (deprecated) |
+| `moderation` | str | When `statistical_test_method='moderated_linear_model'`: `'limma_trend'` *(default)*, `'limma'`, `'deqms'`, or the deprecated `'intensity_peptide_trend'` and `'intensity_trend'` |
 | `robust` | bool | Winsorize extreme `s_i²` when estimating prior hyperparameters (the intent of limma's `robust=TRUE`, not its algorithm). Default `False`. |
 | `variance_prior_group_column` | str | Intensity-trend priors only: metadata column whose values group the QC/reference samples the trend's shape is fitted on. Ignored, with a warning, by other moderations. |
 | `variance_prior_groups` | list | Intensity-trend priors only: which values of `variance_prior_group_column` to use. |

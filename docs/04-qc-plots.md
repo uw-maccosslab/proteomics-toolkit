@@ -155,9 +155,9 @@ tracks within a row.
 Two companion plots for the
 [moderated linear model](06-statistical-analysis.md#moderated-linear-model):
 
-**`plot_variance_vs_intensity`** (for `moderation="intensity_peptide_trend"`
-or the deprecated `"intensity_trend"`; the default `"limma_trend"` has no
-LOWESS to draw): drawn in the space the prior is actually fit
+**`plot_variance_vs_intensity`** (for the deprecated
+`moderation="intensity_trend"` and `"intensity_peptide_trend"`; the default
+`"limma_trend"` has no LOWESS to draw): drawn in the space the prior is actually fit
 in — `log(within-group variance)` against `log(group-mean intensity)`, one
 point per (feature, group) pair, with the LOWESS prior overlaid.
 
@@ -171,9 +171,13 @@ to either extreme.
 
 The right-hand panel shows the residual after the intensity stage. With
 `"intensity_peptide_trend"` it is plotted against peptide count with the
-second-stage LOWESS overlaid, so a downward trend shows the peptide term
-adding real information. With plain `"intensity_trend"` it shows the residual
-distribution and its spread.
+second-stage LOWESS overlaid. A downward trend there says the groups the shape
+is fitted on get less noisy with more peptides, not that the study residuals
+do: with QC/reference pools they fall faster than the residuals, whose biology
+does not average over peptides, which is why that prior is deprecated
+([Does the peptide-count stage fix it?](06-statistical-analysis.md#does-the-peptide-count-stage-fix-it)).
+With plain `"intensity_trend"` it shows the residual distribution and its
+spread.
 
 ```python
 # After run_moderated_linear_model with moderation='intensity_trend'

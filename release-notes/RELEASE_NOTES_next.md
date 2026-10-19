@@ -6,7 +6,9 @@ Feature release with a breaking change to every default moderated p-value. The d
 prior for `statistical_test_method="moderated_linear_model"` is now limma-trend (limma's
 `eBayes(trend=TRUE)`), replacing the intensity trend, which is deprecated. The intensity trend was
 calibrated on average but tilted by intensity: optimistic for bright features, conservative for
-dim ones, and it found fewer true effects. Moderated p-values are also now read on limma's capped
+dim ones, and it found fewer true effects. `intensity_peptide_trend`, which adds a peptide-count
+stage to the intensity trend, is deprecated too: the peptide stage keeps the tilt and adds one
+by peptide count. Moderated p-values are also now read on limma's capped
 degrees of freedom, for every prior. Both are pinned to R limma 3.66.0, and both match
 Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
 
@@ -54,8 +56,28 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
 - **`moderation="intensity_trend"` is deprecated** and emits a `FutureWarning` saying why. It is a
   `FutureWarning` rather than a `DeprecationWarning` because Python hides a `DeprecationWarning`
   raised inside a library, and notebook users are who need to see it.
-  `"intensity_peptide_trend"` is not deprecated, but its intensity stage is built the same way
-  and its calibration by intensity has not been measured.
+- **`moderation="intensity_peptide_trend"` is deprecated too**, with its own `FutureWarning`. Its
+  peptide-count stage is shaped on the same QC/reference pools or design groups as its intensity
+  stage, so it inherits the intensity trend's mismatch instead of correcting it: pooled technical
+  noise averages down over a protein's peptides, while the biology in a study residual does not.
+  On a simulated protein-level null (peptide counts 1-64, technical variance falling with
+  intensity and as 1/count, flat biology), a pool-sourced shape gave 2.8% of null p-values below
+  0.05 for the dimmest fifth of proteins and 6.2% for the brightest, 3.0% for the fifth with the
+  fewest peptides and 6.7% for the most, the smallest prior df of any prior tested (2.1), and
+  found 55% of true two-fold effects at 5% FDR against limma-trend's 69% (unpaired 5 vs 5). A
+  design-group shape was calibrated unpaired but tilted the other way paired (8.4% dimmest, 2.9%
+  brightest, 6 subjects), as the intensity trend's does. Use it only to reproduce an earlier
+  result. The same simulation found that limma-trend, calibrated by intensity in every case
+  (4.1-5.7% per fifth), does not use peptide counts and so tilts by them where variance falls
+  with them: 7.8% of null p-values below 0.05 for the fewest-peptide fifth and 2.6% for the most
+  (unpaired), 9.0% and 2.3% (paired). Random-label nulls on a 3,595-protein serum cohort showed
+  the same: 6.9% for one-peptide proteins and 3.0% for those with ten or more (unpaired 5 vs 5),
+  6.8% and 3.1% (paired), with the pool-sourced `intensity_peptide_trend` tilted by intensity in
+  both unpaired nulls. DEqMS is the reverse, calibrated by count and tilted by intensity. A
+  prototype limma-trend with log(peptide count) as a second covariate, fitted to the residuals,
+  was calibrated both ways in simulation (4.0-6.0%) and on the cohort, and found more true
+  effects in its spike-ins (28% against 23% at two-fold, unpaired 5 vs 5); it is not in this
+  release.
 - **`variance_prior_group_column` now warns when it has no effect.** It only ever shaped the
   intensity-trend priors. Until this release that was the default, so a config that sets it was
   written for that prior; under any other moderation it is now ignored with a `UserWarning`
@@ -77,9 +99,15 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   vs 5) and checks calibration in each intensity fifth, which an overall 5% rate cannot see.
   limma-trend must stay within 3.5-6.5% in every fifth, and the pool-shaped intensity trend must
   still tilt by more than 3 points. Marked `slow` (about 35 s).
+- `TestIntensityPeptideTrendCalibration` reruns the protein-level null (`_protein_calibration_null`,
+  6 draws of 2,000 proteins with peptide counts) and pins the three facts the
+  `intensity_peptide_trend` deprecation rests on: the pool-shaped prior tilts by intensity and by
+  peptide count (unpaired), the design-group-shaped one tilts the other way (paired), and
+  limma-trend stays within 3.5-6.5% in every intensity fifth while tilting by peptide count. Each
+  tilt bound is 2 points, more than three binomial sd. Marked `slow` (about 90 s together).
 - `TestTrendCalibration` checks limma-trend's overall null rate on its unpaired and paired
   simulations, beside the intensity trend's.
-- New tests for the default, the deprecation warning and its reason, the warning for an ignored
+- New tests for the default, both deprecation warnings and their reasons, the warning for an ignored
   `variance_prior_group_column`, and limma-trend with `robust=True`.
 
 ## Documentation
@@ -89,6 +117,13 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   `total_df` column. The intensity trend's sections are marked deprecated, and the examples use
   limma-trend. The one deliberate difference from limma is recorded: with missing values limma
   3.58+ switches to `fitFDistUnequalDF1`, and the toolkit keeps `fitFDist`'s moments.
+- `docs/06-statistical-analysis.md` has a new section, "Does the peptide-count stage fix it?",
+  with the protein-level null measured by intensity fifth and by peptide-count fifth for every
+  prior, unpaired and paired, from pools and from design groups, with power and prior df, and two
+  sensitivity checks (biology falling with peptide count too; count tracking intensity), and the
+  same comparison on random-label nulls and spike-ins of a 3,595-protein serum cohort. The
+  peptide-count prior's earlier cross-validation figures are kept, with a note that they measure
+  fit to technical replicates, not calibration on study samples.
 - The README, the overview, the QC-plot and pitfalls pages, and the tutorial notebook use
   limma-trend as the default. `plot_variance_vs_intensity` is documented as a diagnostic for the
   intensity priors only, and the docs and tutorial show limma's `plotSA` drawn by hand instead.
