@@ -1,13 +1,14 @@
 #!/usr/bin/env Rscript
 #
-# Generates limma_trend_intensity_n_peptides.json: the reference for moderation="limma_trend_intensity_n_peptides".
+# Generates limma_trend_intensity_n_peptides.json: the reference for the
+# limma-trend-intensity-n-peptides variance prior.
 #
 # That prior is limma-trend with a second covariate. limma's fitFDist regresses each feature's
 # bias-corrected log residual variance on a natural spline of its mean log expression (Amean);
-# limma_trend_intensity_n_peptides regresses it on that spline AND a natural spline of the protein's log
-# peptide count, then estimates the prior df around the combined curve by the same trigamma
-# inversion. limma itself cannot be called whole for this - fitFDist, squeezeVar and eBayes all
-# take a single covariate vector - so the reference is built from limma's own pieces:
+# this prior regresses it on that spline AND a natural spline of the protein's log peptide count,
+# then estimates the prior df around the combined curve by the same trigamma inversion. limma
+# itself cannot be called whole for this - fitFDist, squeezeVar and eBayes all take a single
+# covariate vector - so the reference is built from limma's own pieces:
 #
 #   - lmFit gives the coefficients, residual variances (sigma^2), residual df and Amean;
 #   - fit_fdist() below is limma 3.66.0's fitFDist, transcribed line for line, with the covariate
@@ -21,6 +22,12 @@
 # requires it to reproduce limma's own eBayes(trend = TRUE) - prior variance, prior df, posterior
 # variance and p-value - to 1e-12. A case whose transcription disagrees with limma is refused, so
 # the only thing this file adds to limma is the second column block.
+#
+# The same generator, cases and seeds live in Skyline-PRISM
+# (dotnet/tests/fixtures/differential/generate_limma_trend_intensity_n_peptides.R), and the two
+# write byte-identical JSON: the toolkit's moderation="limma-trend-intensity-n-peptides" and
+# PRISM's --prior limma-trend-intensity-n-peptides are pinned to one reference, which is how the
+# two tools are held to the same numbers. Change a case in both, or neither.
 #
 # Nothing here imports the toolkit. Each matrix and its peptide counts are drawn here and written
 # into the fixture, and the test hands them to the toolkit.
