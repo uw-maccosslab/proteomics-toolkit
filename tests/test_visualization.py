@@ -313,7 +313,7 @@ class TestPlotVarianceVsIntensity:
         config.group_column = "Group"
         config.group_labels = ["Control", "Treatment"]
         config.log_transform_before_stats = True
-        config.moderation = "intensity_trend"
+        config.moderation = "intensity-trend"
         # When called directly (bypassing the dispatcher), the raw data *is*
         # the linear-space data.
         config._raw_feature_data = data
@@ -323,7 +323,7 @@ class TestPlotVarianceVsIntensity:
         # log-space trend; calibrating the trend to those residuals scaled it by 1.6e9.
         log_data = np.log2(data)
         if peptides:
-            config.moderation = "intensity_peptide_trend"
+            config.moderation = "intensity-peptide-trend"
             log_data["n_peptides"] = rng.integers(1, 25, size=n_feat)
         return ptk.run_moderated_linear_model(log_data, metadata_df, config)
 
