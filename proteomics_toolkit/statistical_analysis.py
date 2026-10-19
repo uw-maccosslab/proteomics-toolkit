@@ -226,12 +226,15 @@ class StatisticalConfig:
         #                           log-variance on each feature's mean log expression,
         #                           fitted to this design's own residuals, with the prior
         #                           df estimated around it. The default from 26.9.0.
-        #   - "limma_trend_intensity_n_peptides" : PROTEIN LEVEL ONLY. limma-trend with log peptide count
-        #                           as a second covariate: the residual log-variance is
-        #                           fitted on a spline of AveExpr plus a spline of
-        #                           log(peptide count), so the prior follows both, all from
-        #                           this design's residuals. Requires ``peptide_count_column``
-        #                           and refuses input that is not one row per protein.
+        #   - "limma_trend_intensity_n_peptides" : PROTEIN LEVEL ONLY. limma-trend with log
+        #                           peptide count as a second covariate: the residual
+        #                           log-variance is fitted on a spline of AveExpr plus a
+        #                           spline of log(peptide count), so the prior follows both,
+        #                           all from this design's residuals. Recommended for
+        #                           protein-level data, though not the default (limma_trend
+        #                           stays the default, in step with Skyline-PRISM). Requires
+        #                           ``peptide_count_column`` and refuses input that is not one
+        #                           row per protein.
         #   - "limma"             : global prior (Smyth 2004)
         #   - "deqms"             : per-feature prior conditioned on peptide count (Zhu 2020)
         #   - "intensity_trend"   : DEPRECATED. Per-feature prior whose shape is a LOWESS
@@ -2482,8 +2485,12 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     10 against limma-trend's 5-6; on the serum cohort it removed
     limma-trend's peptide-count tilt (6.9% for one-peptide proteins, 3.0%
     for ten or more, became 4.4% and 4.2%) and found 28% of two-fold
-    spike-ins against limma-trend's 23% (unpaired 5 vs 5). It is not the
-    default: it needs a peptide count per protein, and a peptide has none.
+    spike-ins against limma-trend's 23% (unpaired 5 vs 5). It is the
+    recommended prior for protein-level data with a peptide count, but not
+    the default: a peptide has no peptide count, so it cannot be the default
+    at every level, and limma_trend stays the default for now so that an
+    analysis that does not choose a prior runs the same one here and in
+    Skyline-PRISM. The protein-level default is to change in both together.
     The estimator is :func:`_fit_limma_trend_prior` with ``log_counts``,
     pinned to R limma by ``tests/fixtures/limma_trend_intensity_n_peptides.json``.
 

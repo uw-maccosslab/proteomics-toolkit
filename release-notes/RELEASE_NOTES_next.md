@@ -8,8 +8,9 @@ prior for `statistical_test_method="moderated_linear_model"` is now limma-trend 
 calibrated on average but tilted by intensity: optimistic for bright features, conservative for
 dim ones, and it found fewer true effects. `intensity_peptide_trend`, which adds a peptide-count
 stage to the intensity trend, is deprecated too: the peptide stage keeps the tilt and adds one
-by peptide count. For protein-level data, the new `limma_trend_intensity_n_peptides` fits intensity and
-peptide count to the residuals together. Moderated p-values are also now read on limma's capped
+by peptide count. For protein-level data, the new `limma_trend_intensity_n_peptides` fits
+intensity and peptide count to the residuals together and is the recommended prior there; it is
+not yet the default. Moderated p-values are also now read on limma's capped
 degrees of freedom, for every prior. Both are pinned to R limma 3.66.0, and both match
 Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
 
@@ -24,8 +25,9 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   paired, linear-trend and interaction designs, with covariates and `robust=True`. Results carry
   the prior used per feature as `limma_trend_s0_sq`, with `limma_s0_sq` as the global prior for
   comparison.
-- **`moderation="limma_trend_intensity_n_peptides"`, for protein-level analysis only.** limma-trend with the
-  protein's log peptide count as a second covariate: the residual log-variance is regressed on
+- **`moderation="limma_trend_intensity_n_peptides"`, recommended for protein-level analysis, and
+  for protein-level analysis only.** limma-trend with the protein's log peptide count as a second
+  covariate: the residual log-variance is regressed on
   limma-trend's spline of `AveExpr` plus a natural spline of log peptide count, both fitted to the
   design's own residuals, and the prior df is estimated around the combined curve. limma-trend
   does not use peptide counts and tilts by them on protein-level data, where variance falls with
@@ -38,7 +40,9 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   `config.peptide_count_column` (default `n_peptides`) and **refuses input that is not
   protein-level** - a missing, fractional or sub-1 count, counts that never vary, or rows that
   repeat a feature identifier - rather than run on it or fall back to limma-trend. Results carry
-  `limma_trend_intensity_n_peptides_s0_sq` and `peptide_count_used`. It is not the default.
+  `limma_trend_intensity_n_peptides_s0_sq` and `peptide_count_used`. It is not the default:
+  `limma_trend` stays the default so that an analysis that does not choose a prior runs the same
+  one here and in Skyline-PRISM, and the protein-level default is to change in both together.
 - **New `total_df` column** on every moderated result: the degrees of freedom the p-value was
   read on (see Bug Fixes). `posterior_df` keeps `residual_df + d0`.
 
