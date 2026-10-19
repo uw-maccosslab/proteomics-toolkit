@@ -552,7 +552,7 @@ three.
 The real data agree with the simulation on what matters. Peptide count
 carries variance information that intensity does not: at matched intensity,
 the residual variance of a one-peptide protein is 2.3-2.9 times that of a
-four-peptide one, levelling off at about 0.6-0.7 times from ten peptides on,
+four-peptide one, leveling off at about 0.6-0.7 times from ten peptides on,
 where biology dominates, and a spline in log peptide count removes 33-43% of
 the spread in log residual variance that the intensity curve leaves (an
 intensity x count interaction removes only 1-3 points more). limma-trend, which
@@ -695,9 +695,11 @@ p-values. `TestLimmaTrendIntensityNPeptidesCalibration` holds it within 3.5-6.5%
 intensity fifth and every peptide-count fifth of the simulated protein-level
 null, unpaired and paired.
 
-One case the golden does not cover: when more than half the proteins share the
-smallest (or largest) peptide count, the median knot falls on the boundary and
-the count term becomes a straight line in log count.
+When more than half the proteins share the smallest (or largest) peptide count,
+the median knot falls on the boundary, where R's `ns()` refuses outright ("all
+interior knots match left boundary knot"), so the count term becomes a straight
+line in log count. That is a convention this toolkit and Skyline-PRISM share,
+and the golden pins it with its `protein_median_on_boundary` case.
 
 ### Degrees of freedom: limma's cap
 

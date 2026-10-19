@@ -876,7 +876,8 @@ class TestLimmaTrendIntensityNPeptidesGolden:
     ``generate_limma_trend_intensity_n_peptides.R``, which imports nothing from the toolkit.
     limma's ``fitFDist`` takes one covariate, so the generator transcribes it with the design
     ``cbind(ns(Amean, df, intercept = TRUE),
-    ns(log(n_peptides), df = 2))`` - or ``log(n_peptides)`` when the counts take two values - and,
+    ns(log(n_peptides), df = 2))`` - or ``log(n_peptides)`` when the counts take two values or the
+    median count is on the boundary, where R's ``ns()`` refuses - and,
     before writing each case, checks that the same transcription without the count block
     reproduces limma's ``eBayes(trend = TRUE)`` to 1e-12. The tolerances are TestLimmaEbayesGolden's,
     for the same reasons; the added count columns change nothing about them, since the regression
@@ -906,8 +907,14 @@ class TestLimmaTrendIntensityNPeptidesGolden:
         assert np.allclose(result["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
 
     def test_every_count_basis_is_reached(self):
-        """Both count blocks (a spline, and a straight line for two distinct counts) are pinned."""
+        """Both count blocks are pinned: a spline, and a straight line - for two distinct counts and
+        for a median count on the boundary, which R's ``ns()`` refuses and both tools fit as a line."""
         assert {int(c["count_cols"]) for c in _LTP_GOLDEN["cases"]} == {1, 2}
+        lines = [c for c in _LTP_GOLDEN["cases"] if int(c["count_cols"]) == 1]
+        assert any(len(set(c["n_peptides"])) == 2 for c in lines)
+        assert any(
+            len(set(c["n_peptides"])) >= 3 and np.median(c["n_peptides"]) == min(c["n_peptides"]) for c in lines
+        )
         assert {int(c["spline_df"]) for c in _LTP_GOLDEN["cases"]} == {3, 4}
 
     def test_the_count_term_does_something_on_every_case(self):

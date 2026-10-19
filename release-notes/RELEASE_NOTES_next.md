@@ -126,9 +126,10 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   `tests/fixtures/generate_limma_trend_intensity_n_peptides.R`. limma's `fitFDist` takes one
   covariate, so the generator transcribes it with the peptide-count columns added to its design and
   refuses to write a case unless the transcription without them reproduces limma's own
-  `eBayes(trend = TRUE)` to 1e-12. Six cases cover unpaired, paired and linear-trend designs, both
-  Amean spline sizes (3 and 4 columns), both count blocks (a spline, and a straight line for two
-  distinct counts), and an infinite prior df where limma-trend's is finite. Measured agreement is
+  `eBayes(trend = TRUE)` to 1e-12. Seven cases cover unpaired, paired and linear-trend designs, both
+  Amean spline sizes (3 and 4 columns), both count blocks (a spline, and a straight line - for two
+  distinct counts, and for a median count on the boundary, where R's `ns()` refuses), and an
+  infinite prior df where limma-trend's is finite. Measured agreement is
   about 1e-14 in the prior and posterior variances and the prior df, 3e-13 in the p-values.
 - `TestModerationNamesAndDefault` pins the names to Skyline-PRISM's, the default chosen by level
   (directly and through `run_comprehensive_statistical_analysis`), the refusal of a count column
