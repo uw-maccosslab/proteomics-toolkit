@@ -2320,9 +2320,12 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     design-group shape was calibrated unpaired and tilted the other way
     paired (8.4% dimmest, 2.9% brightest), as the intensity trend is.
     limma-trend was calibrated by intensity in every case but, not using
-    peptide counts, tilted by them (7.8% fewest, 2.6% most, unpaired).
-    The measurements are in docs/06-statistical-analysis.md, "Does the
-    peptide-count stage fix it?".
+    peptide counts, tilted by them (7.8% fewest, 2.6% most, unpaired). On
+    random-label nulls of a 3,595-protein serum cohort the same limma-trend
+    tilt appeared (6.9% for one-peptide proteins, 3.0% for ten or more,
+    unpaired 5 vs 5), and the pool-sourced shape tilted by intensity in
+    both unpaired nulls. The measurements are in
+    docs/06-statistical-analysis.md, "Does the peptide-count stage fix it?".
 
     Degrees of freedom
     ~~~~~~~~~~~~~~~~~~

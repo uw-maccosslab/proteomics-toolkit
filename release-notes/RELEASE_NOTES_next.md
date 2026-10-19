@@ -67,9 +67,14 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   result. The same simulation found that limma-trend, calibrated by intensity in every case
   (4.1-5.7% per fifth), does not use peptide counts and so tilts by them where variance falls
   with them: 7.8% of null p-values below 0.05 for the fewest-peptide fifth and 2.6% for the most
-  (unpaired), 9.0% and 2.3% (paired). DEqMS is the reverse, calibrated by count and tilted by
-  intensity. A prototype limma-trend with log(peptide count) as a second covariate, fitted to
-  the residuals, was calibrated both ways (4.0-6.0%); it is not in this release.
+  (unpaired), 9.0% and 2.3% (paired). Random-label nulls on a 3,595-protein serum cohort showed
+  the same: 6.9% for one-peptide proteins and 3.0% for those with ten or more (unpaired 5 vs 5),
+  6.8% and 3.1% (paired), with the pool-sourced `intensity_peptide_trend` tilted by intensity in
+  both unpaired nulls. DEqMS is the reverse, calibrated by count and tilted by intensity. A
+  prototype limma-trend with log(peptide count) as a second covariate, fitted to the residuals,
+  was calibrated both ways in simulation (4.0-6.0%) and on the cohort, and found more true
+  effects in its spike-ins (28% against 23% at two-fold, unpaired 5 vs 5); it is not in this
+  release.
 - **`variance_prior_group_column` now warns when it has no effect.** It only ever shaped the
   intensity-trend priors. Until this release that was the default, so a config that sets it was
   written for that prior; under any other moderation it is now ignored with a `UserWarning`
@@ -112,7 +117,8 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
 - `docs/06-statistical-analysis.md` has a new section, "Does the peptide-count stage fix it?",
   with the protein-level null measured by intensity fifth and by peptide-count fifth for every
   prior, unpaired and paired, from pools and from design groups, with power and prior df, and two
-  sensitivity checks (biology falling with peptide count too; count tracking intensity). The
+  sensitivity checks (biology falling with peptide count too; count tracking intensity), and the
+  same comparison on random-label nulls and spike-ins of a 3,595-protein serum cohort. The
   peptide-count prior's earlier cross-validation figures are kept, with a note that they measure
   fit to technical replicates, not calibration on study samples.
 - The README, the overview, the QC-plot and pitfalls pages, and the tutorial notebook use
