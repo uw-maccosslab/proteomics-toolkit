@@ -301,6 +301,81 @@ cases <- c(cases, encode_case(
   "150 features, 4 vs 4, some with one NaN per arm (residual df 5 or 4 instead of 6), eBayes(trend = TRUE, legacy = TRUE): fitFDist's moments over unequal df, which is the toolkit's estimator; limma's default for unequal df (fitFDistUnequalDF1) is not",
   expr, "unpaired", c4$design, c4$labels, trend = TRUE, binds = FALSE, legacy = TRUE))
 
+# --- Designs a feature's missing values make rank-deficient -------------------------------------
+#
+# lmFit fits each row with missing values on its observed samples, and R's lm.fit pivots out any
+# design column those samples cannot estimate - the LATER of an aliased pair - setting its
+# coefficient to NA. The row keeps n_observed - rank residual df, and its variance goes into the
+# prior and its df into the pool whether or not the tested coefficient survived. Every case here
+# is legacy = TRUE, for the reason given above: the df are unequal.
+
+# An arm entirely missing: [1, group] on samples that are all in B makes the group column equal
+# the intercept, so it is the one dropped. No contrast, but two residual df each. With equal
+# variances otherwise the prior df is infinite, so the cap binds - at 8 x 4 + 8 x 2 = 48, not 32.
+set.seed(4)
+complete <- 10 + matrix(rnorm(8 * 6, sd = 0.5), nrow = 8)
+b_only <- 10 + matrix(rnorm(8 * 6, sd = 0.5), nrow = 8)
+b_only[, 1:3] <- NA
+cases <- c(cases, encode_case(
+  "global_missing_arm_legacy",
+  "8 complete features plus 8 observed only in arm B, 3 vs 3: the B-only rows have no contrast (NA) but 2 residual df each, which go into the prior and the pool (48, not 32); df.prior is infinite, so the cap binds",
+  rbind(complete, b_only), "unpaired", a$design, a$labels, trend = FALSE, binds = TRUE, legacy = TRUE))
+
+set.seed(808)
+n_feat <- 150
+level <- sort(runif(n_feat, 12, 27))
+expr <- level + sqrt(trend_variance(level)) * matrix(rnorm(n_feat * 8), nrow = n_feat)
+expr[seq(4, n_feat, by = 9), 5:8] <- expr[seq(4, n_feat, by = 9), 5:8] + 1.2
+expr[seq(6, n_feat, by = 10), 1:4] <- NA
+expr[cbind(seq(2, n_feat, by = 13), 5 + (seq(2, n_feat, by = 13) %% 4))] <- NA
+cases <- c(cases, encode_case(
+  "trend_missing_arm_legacy",
+  "150 features, 4 vs 4; every 10th has arm A entirely missing (no contrast, 3 residual df, still in the trend and the pool), every 13th one NaN in arm B",
+  expr, "unpaired", c4$design, c4$labels, trend = TRUE, binds = FALSE, legacy = TRUE))
+
+# A paired design with subjects missing. A subject with no value at either timepoint leaves its
+# dummy column empty, which is dropped; when it is the reference subject the intercept absorbs,
+# the other dummies sum to the intercept and the LAST dummy is dropped instead. Either way the
+# Post coefficient is estimable from the remaining subjects. A subject missing one timepoint
+# keeps full rank and costs one residual df.
+set.seed(613)
+n_feat <- 120; n_subj <- 6
+level <- sort(runif(n_feat, 13, 27))
+subj <- rnorm(n_subj, sd = 1.5)
+sd_f <- sqrt(trend_variance(level))
+expr <- cbind(
+  level + outer(rep(1, n_feat), subj) + sd_f * matrix(rnorm(n_feat * n_subj), nrow = n_feat),
+  level + outer(rep(1, n_feat), subj) + sd_f * matrix(rnorm(n_feat * n_subj), nrow = n_feat))
+moved <- seq(1, n_feat, by = 10)
+expr[moved, (n_subj + 1):(2 * n_subj)] <- expr[moved, (n_subj + 1):(2 * n_subj)] - 0.8
+expr[seq(3, n_feat, by = 9), c(1, n_subj + 1)] <- NA      # the reference subject, P1, absent
+expr[seq(5, n_feat, by = 11), c(4, n_subj + 4)] <- NA     # P4 absent
+expr[seq(7, n_feat, by = 8), 2] <- NA                     # P2 missing its Pre value only
+cases <- c(cases, encode_case(
+  "trend_paired_missing_subject_legacy",
+  "120 features, 6 subjects Pre then Post, [1, Post, subject dummies]: every 9th feature lacks the reference subject P1 at both timepoints (the last dummy is aliased), every 11th lacks P4 (its dummy is empty), every 8th lacks P2's Pre value only; Post stays estimable throughout",
+  expr, "paired", paired_design, list(subject = subject, time = time), trend = TRUE, binds = FALSE,
+  legacy = TRUE))
+
+# A within-subject trend, [1, week, subject dummies], with whole subjects missing for some features.
+set.seed(1205)
+n_feat <- 90
+weeks <- rep(c(0, 2, 4, 6, 12), 4)
+who <- rep(sprintf("S%d", 1:4), each = 5)
+level <- sort(runif(n_feat, 12, 26))
+person <- matrix(rnorm(n_feat * 4, sd = 1.2), nrow = n_feat)[, rep(1:4, each = 5)]
+expr <- level + person + sqrt(trend_variance(level)) * matrix(rnorm(n_feat * 20), nrow = n_feat)
+moved <- seq(1, n_feat, by = 9)
+expr[moved, ] <- expr[moved, ] + outer(rep(1, length(moved)), -0.06 * weeks)
+expr[seq(2, n_feat, by = 10), who == "S1"] <- NA
+expr[seq(4, n_feat, by = 13), who == "S3"] <- NA
+trend_design <- cbind(1, weeks, sapply(sprintf("S%d", 2:4), function(s) as.numeric(who == s)))
+cases <- c(cases, encode_case(
+  "trend_within_subject_missing_legacy",
+  "90 features, 4 subjects at weeks 0, 2, 4, 6, 12, [1, week, subject dummies]: every 10th feature lacks the reference subject S1 entirely, every 13th lacks S3; the slope stays estimable from the others",
+  expr, "linear_trend", trend_design, list(time = weeks, subject = who), trend = TRUE, binds = FALSE,
+  legacy = TRUE))
+
 versions <- js_obj(list(
   R = js_str(paste(R.version$major, R.version$minor, sep = ".")),
   limma = js_str(as.character(packageVersion("limma")))

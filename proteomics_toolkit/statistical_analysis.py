@@ -1298,6 +1298,39 @@ def _drop_aliased_columns(X, tested_index=1):
     return X[:, kept], kept.index(tested_index)
 
 
+def _estimable_columns(X, tol=1e-7):
+    """Indices of the design columns a least-squares fit can estimate, kept left to right.
+
+    This is how R's ``lm.fit`` (LINPACK ``dqrdc2``) decides, and so how limma's ``lmFit`` fits a
+    feature with missing values: a column whose part outside the span of the columns kept before
+    it is below ``tol`` of its own norm is aliased, dropped, and its coefficient is NA. Order
+    matters - an aliased pair loses its LATER column - which is why every design here puts the
+    intercept first and the tested coefficient second.
+
+    Args:
+        X: Design matrix restricted to one feature's observed samples.
+        tol: R's ``lm.fit`` default.
+
+    Returns:
+        List of column indices, in order.
+    """
+    kept = []
+    basis = np.empty((X.shape[0], 0))
+    for j in range(X.shape[1]):
+        column = X[:, j]
+        norm = np.linalg.norm(column)
+        if norm == 0.0:
+            continue
+        remainder = column - basis @ (basis.T @ column)
+        remainder = remainder - basis @ (basis.T @ remainder)  # once more, for orthogonality
+        size = np.linalg.norm(remainder)
+        if size <= tol * norm:
+            continue
+        kept.append(j)
+        basis = np.column_stack([basis, remainder / size])
+    return kept
+
+
 def _fit_moderated_t(feature_data, metadata_df, config):
     """Fit per-feature linear model and compute moderated t-statistics.
 
@@ -1546,7 +1579,14 @@ def _fit_moderated_t(feature_data, metadata_df, config):
     Y_all = feature_data[sample_cols]
     features = list(Y_all.index)
 
-    # Per-feature OLS loop (stays robust to NaN patterns)
+    # Per-feature OLS, fitted the way limma's lmFit fits a row with missing values: on the
+    # samples observed, with the design columns those samples can estimate. A subject with no
+    # value for a feature leaves its own column empty (or, for the subject the intercept stands
+    # for, makes the remaining subject columns sum to the intercept), so that column is dropped
+    # and the feature is fitted on the other subjects - rather than the feature being dropped,
+    # or its singular design inverted into a meaningless t. A feature whose TESTED column is
+    # aliased (an arm entirely missing) reports no contrast, but its residual variance and df
+    # are still estimates of the noise, and go to the prior and the pooled df as in limma.
     n_features = len(features)
     beta_out = np.full(n_features, np.nan)
     s2_out = np.full(n_features, np.nan)
@@ -1555,31 +1595,47 @@ def _fit_moderated_t(feature_data, metadata_df, config):
     ave_out = np.full(n_features, np.nan)
     nsamp_out = np.full(n_features, 0, dtype=int)
 
+    # Features sharing a missing-value pattern share a design; with complete data, all of them.
+    by_pattern = {}
     for i, feat in enumerate(features):
         y = Y_all.loc[feat].to_numpy(dtype=float)
         mask = np.isfinite(y)
-        if mask.sum() <= X.shape[1]:
+        if not mask.any():
             continue
         y_i = y[mask]
-        X_i = X[mask, :]
-        try:
-            XtX = X_i.T @ X_i
-            XtX_inv = np.linalg.inv(XtX)
-        except np.linalg.LinAlgError:
+        # limma's Amean: over every observed value, whether or not the feature can be fitted.
+        ave_out[i] = float(np.nanmean(y_i))
+        key = mask.tobytes()
+        if key not in by_pattern:
+            X_i = X[mask, :]
+            kept = _estimable_columns(X_i)
+            X_k = X_i[:, kept]
+            try:
+                XtX_inv = np.linalg.inv(X_k.T @ X_k)
+            except np.linalg.LinAlgError:
+                by_pattern[key] = None
+                continue
+            dropped = np.setdiff1d(np.arange(X.shape[1]), kept)
+            # The contrast is estimable only if it puts no weight on an aliased column.
+            estimable = not np.any(contrast[dropped] != 0)
+            c_k = contrast[kept]
+            v_c = float(c_k @ XtX_inv @ c_k) if estimable else np.nan
+            by_pattern[key] = (X_k, XtX_inv @ X_k.T, c_k, v_c, estimable)
+        pattern = by_pattern[key]
+        if pattern is None:
             continue
-        beta = XtX_inv @ X_i.T @ y_i
-        resid = y_i - X_i @ beta
-        d_i = len(y_i) - X.shape[1]
+        X_k, projection, c_k, v_c, estimable = pattern
+        d_i = len(y_i) - X_k.shape[1]
         if d_i <= 0:
             continue
-        s2_i = float(resid @ resid / d_i)
-        v_c_i = float(contrast @ XtX_inv @ contrast)
-        beta_out[i] = float(contrast @ beta)
-        s2_out[i] = s2_i
+        beta = projection @ y_i
+        resid = y_i - X_k @ beta
+        s2_out[i] = float(resid @ resid / d_i)
         df_out[i] = d_i
-        vc_out[i] = v_c_i
-        ave_out[i] = float(np.nanmean(y_i))
         nsamp_out[i] = len(y_i)
+        if estimable:
+            beta_out[i] = float(c_k @ beta)
+            vc_out[i] = v_c
 
     # Empirical Bayes prior (Smyth 2004)
     valid = np.isfinite(s2_out) & (s2_out > 0) & (df_out > 0)
@@ -1851,12 +1907,8 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
             s0_sq_per_feature,  # limit d0 -> inf
         )
         df_post = np.where(np.isfinite(d0_arr), df_resid + d0_arr, np.inf)
-        # limma's sum(df.residual), pooled over the features fitted here - the features the
-        # prior was estimated from. limma also fits a feature whose contrast cannot be estimated
-        # (an arm entirely missing) and puts its variance into the prior and its df into this
-        # pool. The toolkit leaves such a feature out of both, so the cap stays the information
-        # the prior actually used; counting its df alone would give limma's cap on a prior that
-        # is not limma's. See "Degrees of freedom: limma's cap" in docs/06-statistical-analysis.md.
+        # limma's sum(df.residual): every feature fitted, including one whose contrast cannot be
+        # estimated (an arm entirely missing), whose residual df still went into the prior.
         df_pooled = float(np.nansum(df_resid))
         df_total = np.where(np.isfinite(df_resid), np.minimum(df_post, df_pooled), np.nan)
         se = np.sqrt(s2_post * v_c)

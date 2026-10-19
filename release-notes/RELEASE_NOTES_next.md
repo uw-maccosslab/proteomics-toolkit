@@ -34,10 +34,22 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   when few features are tested and the prior df is large. For example, 8 features at 4 residual
   df with an infinite prior df: a t of 5.49 gave p = 4.0e-8, and gives 4.8e-6 on the capped 32
   df. On 3,000 features at 8 df the cap moves a p-value by 0.1% at t = 3 and 4.5% at t = 8.
-  Skyline-PRISM made the same fix in dotnet-v26.29.0 (maccoss/skyline-prism#137). The pool
-  counts the features the toolkit fits. A feature with an arm entirely missing has no estimable
-  contrast; the toolkit reports it as NaN and leaves it out of both the prior and the pool,
-  where limma fits it at reduced rank and puts it into both. The docs record the difference.
+  Skyline-PRISM made the same fix in dotnet-v26.29.0 (maccoss/skyline-prism#137).
+- **A paired or within-subject feature with a subject entirely missing was dropped, or given a
+  wrong result.** The per-feature fit inverted the design restricted to the observed samples,
+  and a subject with no value for a feature leaves that design singular. Usually the inverse
+  failed and the feature vanished from the results. When the missing subject was the one the
+  intercept stands for, the inverse was numerically singular instead, and the feature got a
+  meaningless answer: on a 6-subject paired test set, a protein with a real change came back
+  t = 0.03, p = 0.98, on 3 residual df where 4 was right. That bad variance also entered the
+  prior every other feature was shrunk toward. Each feature is now fitted as limma's `lmFit`
+  fits one with missing values: on its observed samples, with the design columns they can
+  estimate (left to right, as R's `lm.fit` pivots). A subject absent from a feature drops out of
+  that feature's comparison. A feature missing a whole arm reports NaN for its contrast, as
+  limma's is NA, but its residual variance and df now go into the prior and the pooled df, as in
+  limma. `AveExpr` is reported for every feature with an observed value. All of this is pinned
+  to R limma 3.66.0 (`eBayes(legacy = TRUE)`, since missing values make the residual df unequal).
+  With complete data nothing changes.
 
 ## Breaking Changes
 
@@ -67,11 +79,17 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
 
 - `TestLimmaEbayesGolden` pins the moderated t to R limma 3.66.0's own `lmFit` + `eBayes`, called
   whole: `tests/fixtures/limma_ebayes.json`, written by `tests/fixtures/generate_limma_ebayes.R`,
-  which imports nothing from the toolkit. Ten cases cover limma-trend at all three spline df
-  (2, 3, 4), finite and infinite prior df, unpaired, paired and linear-trend designs, missing
-  values (`legacy=TRUE`), and the global prior. Four of them make the df cap bind, and the rest
-  show it changes nothing when it does not. Measured agreement is 1e-11 or better; the stated
-  tolerances (1e-12 to 1e-9) are explained in the test's docstring.
+  which imports nothing from the toolkit. Fourteen cases cover limma-trend at all three spline
+  df (2, 3, 4), finite and infinite prior df, unpaired, paired, linear-trend and within-subject
+  trend designs, and the global prior. Five of the cases have missing values (`legacy=TRUE`):
+  scattered NaNs, an arm entirely missing, a paired subject missing (the reference subject and
+  another), and a within-subject trend with whole subjects missing. Five make the df cap bind,
+  and the rest show it changes nothing when it does not. Measured agreement is 1e-11 or better;
+  the stated tolerances (1e-12 to 1e-9) are explained in the test's docstring.
+- `TestMissingValuesInTheDesign` reproduces the dropped and wrong paired results directly: the
+  fold change of a feature missing one subject equals the mean within-subject difference over the
+  other subjects, on the right residual df, and a feature missing a whole arm reports no contrast
+  but contributes its residual df.
 - `TestPriorCalibrationByIntensity` reruns a seeded null with real data's variance structure
   (technical noise falling with intensity, flat biology; 6 draws of 2,000 features, unpaired 5
   vs 5) and checks calibration in each intensity fifth, which an overall 5% rate cannot see.
