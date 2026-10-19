@@ -153,10 +153,11 @@ tracks within a row.
 ## Variance-prior diagnostics
 
 Two companion plots for the
-[moderated linear model](06-statistical-analysis.md#moderated-linear-model--limma-deqms-intensity_trend-or-intensity_peptide_trend):
+[moderated linear model](06-statistical-analysis.md#moderated-linear-model):
 
-**`plot_variance_vs_intensity`** (for `moderation="intensity_trend"` or
-`"intensity_peptide_trend"`): drawn in the space the prior is actually fit
+**`plot_variance_vs_intensity`** (for `moderation="intensity_peptide_trend"`
+or the deprecated `"intensity_trend"`; the default `"limma_trend"` has no
+LOWESS to draw): drawn in the space the prior is actually fit
 in — `log(within-group variance)` against `log(group-mean intensity)`, one
 point per (feature, group) pair, with the LOWESS prior overlaid.
 
