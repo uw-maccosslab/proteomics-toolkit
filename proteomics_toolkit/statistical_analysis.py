@@ -1851,7 +1851,12 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config):
             s0_sq_per_feature,  # limit d0 -> inf
         )
         df_post = np.where(np.isfinite(d0_arr), df_resid + d0_arr, np.inf)
-        # limma's sum(df.residual, na.rm=TRUE): a feature too sparse to fit has no residual df.
+        # limma's sum(df.residual), pooled over the features fitted here - the features the
+        # prior was estimated from. limma also fits a feature whose contrast cannot be estimated
+        # (an arm entirely missing) and puts its variance into the prior and its df into this
+        # pool. The toolkit leaves such a feature out of both, so the cap stays the information
+        # the prior actually used; counting its df alone would give limma's cap on a prior that
+        # is not limma's. See "Degrees of freedom: limma's cap" in docs/06-statistical-analysis.md.
         df_pooled = float(np.nansum(df_resid))
         df_total = np.where(np.isfinite(df_resid), np.minimum(df_post, df_pooled), np.nan)
         se = np.sqrt(s2_post * v_c)
