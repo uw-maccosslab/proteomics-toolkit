@@ -1,5 +1,7 @@
 """Tests for the statistical_analysis module."""
 
+import contextlib
+import io
 import json
 import warnings
 from pathlib import Path
@@ -551,6 +553,20 @@ class TestModeratedLinearModelIntensityPeptideTrend:
         result = run_moderated_linear_model(feature_data, metadata_df, config)
         assert np.isfinite(result["intensity_s0_sq"].to_numpy(dtype=float)).all()
 
+    def test_warns_that_it_is_deprecated_and_why(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        feature_data["n_peptides"] = np.random.default_rng(6).integers(2, 30, size=len(feature_data))
+        config.moderation = "intensity_peptide_trend"
+        with pytest.warns(FutureWarning, match="intensity_peptide_trend' is deprecated") as caught:
+            run_moderated_linear_model(feature_data, metadata_df, config)
+        message = str(caught[0].message)
+        # The reason, not just the fact, and that the replacement does not use peptide counts.
+        for phrase in ("QC/reference pools", "tilted by intensity and by peptide count", "dimmest", "brightest",
+                       "does not use peptide counts"):
+            assert phrase in message
+        # One prior, one warning: not also the intensity trend's.
+        assert not any("moderation='intensity_trend'" in str(w.message) for w in caught)
+
 
 class TestModeratedLinearModelIntensityTrend:
     def test_returns_intensity_columns_and_attrs(self):
@@ -830,6 +846,155 @@ def _calibration_null(seed, n_features=2000, n_per_arm=5, n_controls=8):
     return pd.DataFrame(expr, index=features, columns=samples), metadata_df, quintile
 
 
+def _protein_calibration_null(
+    seed,
+    design="unpaired",
+    n_features=2000,
+    n_per_arm=5,
+    n_subjects=6,
+    n_controls=8,
+    count_scaling="technical",
+    correlated=False,
+    effect_fraction=0.0,
+    effect=1.0,
+):
+    """``_calibration_null`` at protein level: each protein is a rollup of ``n_peptides`` peptides.
+
+    Technical variance falls with intensity exactly as in ``_calibration_null``, and is divided by
+    the peptide count, as averaging ``n`` independent peptide errors does. It is scaled so that a
+    protein at the median count (8) carries the same technical variance as ``_calibration_null``.
+    Biology is a property of the protein, not of its peptides, so with
+    ``count_scaling="technical"`` it does not fall with the count; ``"total"`` divides it by the
+    count as well (the most favorable case for a prior whose peptide shape comes from the pools).
+    Counts are log-uniform on 1-64 (median about 8), independent of intensity unless
+    ``correlated``, which makes log count track intensity (r = 0.57, more than the 0.34 the docs
+    report for a real protein matrix).
+
+    ``design="unpaired"`` is A vs B with ``n_per_arm`` each and between-subject biology.
+    ``design="paired"`` is ``n_subjects`` people measured Pre and Post: a subject effect that the
+    model's subject block removes, plus visit-to-visit biology within a person (half the
+    between-subject variance), which no pooled injection carries. The QC and reference pools carry
+    the technical variance only. ``effect_fraction`` of the proteins get ``effect`` (log2) added in
+    B / Post, for power. Returns the LOG2 matrix [design | reference | QC], its metadata, and a
+    frame of per-protein intensity quintile ``iq``, peptide-count quintile ``nq`` (ties broken by
+    position, which is independent of everything else), ``n_peptides`` and ``truth``.
+    """
+    rng = np.random.default_rng(seed)
+    level = rng.uniform(14.0, 28.0, n_features)
+    if correlated:
+        z = (level - 21.0) / (14.0 / np.sqrt(12.0))
+        log2_n = np.clip(3.0 + z + 1.5 * rng.standard_normal(n_features), 0.0, 6.0)
+    else:
+        log2_n = rng.uniform(0.0, 6.0, n_features)
+    n_peptides = np.maximum(1, np.round(2.0**log2_n)).astype(int)
+    tech = (0.0049 + 0.25 * np.exp(-(level - 14.0) / 2.5)) * 10.0 / rng.chisquare(10, n_features) * 8.0 / n_peptides
+    bio_between = 0.09 * 10.0 / rng.chisquare(10, n_features)
+    bio_within = 0.045 * 10.0 / rng.chisquare(10, n_features)
+    if count_scaling == "total":
+        bio_between = bio_between * 8.0 / n_peptides
+        bio_within = bio_within * 8.0 / n_peptides
+
+    if design == "unpaired":
+        n_design = 2 * n_per_arm
+        block = (
+            level[:, None]
+            + np.sqrt(bio_between)[:, None] * rng.standard_normal((n_features, n_design))
+            + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_design))
+        )
+        group = ["A"] * n_per_arm + ["B"] * n_per_arm
+        subject, time = [None] * n_design, [None] * n_design
+    else:
+        n_design = 2 * n_subjects
+        person = np.sqrt(bio_between)[:, None] * rng.standard_normal((n_features, n_subjects))
+        block = (
+            level[:, None]
+            + np.hstack([person, person])
+            + np.sqrt(bio_within)[:, None] * rng.standard_normal((n_features, n_design))
+            + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_design))
+        )
+        group = [None] * n_design
+        subject = [f"P{i}" for i in range(n_subjects)] * 2
+        time = ["Pre"] * n_subjects + ["Post"] * n_subjects
+    truth = np.zeros(n_features, dtype=bool)
+    if effect_fraction > 0:
+        truth[rng.permutation(n_features)[: int(effect_fraction * n_features)]] = True
+        block[truth, n_design // 2 :] += effect
+
+    reference = level[:, None] + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_controls))
+    qc = level[:, None] - 1.0 + np.sqrt(tech)[:, None] * rng.standard_normal((n_features, n_controls))
+    expr = np.hstack([block, reference, qc])
+    samples = [f"S{j:02d}" for j in range(expr.shape[1])]
+    features = [f"F{i:04d}" for i in range(n_features)]
+    controls = [None] * (2 * n_controls)
+    metadata_df = pd.DataFrame(
+        {
+            "Sample": samples,
+            "Group": group + controls,
+            "Subject": subject + controls,
+            "Time": time + controls,
+            "Category": ["Design"] * n_design + ["Reference"] * n_controls + ["QC"] * n_controls,
+        }
+    )
+    info = pd.DataFrame(
+        {
+            "iq": np.argsort(np.argsort(level, kind="stable"), kind="stable") * 5 // n_features,
+            "nq": np.argsort(np.argsort(n_peptides, kind="stable"), kind="stable") * 5 // n_features,
+            "n_peptides": n_peptides,
+            "truth": truth,
+        },
+        index=features,
+    )
+    return pd.DataFrame(expr, index=features, columns=samples), metadata_df, info
+
+
+def _protein_null_pvalues(log_data, metadata_df, info, design, moderation, source=None):
+    """P-values (aligned to ``log_data``'s rows) and prior df for one prior on a protein-level null.
+
+    ``source`` is where an intensity prior takes its shape: ``"pools"`` (the reference and QC
+    injections, ``variance_prior_group_column``) or ``None`` (the design groups, the default).
+    """
+    config = StatisticalConfig()
+    config.moderation = moderation
+    if design == "unpaired":
+        config.analysis_type, config.group_column, config.group_labels = "unpaired", "Group", ["A", "B"]
+    else:
+        config.analysis_type = "paired"
+        config.subject_column, config.paired_column = "Subject", "Time"
+        config.paired_label1, config.paired_label2 = "Pre", "Post"
+    if source == "pools":
+        config.variance_prior_group_column = "Category"
+        config.variance_prior_groups = ["Reference", "QC"]
+    data = log_data
+    if moderation.startswith("intensity"):
+        config._raw_feature_data = 2.0**log_data
+    if moderation in ("deqms", "intensity_peptide_trend"):
+        data = log_data.assign(n_peptides=info["n_peptides"])
+    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):
+        warnings.simplefilter("ignore", FutureWarning)
+        result = run_moderated_linear_model(data, metadata_df, config).set_index("Protein").loc[log_data.index]
+    d0 = float((result["posterior_df"] - result["residual_df"]).iloc[0])
+    return result["P.Value"].to_numpy(dtype=float), d0
+
+
+def _protein_null_rates(design, moderation, source=None, draws=6, **null_options):
+    """Share of null p < 0.05 per intensity quintile and per peptide-count quintile, and the mean d0.
+
+    The measurement behind the ``intensity_peptide_trend`` deprecation; every row of the table in
+    docs/06-statistical-analysis.md ("Does the peptide-count stage fix it?") is one call.
+    """
+    hits = {"iq": np.zeros(5), "nq": np.zeros(5)}
+    totals = {"iq": np.zeros(5), "nq": np.zeros(5)}
+    d0s = []
+    for draw in range(draws):
+        log_data, metadata_df, info = _protein_calibration_null(20261018 + draw, design, **null_options)
+        p, d0 = _protein_null_pvalues(log_data, metadata_df, info, design, moderation, source)
+        d0s.append(d0)
+        for key in hits:
+            totals[key] += np.bincount(info[key], minlength=5)
+            hits[key] += np.bincount(info[key][p < 0.05], minlength=5)
+    return hits["iq"] / totals["iq"], hits["nq"] / totals["nq"], float(np.mean(d0s))
+
+
 class TestPriorCalibrationByIntensity:
     """The property the default prior was chosen for: calibrated BY INTENSITY, not just overall.
 
@@ -872,6 +1037,60 @@ class TestPriorCalibrationByIntensity:
         assert pool_rate[4] - pool_rate[0] > 0.03, (
             f"the pool-shaped trend no longer tilts ({pool_rate[0]:.3f} dimmest, {pool_rate[4]:.3f} brightest); "
             f"the reason it is deprecated needs revisiting"
+        )
+
+
+class TestIntensityPeptideTrendCalibration:
+    """Why ``intensity_peptide_trend`` is deprecated: the peptide stage does not fix the intensity tilt.
+
+    Its peptide-count stage is shaped on the same groups as its intensity stage, so it inherits the
+    intensity trend's source mismatch, and from the pools adds one by peptide count: pooled
+    technical noise averages down over a protein's peptides, the biology in a study residual does
+    not. ``_protein_calibration_null`` gives each protein a peptide count (log-uniform 1-64) and
+    divides its technical variance by it; 6 draws of 2,000 proteins give 2,400 per quintile.
+
+    The difference between two quintile rates near 5% has a binomial sd of 0.62 points at 2,400
+    each, so a 2-point bound on a tilt is more than three sd from none. Measured on these seeds
+    (docs/06-statistical-analysis.md, "Does the peptide-count stage fix it?"):
+
+    - pool-shaped, unpaired 5 vs 5: 2.8% dimmest -> 6.2% brightest, 3.0% fewest peptides -> 6.7%
+      most, with mean d0 2.1;
+    - design-group-shaped, paired, 6 subjects: 8.4% dimmest -> 2.9% brightest;
+    - limma-trend, unpaired: 4.7-5.7% in every intensity quintile, 7.8% fewest peptides -> 2.6% most.
+
+    The last is pinned so the docs' account of the replacement stays true in both directions: it is
+    calibrated by intensity on protein-level data too, and it does not use peptide counts.
+    """
+
+    @pytest.mark.slow  # ~40 s: six intensity-prior fits of 2,000 proteins (limma-trend's six: ~10 s)
+    def test_pool_shape_tilts_by_intensity_and_by_peptide_count(self):
+        by_intensity, by_count, d0 = _protein_null_rates("unpaired", "intensity_peptide_trend", source="pools")
+        assert by_intensity[4] - by_intensity[0] > 0.02, (
+            f"the pool-shaped intensity_peptide_trend no longer tilts by intensity "
+            f"({by_intensity[0]:.3f} dimmest, {by_intensity[4]:.3f} brightest); its deprecation needs revisiting"
+        )
+        assert by_count[4] - by_count[0] > 0.02, (
+            f"the pool-shaped peptide stage no longer tilts by peptide count "
+            f"({by_count[0]:.3f} fewest, {by_count[4]:.3f} most); its deprecation needs revisiting"
+        )
+        # The mismatched shape is also what costs it its prior df (limma-trend's is ~6 here).
+        assert d0 < 4.0
+
+    @pytest.mark.slow
+    def test_design_group_shape_tilts_the_other_way_in_a_paired_design(self):
+        by_intensity, _, _ = _protein_null_rates("paired", "intensity_peptide_trend")
+        assert by_intensity[0] - by_intensity[4] > 0.02, (
+            f"the design-group-shaped intensity_peptide_trend no longer tilts in a paired design "
+            f"({by_intensity[0]:.3f} dimmest, {by_intensity[4]:.3f} brightest); its deprecation needs revisiting"
+        )
+
+    @pytest.mark.slow
+    def test_limma_trend_is_calibrated_by_intensity_but_not_by_peptide_count(self):
+        by_intensity, by_count, _ = _protein_null_rates("unpaired", "limma_trend")
+        assert ((by_intensity > 0.035) & (by_intensity < 0.065)).all(), f"limma-trend by intensity: {by_intensity}"
+        assert by_count[0] - by_count[4] > 0.02, (
+            f"limma-trend no longer tilts by peptide count ({by_count[0]:.3f} fewest, {by_count[4]:.3f} most); "
+            f"the docs say it does - update them"
         )
 
 

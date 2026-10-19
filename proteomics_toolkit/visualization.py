@@ -3676,7 +3676,13 @@ def plot_variance_vs_intensity(
     results: pd.DataFrame,
     figsize: Tuple[float, float] = (13, 5.5),
 ) -> plt.Figure:
-    """Diagnostic for the ``intensity_trend`` moderation prior.
+    """Diagnostic for the ``intensity_trend`` and ``intensity_peptide_trend`` moderation priors.
+
+    Both are deprecated: they take their shape from QC/reference pools or the
+    design groups rather than from the residuals the test uses, and are tilted
+    by intensity (and, shaped on the pools, the peptide-count stage by peptide
+    count as well). The default, ``limma_trend``, has no LOWESS to draw;
+    docs/06-statistical-analysis.md shows limma's plotSA drawn by hand instead.
 
     Plotted in the space the prior is actually fit in: ``log(within-group
     variance)`` against ``log(within-group mean intensity)``, one point per
@@ -3710,8 +3716,11 @@ def plot_variance_vs_intensity(
 
     The right panel shows the residual after the intensity stage against
     peptide count when ``moderation="intensity_peptide_trend"`` was used,
-    so the value of the second stage is visible. With plain
-    ``intensity_trend`` it shows the residual distribution instead.
+    with the second stage's LOWESS. A downward trend there says the groups
+    the shape is fitted on get less noisy with more peptides; it does not say
+    the study residuals fall the same way, and with a QC/reference source they
+    fall less, because the biology they add does not average over peptides.
+    With plain ``intensity_trend`` it shows the residual distribution instead.
 
     Parameters
     ----------
@@ -3807,15 +3816,14 @@ def plot_variance_vs_intensity(
             ax2.axhline(0, color="gray", linestyle="--", linewidth=1.2)
             ax2.set_xlabel("log(peptide count)")
             ax2.set_ylabel("residual log(variance) after intensity stage")
-            ax2.set_title("Peptide-count stage\n(downward trend = real information added)")
+            ax2.set_title("Peptide-count stage\n(shaped on these groups, not on the residuals)")
             ax2.grid(True, alpha=0.3)
     else:
         ax2.hist(resid, bins=60, color="steelblue", edgecolor="black", linewidth=0.3)
         ax2.axvline(0, color="crimson", linestyle="--", linewidth=1.5)
         ax2.set_xlabel("residual log(variance) after intensity stage")
         ax2.set_ylabel("(feature, group) pairs")
-        ax2.set_title(f"Residual spread, SD = {np.nanstd(resid):.2f}\n"
-                      "(use moderation='intensity_peptide_trend' to reduce)")
+        ax2.set_title(f"Residual spread, SD = {np.nanstd(resid):.2f}")
         ax2.grid(True, alpha=0.3)
 
     return fig
