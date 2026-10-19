@@ -226,6 +226,12 @@ class StatisticalConfig:
         #                           log-variance on each feature's mean log expression,
         #                           fitted to this design's own residuals, with the prior
         #                           df estimated around it. The default from 26.9.0.
+        #   - "limma_trend_peptides" : PROTEIN LEVEL ONLY. limma-trend with log peptide count
+        #                           as a second covariate: the residual log-variance is
+        #                           fitted on a spline of AveExpr plus a spline of
+        #                           log(peptide count), so the prior follows both, all from
+        #                           this design's residuals. Requires ``peptide_count_column``
+        #                           and refuses input that is not one row per protein.
         #   - "limma"             : global prior (Smyth 2004)
         #   - "deqms"             : per-feature prior conditioned on peptide count (Zhu 2020)
         #   - "intensity_trend"   : DEPRECATED. Per-feature prior whose shape is a LOWESS
@@ -1737,7 +1743,99 @@ def _natural_spline_basis(x, df, at=None):
     return np.column_stack(columns)
 
 
-def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0):
+def _peptide_count_basis(log_counts, at=None):
+    """The peptide-count columns ``limma_trend_peptides`` adds to limma-trend's spline.
+
+    A natural cubic spline of log peptide count with one interior knot, at the median, without
+    its constant column (the intensity spline already carries one): two columns, the span of R's
+    ``splines::ns(log(n), df = 2)``. With only two distinct counts no spline can be placed, so
+    the column is log count itself - a straight line - and with one there is nothing to fit. The
+    same straight line results when more than half the features share the smallest (or largest)
+    count, because the median knot then falls on the end of the range; R's ``ns`` has no
+    equivalent there, so that case is not in the golden.
+
+    Args:
+        log_counts: Log peptide count of each feature used in the fit; the knots come from these.
+        at: Log peptide counts to evaluate the basis at. Defaults to ``log_counts``.
+
+    Returns:
+        Array of shape ``(len(at), k)``: ``k`` is 2, or 1 for the straight line.
+    """
+    log_counts = np.asarray(log_counts, dtype=float)
+    at = log_counts if at is None else np.asarray(at, dtype=float)
+    n_distinct = len(np.unique(log_counts))
+    if n_distinct < 2:
+        raise ValueError("Every feature has the same peptide count, so peptide count cannot inform the prior.")
+    return _natural_spline_basis(log_counts, min(3, n_distinct), at=at)[:, 1:]
+
+
+def _protein_level_peptide_counts(feature_data, count_col, moderation):
+    """The per-protein peptide counts ``moderation`` needs, refusing input that is not protein-level.
+
+    A prior conditioned on peptide count means something only when every row is one protein and
+    its count is the number of peptides that protein was rolled up from. A peptide has no peptide
+    count. So rather than run on anything with a count-shaped column, this refuses, saying why,
+    when:
+
+    - the count column is missing (PRISM writes ``n_peptides`` to the protein parquet only);
+    - a count is missing, not a whole number, or below 1;
+    - every row has the same count - a peptide-level table, or a column that is not a count;
+    - a feature identifier repeats - rows that are not one per protein, which is what a
+      peptide-level table looks like after each peptide has been given its protein's count.
+
+    It cannot see a peptide-level table indexed by unique peptide identifiers and given a varying
+    per-protein count by hand; nothing in such a table says which level it is.
+
+    Args:
+        feature_data: Features x samples, plus the count column; the index is the feature id.
+        count_col: Name of the peptide-count column.
+        moderation: The moderation asking, for the messages.
+
+    Returns:
+        The counts as a float Series aligned to ``feature_data``'s index.
+
+    Raises:
+        ValueError: On any of the above.
+    """
+    if count_col not in feature_data.columns:
+        raise ValueError(
+            f"moderation={moderation!r} is for protein-level data and requires a peptide-count column "
+            f"({count_col!r}) giving the number of peptides each protein was rolled up from. Supply "
+            f"protein-level data with that column (PRISM's corrected_proteins.parquet has 'n_peptides'), "
+            f"set config.peptide_count_column, or use moderation='limma_trend'."
+        )
+    counts = pd.to_numeric(feature_data[count_col], errors="coerce").astype(float)
+    values = counts.to_numpy()
+    missing = ~np.isfinite(values)
+    if missing.any():
+        raise ValueError(
+            f"moderation={moderation!r}: {int(missing.sum())} of {len(values)} features have no peptide "
+            f"count in {count_col!r}. Every protein needs the number of peptides it was rolled up from."
+        )
+    if (values < 1).any() or (values != np.round(values)).any():
+        raise ValueError(
+            f"moderation={moderation!r}: {count_col!r} must hold whole numbers of 1 or more (peptides "
+            f"per protein); it has values from {values.min():g} to {values.max():g}, including some "
+            f"that are not."
+        )
+    if len(np.unique(values)) < 2:
+        raise ValueError(
+            f"moderation={moderation!r}: every feature has {count_col}={values[0]:g}, so peptide count "
+            f"carries no information. That is what peptide-level input looks like, and this prior is "
+            f"for protein-level analysis only; use moderation='limma_trend'."
+        )
+    repeated = feature_data.index.duplicated()
+    if repeated.any():
+        raise ValueError(
+            f"moderation={moderation!r} is for protein-level data, one row per protein, but "
+            f"{int(repeated.sum())} rows repeat a feature identifier already seen (for example "
+            f"{feature_data.index[repeated][0]!r}). Peptide-level rows carrying their protein's peptide "
+            f"count look like this; use moderation='limma_trend' for peptide-level analysis."
+        )
+    return counts
+
+
+def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log_counts=None):
     """Fit limma's ``eBayes(trend=TRUE)`` prior: a scale that follows mean expression, and its df.
 
     This is limma's ``fitFDist`` with a covariate. Each feature's ``log(s^2)``, corrected for the
@@ -1759,6 +1857,15 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0):
     (:func:`_fit_limma_prior`) always has; with complete data, where every feature has the same
     df, the two are the same.
 
+    With ``log_counts`` this is ``limma_trend_peptides``: the same regression with log peptide
+    count as a second covariate beside the intensity spline (:func:`_peptide_count_basis`), so
+    the prior scale follows intensity and peptide count together and the prior df is measured
+    around both. limma's ``fitFDist`` accepts one covariate only; this is its algebra with a
+    second column block, nothing else changed. At matched intensity a protein's residual
+    variance falls with its peptide count, because measurement error averages over peptides,
+    but less than ``1/n``, because the biology it carries does not; fitting the count term to
+    the residuals is what lets the curve find that mix rather than assume it.
+
     Args:
         s2: Residual variance per feature.
         d: Residual degrees of freedom per feature.
@@ -1767,13 +1874,16 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0):
             ``winsor_sigma`` MAD-scaled deviations before the moment fit, the toolkit's own
             robust scheme (as in :func:`_fit_limma_prior`), not limma's ``fitFDistRobustly``.
         winsor_sigma: Winsorization threshold, in sigma-equivalents of the MAD.
+        log_counts: Log peptide count per feature, for ``limma_trend_peptides``; every value must
+            be finite (the caller validates protein-level counts first).
 
     Returns:
         ``(s0_sq, d0)``: the prior variance per feature, aligned to ``s2`` (NaN where the
         covariate is missing), and the prior df, which may be ``inf``.
 
     Raises:
-        ValueError: If fewer than two features have a usable variance.
+        ValueError: If fewer than two features have a usable variance, or, with ``log_counts``,
+            too few to fit both covariates.
     """
     from scipy.special import polygamma
 
@@ -1786,11 +1896,32 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0):
         raise ValueError("Not enough features with valid residual variances to fit empirical Bayes prior.")
 
     spline_df = min(1 + (n_ok >= 3) + (n_ok >= 6) + (n_ok >= 30), len(np.unique(covariate[ok])))
-    if spline_df < 2:
+    if log_counts is not None:
+        log_counts = np.asarray(log_counts, dtype=float)
+        if spline_df < 2 or n_ok <= spline_df + _peptide_count_basis(log_counts[ok]).shape[1]:
+            # limma's own fallback (the global prior) would drop the peptide counts without a word.
+            raise ValueError(
+                f"Only {n_ok} features have a usable residual variance: too few to fit a prior on "
+                f"intensity and peptide count. Use moderation='limma_trend' or 'limma'."
+            )
+
+        def design(at_covariate, at_log_counts):
+            return np.column_stack(
+                [
+                    _natural_spline_basis(covariate[ok], spline_df, at=at_covariate),
+                    _peptide_count_basis(log_counts[ok], at=at_log_counts),
+                ]
+            )
+
+    elif spline_df < 2:
         s0_sq, d0 = _fit_limma_prior(s2[ok], d[ok], robust=robust, winsor_sigma=winsor_sigma)
         return np.full(len(s2), s0_sq), d0
+    else:
 
-    basis = _natural_spline_basis(covariate[ok], spline_df)
+        def design(at_covariate, at_log_counts):
+            return _natural_spline_basis(covariate[ok], spline_df, at=at_covariate)
+
+    basis = design(covariate[ok], None if log_counts is None else log_counts[ok])
     d_ok = d[ok]
     e = np.log(s2[ok]) - polygamma(0, d_ok / 2.0) + np.log(d_ok / 2.0)
     coef, _, rank, _ = np.linalg.lstsq(basis, e, rcond=None)
@@ -1811,7 +1942,9 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0):
     # missing variance), as limma predicts the spline at those.
     e_mean = np.full(len(s2), np.nan)
     has_covariate = np.isfinite(covariate)
-    e_mean[has_covariate] = _natural_spline_basis(covariate[ok], spline_df, at=covariate[has_covariate]) @ coef
+    e_mean[has_covariate] = (
+        design(covariate[has_covariate], None if log_counts is None else log_counts[has_covariate]) @ coef
+    )
 
     if not np.isfinite(e_var) or e_var <= 0:
         return np.exp(e_mean), float(np.inf)
@@ -2252,8 +2385,9 @@ _INTENSITY_PEPTIDE_TREND_DEPRECATION = (
     "peptides and 6.7% for the most, finding 55% of true two-fold effects at 5% FDR against limma-trend's "
     "69% (unpaired 5 vs 5); with a design-group shape, 8.4% dimmest and 2.9% brightest (paired, 6 "
     "subjects). limma-trend was calibrated by intensity in every case, though it does not use peptide "
-    "counts (see docs/06-statistical-analysis.md). Use 'intensity_peptide_trend' only to reproduce an "
-    "earlier result."
+    "counts (see docs/06-statistical-analysis.md); for protein-level data, 'limma_trend_peptides' fits "
+    "intensity and peptide count to the residuals and was calibrated by both. Use "
+    "'intensity_peptide_trend' only to reproduce an earlier result."
 )
 
 
@@ -2269,6 +2403,15 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
       fitted to this design's own residuals, and the prior df is
       estimated around that curve. Works on protein- or peptide-level
       input; no extra columns needed.
+    - ``"limma_trend_peptides"`` - **protein level only.** limma-trend
+      with the protein's log peptide count as a second covariate: the
+      residual log-variance is regressed on a natural spline of
+      ``AveExpr`` and one of log peptide count, both fitted to this
+      design's residuals, and the prior df is estimated around the
+      combined curve. Reads ``config.peptide_count_column`` (default
+      ``"n_peptides"``) and refuses input that is not one row per protein
+      with a whole-number count of at least 1 (see
+      :func:`_protein_level_peptide_counts`).
     - ``"limma"`` - global prior (Smyth 2004). Works on protein- or
       peptide-level input; no extra columns needed.
     - ``"deqms"`` - per-feature prior conditioned on peptide count
@@ -2326,6 +2469,23 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     unpaired 5 vs 5), and the pool-sourced shape tilted by intensity in
     both unpaired nulls. The measurements are in
     docs/06-statistical-analysis.md, "Does the peptide-count stage fix it?".
+
+    limma-trend with peptide count (protein level only)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ``"limma_trend_peptides"`` fits peptide count to the residuals instead
+    of taking its shape from pools or groups. At matched intensity a
+    protein's residual variance falls with its peptide count - measurement
+    error averages over peptides - but less than 1/n, because biology does
+    not; regressing on both covariates lets the curve find that mix. On the
+    simulated protein-level null it was within 4.1-5.9% in every intensity
+    fifth and every peptide-count fifth, unpaired and paired, with prior df
+    10 against limma-trend's 5-6; on the serum cohort it removed
+    limma-trend's peptide-count tilt (6.9% for one-peptide proteins, 3.0%
+    for ten or more, became 4.4% and 4.2%) and found 28% of two-fold
+    spike-ins against limma-trend's 23% (unpaired 5 vs 5). It is not the
+    default: it needs a peptide count per protein, and a peptide has none.
+    The estimator is :func:`_fit_limma_trend_prior` with ``log_counts``,
+    pinned to R limma by ``tests/fixtures/limma_trend_peptides.json``.
 
     Degrees of freedom
     ~~~~~~~~~~~~~~~~~~
@@ -2451,6 +2611,8 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
 
         - limma_trend: ``limma_trend_s0_sq`` (the prior variance used, per
           feature); ``limma_s0_sq`` is then the global prior, for comparison
+        - limma_trend_peptides: ``limma_trend_peptides_s0_sq`` (the prior
+          variance used), ``peptide_count_used``
         - deqms: ``peptide_count_used``, ``deqms_s0_sq``
         - intensity_trend: ``intensity_s0_sq`` (the prior variance used),
           ``intensity_trend_shape`` (the trend before calibration),
@@ -2466,7 +2628,14 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         missing.
     """
     moderation = str(getattr(config, "moderation", "limma_trend")).lower()
-    valid_modes = {"limma", "limma_trend", "deqms", "intensity_trend", "intensity_peptide_trend"}
+    valid_modes = {
+        "limma",
+        "limma_trend",
+        "limma_trend_peptides",
+        "deqms",
+        "intensity_trend",
+        "intensity_peptide_trend",
+    }
     if moderation not in valid_modes:
         raise ValueError(f"config.moderation must be one of {sorted(valid_modes)}; got {moderation!r}.")
 
@@ -2613,6 +2782,22 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         df["limma_trend_s0_sq"] = s0_sq_per_feature
         df["limma_s0_sq"] = fit["s0_sq"]
         print(f"Done: limma_trend-mode moderated t completed for {len(df)} features; d0={d0:.3g}")
+        return df
+
+    if moderation == "limma_trend_peptides":
+        count_col = getattr(config, "peptide_count_column", "n_peptides")
+        counts = _protein_level_peptide_counts(feature_data, count_col, moderation)
+        print(f"Running moderated linear model (moderation='limma_trend_peptides', robust={bool(config.robust)})...")
+        fit = _fit_moderated_t(feature_data.drop(columns=[count_col]), metadata_df, config)
+        counts_aligned = counts.reindex(fit["features"]).to_numpy(dtype=float)
+        s0_sq_per_feature, d0 = _fit_limma_trend_prior(
+            fit["s2"], fit["df"], fit["ave_expr"], robust=bool(config.robust), log_counts=np.log(counts_aligned)
+        )
+        df = _moderated_results_df(fit, s0_sq_per_feature, d0, config)
+        df["peptide_count_used"] = counts_aligned
+        df["limma_trend_peptides_s0_sq"] = s0_sq_per_feature
+        df["limma_s0_sq"] = fit["s0_sq"]
+        print(f"Done: limma_trend_peptides-mode moderated t completed for {len(df)} features; d0={d0:.3g}")
         return df
 
     # moderation == "limma"
@@ -2987,7 +3172,7 @@ def run_comprehensive_statistical_analysis(normalized_data, sample_metadata, con
     extra_cols = []
     is_moderated = config.statistical_test_method == "moderated_linear_model"
     moderation = getattr(config, "moderation", "limma_trend")
-    if is_moderated and moderation in ("deqms", "intensity_peptide_trend"):
+    if is_moderated and moderation in ("deqms", "intensity_peptide_trend", "limma_trend_peptides"):
         count_col = getattr(config, "peptide_count_column", "n_peptides")
         if count_col in statistical_data.columns:
             extra_cols.append(count_col)

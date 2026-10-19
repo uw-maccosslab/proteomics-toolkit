@@ -14,6 +14,7 @@ from proteomics_toolkit.statistical_analysis import (
     StatisticalConfig,
     _calibrate_trend_to_design,
     _fit_limma_prior,
+    _peptide_count_basis,
     _sanitize_formula_term,
     _trigamma_inverse,
     apply_multiple_testing_correction,
@@ -810,6 +811,199 @@ class TestLimmaTrendDefault:
         assert d0(robust) > d0(plain)
 
 
+# ---------------------------------------------------------------------------
+# limma_trend_peptides: limma-trend with log peptide count as a second covariate (protein level only)
+# ---------------------------------------------------------------------------
+
+_LTP_GOLDEN = json.loads(
+    (Path(__file__).parent / "fixtures" / "limma_trend_peptides.json").read_text(encoding="utf-8")
+)
+
+
+def _run_ltp_golden_case(case):
+    expr = np.array([_floats(row) for row in case["expr"]])
+    samples = [f"S{j:02d}" for j in range(expr.shape[1])]
+    features = [f"F{i:03d}" for i in range(expr.shape[0])]
+    metadata_df = pd.DataFrame({"Sample": samples})
+    config = StatisticalConfig()
+    config.statistical_test_method = "moderated_linear_model"
+    config.moderation = "limma_trend_peptides"
+    config.analysis_type = case["analysis_type"]
+    if case["analysis_type"] == "unpaired":
+        metadata_df["Group"] = case["group"]
+        config.group_column, config.group_labels = "Group", ["A", "B"]
+    elif case["analysis_type"] == "paired":
+        metadata_df["Subject"], metadata_df["Time"] = case["subject"], case["time"]
+        config.subject_column, config.paired_column = "Subject", "Time"
+        config.paired_label1, config.paired_label2 = "Pre", "Post"
+    else:
+        metadata_df["Week"] = _floats(case["time"])
+        config.time_column = "Week"
+    feature_data = pd.DataFrame(expr, index=features, columns=samples)
+    feature_data["n_peptides"] = case["n_peptides"]
+    result = run_moderated_linear_model(feature_data, metadata_df, config)
+    return result.set_index("Protein").loc[features]
+
+
+class TestLimmaTrendPeptidesGolden:
+    """``limma_trend_peptides`` against R limma 3.66.0, built from limma's own pieces.
+
+    ``tests/fixtures/limma_trend_peptides.json`` is written by ``generate_limma_trend_peptides.R``,
+    which imports nothing from the toolkit. limma's ``fitFDist`` takes one covariate, so the
+    generator transcribes it with the design ``cbind(ns(Amean, df, intercept = TRUE),
+    ns(log(n_peptides), df = 2))`` - or ``log(n_peptides)`` when the counts take two values - and,
+    before writing each case, checks that the same transcription without the count block
+    reproduces limma's ``eBayes(trend = TRUE)`` to 1e-12. The tolerances are TestLimmaEbayesGolden's,
+    for the same reasons; the added count columns change nothing about them, since the regression
+    they enter is the same least-squares fit.
+    """
+
+    @pytest.mark.parametrize("case", _LTP_GOLDEN["cases"], ids=[c["name"] for c in _LTP_GOLDEN["cases"]])
+    def test_matches_limma(self, case):
+        result = _run_ltp_golden_case(case)
+
+        assert np.allclose(result["AveExpr"], _floats(case["amean"]), rtol=1e-12, atol=0)
+        assert np.allclose(result["residual_df"], _floats(case["df_residual"]), rtol=0, atol=0)
+        assert np.allclose(result["logFC"], _floats(case["logfc"]), rtol=1e-10, atol=1e-10)
+        assert np.allclose(result["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10)
+        assert (result["peptide_count_used"].to_numpy() == np.array(case["n_peptides"], dtype=float)).all()
+
+        expected_d0 = float(case["df_prior"])
+        d0 = (result["posterior_df"] - result["residual_df"]).to_numpy(dtype=float)
+        if np.isinf(expected_d0):
+            assert np.isinf(d0).all()
+        else:
+            assert np.allclose(d0, expected_d0, rtol=1e-9, atol=0)
+        assert np.allclose(result["limma_trend_peptides_s0_sq"], _floats(case["s2_prior"]), rtol=1e-9, atol=0)
+        assert np.allclose(result["posterior_s2"], _floats(case["s2_post"]), rtol=1e-9, atol=0)
+        assert np.allclose(result["total_df"], _floats(case["df_total"]), rtol=1e-12, atol=0)
+        assert np.allclose(result["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
+
+    def test_every_count_basis_is_reached(self):
+        """Both count blocks (a spline, and a straight line for two distinct counts) are pinned."""
+        assert {int(c["count_cols"]) for c in _LTP_GOLDEN["cases"]} == {1, 2}
+        assert {int(c["spline_df"]) for c in _LTP_GOLDEN["cases"]} == {3, 4}
+
+    def test_the_count_term_does_something_on_every_case(self):
+        """Each case's prior df differs from limma-trend's, so no case passes with the counts ignored."""
+        for case in _LTP_GOLDEN["cases"]:
+            assert float(case["df_prior"]) != float(case["df_prior_limma_trend"]), case["name"]
+
+    def test_is_not_the_default(self):
+        assert StatisticalConfig().moderation == "limma_trend"
+
+
+def _ltp_fixture(counts=None, seed=11):
+    feature_data, metadata_df, config = _make_limma_fixture(total_rows=80, seed=seed)
+    rng = np.random.default_rng(seed)
+    feature_data["n_peptides"] = rng.integers(1, 30, size=len(feature_data)) if counts is None else counts
+    config.moderation = "limma_trend_peptides"
+    return feature_data, metadata_df, config
+
+
+class TestLimmaTrendPeptidesProteinLevelOnly:
+    """A prior conditioned on peptide count is for protein-level data only, and must refuse anything else.
+
+    A peptide has no peptide count, so peptide-level input must never be run through this prior,
+    nor quietly fall back to limma-trend.
+    """
+
+    def test_runs_on_protein_level_data(self):
+        feature_data, metadata_df, config = _ltp_fixture()
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert len(result) == len(feature_data)  # the count column is not a sample
+        assert (result["test_method"] == "moderated_linear_model[limma_trend_peptides]").all()
+        assert result["limma_trend_peptides_s0_sq"].notna().all()
+        aligned = result.set_index("Protein")["peptide_count_used"]
+        assert (aligned == feature_data["n_peptides"].reindex(aligned.index)).all()
+
+    def test_refuses_without_a_peptide_count_column(self):
+        feature_data, metadata_df, config = _ltp_fixture()
+        with pytest.raises(ValueError, match="is for protein-level data and requires a peptide-count column"):
+            run_moderated_linear_model(feature_data.drop(columns=["n_peptides"]), metadata_df, config)
+
+    @pytest.mark.parametrize(
+        "bad, message",
+        [(np.nan, "have no peptide count"), (2.5, "whole numbers of 1 or more"), (0, "whole numbers of 1 or more")],
+        ids=["missing", "fractional", "zero"],
+    )
+    def test_refuses_counts_that_are_not_peptides_per_protein(self, bad, message):
+        feature_data, metadata_df, config = _ltp_fixture()
+        feature_data["n_peptides"] = feature_data["n_peptides"].astype(float)
+        feature_data.iloc[3, feature_data.columns.get_loc("n_peptides")] = bad
+        with pytest.raises(ValueError, match=message):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_refuses_counts_without_spread(self):
+        """Every row with one 'peptide' is what a peptide-level table looks like."""
+        feature_data, metadata_df, config = _ltp_fixture(counts=1)
+        with pytest.raises(ValueError, match="for protein-level analysis only"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_refuses_rows_that_are_not_one_per_protein(self):
+        """Peptide rows given their protein's count repeat the protein's identifier."""
+        feature_data, metadata_df, config = _ltp_fixture()
+        feature_data.index = [f"P{i // 4:04d}" for i in range(len(feature_data))]  # four peptides per protein
+        with pytest.raises(ValueError, match="repeat a feature identifier"):
+            run_moderated_linear_model(feature_data, metadata_df, config)
+
+    def test_dispatcher_refuses_peptide_level_rows(self):
+        """Through run_comprehensive_statistical_analysis, rows are keyed by the Protein column."""
+        feature_data, metadata_df, config = _ltp_fixture()
+        samples = list(metadata_df["Sample"])
+        proteins = [f"P{i // 4:04d}" for i in range(len(feature_data))]
+        annotation_columns = ["Protein", "Description", "Protein Gene", "UniProt_Accession", "UniProt_Entry_Name"]
+        annotations = pd.DataFrame({column: proteins for column in annotation_columns})
+        normalized_data = pd.concat(
+            [annotations, feature_data[["n_peptides"] + samples].reset_index(drop=True)], axis=1
+        )
+        sample_metadata = {row.Sample: {"Group": row.Group} for row in metadata_df.itertuples()}
+        config.statistical_test_method = "moderated_linear_model"
+        with pytest.raises(ValueError, match="repeat a feature identifier"):
+            run_comprehensive_statistical_analysis(normalized_data, sample_metadata, config)
+
+    def test_dispatcher_passes_raw_counts_on_protein_level_data(self):
+        feature_data, metadata_df, config = _ltp_fixture()
+        samples = list(metadata_df["Sample"])
+        annotation_columns = ["Protein", "Description", "Protein Gene", "UniProt_Accession", "UniProt_Entry_Name"]
+        annotations = pd.DataFrame({column: feature_data.index for column in annotation_columns})
+        normalized_data = pd.concat(
+            [annotations, feature_data[["n_peptides"] + samples].reset_index(drop=True)], axis=1
+        )
+        sample_metadata = {row.Sample: {"Group": row.Group} for row in metadata_df.itertuples()}
+        config.statistical_test_method = "moderated_linear_model"
+        result = run_comprehensive_statistical_analysis(normalized_data, sample_metadata, config).set_index("Protein")
+        # The counts reach the prior as counts, not log-transformed with the intensities.
+        assert (result["peptide_count_used"] == feature_data["n_peptides"].reindex(result.index)).all()
+
+    def test_refuses_too_few_proteins_rather_than_dropping_the_counts(self):
+        """limma falls back to a global prior on very few features; that would ignore the counts silently."""
+        feature_data, metadata_df, config = _ltp_fixture()
+        with pytest.raises(ValueError, match="too few to fit a prior on intensity and peptide count"):
+            run_moderated_linear_model(feature_data.iloc[:3], metadata_df, config)
+
+    def test_a_median_count_on_the_boundary_falls_back_to_a_straight_line(self):
+        """With more than half the proteins at one peptide the median knot sits on the boundary."""
+        rng = np.random.default_rng(4)
+        counts = np.where(rng.random(80) < 0.6, 1, rng.integers(2, 30, size=80))
+        feature_data, metadata_df, config = _ltp_fixture(counts=counts)
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert np.isfinite(result["limma_trend_peptides_s0_sq"]).all()
+        assert _peptide_count_basis(np.log(counts.astype(float))).shape[1] == 1
+
+    def test_robust_downweights_an_outlying_variance(self):
+        feature_data, metadata_df, config = _ltp_fixture()
+        samples = [c for c in feature_data.columns if c != "n_peptides"]
+        feature_data.loc[feature_data.index[40:44], samples] += np.random.default_rng(9).normal(
+            0, 8, size=(4, len(samples))
+        )
+        plain = run_moderated_linear_model(feature_data, metadata_df, config)
+        config.robust = True
+        robust = run_moderated_linear_model(feature_data, metadata_df, config)
+        d0 = lambda r: float((r["posterior_df"] - r["residual_df"]).iloc[0])  # noqa: E731
+        assert d0(robust) > d0(plain)
+
+
 def _calibration_null(seed, n_features=2000, n_per_arm=5, n_controls=8):
     """A null with the variance structure real data has, as Skyline-PRISM's PriorCalibrationTests.
 
@@ -967,7 +1161,7 @@ def _protein_null_pvalues(log_data, metadata_df, info, design, moderation, sourc
     data = log_data
     if moderation.startswith("intensity"):
         config._raw_feature_data = 2.0**log_data
-    if moderation in ("deqms", "intensity_peptide_trend"):
+    if moderation in ("deqms", "intensity_peptide_trend", "limma_trend_peptides"):
         data = log_data.assign(n_peptides=info["n_peptides"])
     with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):
         warnings.simplefilter("ignore", FutureWarning)
@@ -1092,6 +1286,30 @@ class TestIntensityPeptideTrendCalibration:
             f"limma-trend no longer tilts by peptide count ({by_count[0]:.3f} fewest, {by_count[4]:.3f} most); "
             f"the docs say it does - update them"
         )
+
+
+class TestLimmaTrendPeptidesCalibration:
+    """What ``limma_trend_peptides`` is for: calibrated by intensity AND by peptide count.
+
+    On the same protein-level null that shows limma-trend tilting by peptide count (7.8% of null
+    p < 0.05 for the fewest-peptide fifth, 2.6% for the most, unpaired), fitting log peptide count
+    to the residuals beside the intensity spline leaves every intensity fifth and every
+    peptide-count fifth within 3.5-6.5% - the bound TestPriorCalibrationByIntensity holds
+    limma-trend to by intensity, more than three binomial sd (0.44 points at 2,400 per fifth) on
+    each side of 5%. Measured on these seeds: unpaired 4.4-5.9% by intensity, 4.3-5.5% by count,
+    prior df 10.0 against limma-trend's 6.3; paired 4.1-5.8% and 4.4-5.3%, prior df 10.3 against
+    5.1.
+    """
+
+    @pytest.mark.slow  # ~3 s each: twelve fits of 2,000 proteins
+    @pytest.mark.parametrize("design", ["unpaired", "paired"])
+    def test_calibrated_by_intensity_and_by_peptide_count(self, design):
+        by_intensity, by_count, d0 = _protein_null_rates(design, "limma_trend_peptides")
+        assert ((by_intensity > 0.035) & (by_intensity < 0.065)).all(), f"by intensity: {by_intensity}"
+        assert ((by_count > 0.035) & (by_count < 0.065)).all(), f"by peptide count: {by_count}"
+        # The count term takes up real spread, so the prior is trusted more than limma-trend's.
+        _, _, d0_limma_trend = _protein_null_rates(design, "limma_trend")
+        assert d0 > d0_limma_trend
 
 
 def _make_confounded_fixture(

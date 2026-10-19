@@ -44,7 +44,7 @@ protein_data, peptide_data, metadata, sample_cols = ptk.datasets.load_example_da
 | Sample metadata | [03-metadata.md](03-metadata.md) | Building the sample-metadata dict, classifying study vs control |
 | QC plots | [04-qc-plots.md](04-qc-plots.md) | Box plots, PCA, correlation heatmaps, missing-value maps, identification counts |
 | Normalization | [05-normalization.md](05-normalization.md) | Median / VSN / quantile / MAD / z-score / RLR / LOESS |
-| Statistical analysis | [06-statistical-analysis.md](06-statistical-analysis.md) | Paired/unpaired t-test, Wilcoxon, mixed-effects, linear trend, moderated linear model (limma_trend by default; limma / deqms; deprecated intensity_peptide_trend / intensity_trend), full `StatisticalConfig` reference |
+| Statistical analysis | [06-statistical-analysis.md](06-statistical-analysis.md) | Paired/unpaired t-test, Wilcoxon, mixed-effects, linear trend, moderated linear model (limma_trend by default; limma_trend_peptides at protein level; limma / deqms; deprecated intensity_peptide_trend / intensity_trend), full `StatisticalConfig` reference |
 | Results visualization | [07-visualization.md](07-visualization.md) | Volcano, summary tables, grouped heatmaps |
 | Gene set enrichment | [08-enrichment.md](08-enrichment.md) | Enrichr API via `run_differential_enrichment`; column reference |
 | Binary classification | [09-classification.md](09-classification.md) | Per-subject fold-changes, PCA, LOO/k-fold CV, ROC comparison |
