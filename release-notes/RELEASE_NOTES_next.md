@@ -25,6 +25,8 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   always gets limma-trend. Skyline-PRISM chooses from the level it analyzes, so on the same PRISM
   output both tools pick the same prior. The run prints which prior it chose, and `test_method`
   records it. A count column that does not look protein-level stops the run rather than fall back.
+  With too few proteins to fit both covariates, the default uses limma-trend and prints that it
+  did, as Skyline-PRISM does; named outright, the new prior refuses.
 - **`moderation="limma-trend-intensity-n-peptides"`, for protein-level analysis only.** limma-trend
   with the protein's log peptide count as a second covariate: the residual log-variance is
   regressed on limma-trend's spline of `AveExpr` plus a natural spline of log peptide count, both
@@ -151,7 +153,7 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   that both peptide-count priors refuse peptide-level input: no count column, missing, fractional
   or zero counts, counts without spread, and rows that repeat a feature identifier, directly and
   through the dispatcher; and that the new prior refuses too few proteins rather than dropping the
-  counts.
+  counts, while the default on the same few proteins uses limma-trend and says so.
 - `TestTrendCalibration` checks limma-trend's overall null rate on its unpaired and paired
   simulations, beside the intensity trend's.
 - New tests for both deprecation warnings and their reasons, the warning for an ignored

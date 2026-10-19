@@ -186,7 +186,9 @@ intensity only ([why](#limma-trend-with-peptide-count-protein-level-only)).
 Skyline-PRISM chooses the same way from the level it analyzes, so on the same
 PRISM output both tools run the same prior. A count column that does not look
 protein-level stops the run rather than fall back; set
-`moderation='limma-trend'` to run without the counts.
+`moderation='limma-trend'` to run without the counts. With too few proteins to
+fit both covariates (a handful), the default uses limma-trend and prints that it
+did, as Skyline-PRISM does; the prior named outright refuses instead.
 
 **On the shape of the intensity prior.** `intensity-trend` makes *no*
 counting-noise assumption. MS intensities are ion rates, not ion counts, so
@@ -638,8 +640,9 @@ the number of peptides it was rolled up from. It stops when:
   `run_comprehensive_statistical_analysis` the identifier is the `Protein`
   column).
 
-It never falls back to limma-trend quietly, including when there are too few
-proteins to fit both covariates. One mistake it cannot see is a peptide-level
+Named, it also refuses when too few proteins have a usable residual variance to
+fit both covariates. Only the default, chosen by level, then uses limma-trend,
+and it prints that it did; it never falls back quietly. One mistake it cannot see is a peptide-level
 table indexed by unique peptide identifiers and given a varying per-protein
 count by hand; nothing in such a table says which level it is. `peptide-count`, the
 other prior that uses peptide count, applies the same checks.

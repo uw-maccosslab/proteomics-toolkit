@@ -1841,6 +1841,35 @@ def _protein_level_peptide_counts(feature_data, count_col, moderation):
     return counts
 
 
+def _usable_for_prior(s2, d, covariate):
+    """The features a limma-trend prior is fitted on: a positive, finite variance, df and covariate."""
+    s2 = np.asarray(s2, dtype=float)
+    d = np.asarray(d, dtype=float)
+    covariate = np.asarray(covariate, dtype=float)
+    return np.isfinite(s2) & (s2 > 0) & np.isfinite(d) & (d > 0) & np.isfinite(covariate)
+
+
+def _can_fit_intensity_and_counts(s2, d, covariate, log_counts):
+    """Whether these features can fit ``limma-trend-intensity-n-peptides``.
+
+    That needs an intensity spline of at least two columns, a peptide count that varies, and more
+    usable features than the two blocks have columns, so the spread around the curve - which sets
+    the prior df - has a degree of freedom to be measured on. :func:`_fit_limma_trend_prior`
+    refuses a fit that fails this; the default prior, chosen by level, uses limma-trend instead
+    and says so. Skyline-PRISM's ``EmpiricalBayes.CanFitIntensityAndCounts`` is the same rule.
+    """
+    ok = _usable_for_prior(s2, d, covariate)
+    n_ok = int(ok.sum())
+    if n_ok < 2:
+        return False
+    covariate = np.asarray(covariate, dtype=float)[ok]
+    log_counts = np.asarray(log_counts, dtype=float)[ok]
+    spline_df = min(1 + (n_ok >= 3) + (n_ok >= 6) + (n_ok >= 30), len(np.unique(covariate)))
+    if spline_df < 2 or len(np.unique(log_counts)) < 2:
+        return False
+    return n_ok > spline_df + _peptide_count_basis(log_counts).shape[1]
+
+
 def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log_counts=None):
     """Fit limma's ``eBayes(trend=TRUE)`` prior: a scale that follows mean expression, and its df.
 
@@ -1896,7 +1925,7 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log
     s2 = np.asarray(s2, dtype=float)
     d = np.asarray(d, dtype=float)
     covariate = np.asarray(covariate, dtype=float)
-    ok = np.isfinite(s2) & (s2 > 0) & np.isfinite(d) & (d > 0) & np.isfinite(covariate)
+    ok = _usable_for_prior(s2, d, covariate)
     n_ok = int(ok.sum())
     if n_ok < 2:
         raise ValueError("Not enough features with valid residual variances to fit empirical Bayes prior.")
@@ -1904,7 +1933,7 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log
     spline_df = min(1 + (n_ok >= 3) + (n_ok >= 6) + (n_ok >= 30), len(np.unique(covariate[ok])))
     if log_counts is not None:
         log_counts = np.asarray(log_counts, dtype=float)
-        if spline_df < 2 or n_ok <= spline_df + _peptide_count_basis(log_counts[ok]).shape[1]:
+        if not _can_fit_intensity_and_counts(s2, d, covariate, log_counts):
             # limma's own fallback (the global prior) would drop the peptide counts without a word.
             raise ValueError(
                 f"Only {n_ok} features have a usable residual variance: too few to fit a prior on "
@@ -2406,6 +2435,8 @@ def _moderation_for(config, feature_data):
     protein parquet only - and ``"limma-trend"`` otherwise. A peptide has no peptide count, so
     peptide-level data always gets limma-trend. With a count column that does not look
     protein-level, the run stops rather than choose (see :func:`_protein_level_peptide_counts`).
+    With too few proteins to fit both covariates, the default uses limma-trend and prints that
+    it did (:func:`_can_fit_intensity_and_counts`); the prior named outright refuses instead.
 
     Raises:
         ValueError: If the config names a moderation that does not exist.
@@ -2865,6 +2896,25 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
         )
         fit = _fit_moderated_t(feature_data.drop(columns=[count_col]), metadata_df, config)
         counts_aligned = counts.reindex(fit["features"]).to_numpy(dtype=float)
+        if getattr(config, "moderation", None) is None and not _can_fit_intensity_and_counts(
+            fit["s2"], fit["df"], fit["ave_expr"], np.log(counts_aligned)
+        ):
+            # Named, this prior refuses too few proteins (_fit_limma_trend_prior raises). As the
+            # DEFAULT it must still run, so a handful of proteins gets limma-trend instead - said
+            # here, so it is not a silent substitution. Skyline-PRISM does the same.
+            n_ok = int(_usable_for_prior(fit["s2"], fit["df"], fit["ave_expr"]).sum())
+            print(
+                f"  Only {n_ok} proteins have a usable residual variance: too few to fit the default "
+                f"limma-trend-intensity-n-peptides prior, so the default used limma-trend."
+            )
+            s0_sq_per_feature, d0 = _fit_limma_trend_prior(
+                fit["s2"], fit["df"], fit["ave_expr"], robust=bool(config.robust)
+            )
+            df = _moderated_results_df(fit, s0_sq_per_feature, d0, config, "limma-trend")
+            df["limma_trend_s0_sq"] = s0_sq_per_feature
+            df["limma_s0_sq"] = fit["s0_sq"]
+            print(f"Done: limma-trend moderated t completed for {len(df)} features; d0={d0:.3g}")
+            return df
         s0_sq_per_feature, d0 = _fit_limma_trend_prior(
             fit["s2"], fit["df"], fit["ave_expr"], robust=bool(config.robust), log_counts=np.log(counts_aligned)
         )

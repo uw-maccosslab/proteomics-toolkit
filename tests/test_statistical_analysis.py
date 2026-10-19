@@ -952,6 +952,26 @@ class TestModerationNamesAndDefault:
         with pytest.raises(ValueError, match="for protein-level analysis only"):
             run_moderated_linear_model(feature_data, metadata_df, config)
 
+    def test_default_on_too_few_proteins_uses_limma_trend_and_says_so(self, capsys):
+        """The default must still run, so it uses limma-trend and prints why; named, the prior refuses.
+
+        Skyline-PRISM's ``TheDefaultOnTooFewProteinsUsesLimmaTrendAndSaysSo_WhileTheNamedPriorRefuses``
+        pins the same behavior, with the same message.
+        """
+        feature_data, metadata_df, config = _ltp_fixture()
+        few = feature_data.iloc[:4]  # a two-column intensity spline and a two-column count spline: 4 > 4 fails
+        config.moderation = None
+        result = run_moderated_linear_model(few, metadata_df, config)
+        assert (result["test_method"] == "moderated_linear_model[limma-trend]").all()
+        assert result["limma_trend_s0_sq"].notna().all()
+        assert (
+            "Only 4 proteins have a usable residual variance: too few to fit the default "
+            "limma-trend-intensity-n-peptides prior, so the default used limma-trend."
+        ) in capsys.readouterr().out
+        config.moderation = "limma-trend-intensity-n-peptides"
+        with pytest.raises(ValueError, match="too few to fit a prior on intensity and peptide count"):
+            run_moderated_linear_model(few, metadata_df, config)
+
     def test_dispatcher_default_uses_the_counts(self):
         feature_data, metadata_df, config = _ltp_fixture()
         samples = list(metadata_df["Sample"])
