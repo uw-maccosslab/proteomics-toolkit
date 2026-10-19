@@ -705,6 +705,20 @@ the cap moves a p-value by 0.1% at t = 3 and 4.5% at t = 8. `posterior_df`
 keeps the uncapped value (it is the posterior variance's df), and `total_df`
 is the one the p-value used.
 
+**Features whose contrast cannot be estimated** - an arm entirely missing, so
+the design restricted to that feature's observed samples cannot separate the
+groups - are where the toolkit and limma part. The toolkit leaves such a
+feature out of the fit: its row reports NaN, and it contributes nothing to
+the prior or to the pool, so the cap is the residual df the prior was
+actually estimated from. limma fits it anyway, at its reduced rank, and puts
+its variance into the prior as well as its df into the pool. So the two
+differ in the prior, not only in the cap, and no choice of cap alone
+reproduces limma there. Measured with limma 3.66.0 on 8 complete features
+(3 vs 3) plus 8 observed only in arm B: limma pools 48 df rather than 32, but
+its prior variance also moves from 0.181 to 0.173, and the first feature's t
+from -1.007 to -1.030. With every arm observed for every feature - the normal
+case for Skyline data - the two are the same.
+
 ### Where the intensity prior's level and weight come from
 
 This describes the deprecated `intensity_trend` (and the deprecated `intensity_peptide_trend`).

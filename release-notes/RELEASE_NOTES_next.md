@@ -56,7 +56,10 @@ Skyline-PRISM dotnet-v26.29.0, so the two tools agree on default runs again.
   when few features are tested and the prior df is large. For example, 8 features at 4 residual
   df with an infinite prior df: a t of 5.49 gave p = 4.0e-8, and gives 4.8e-6 on the capped 32
   df. On 3,000 features at 8 df the cap moves a p-value by 0.1% at t = 3 and 4.5% at t = 8.
-  Skyline-PRISM made the same fix in dotnet-v26.29.0 (maccoss/skyline-prism#137).
+  Skyline-PRISM made the same fix in dotnet-v26.29.0 (maccoss/skyline-prism#137). The pool
+  counts the features the toolkit fits. A feature with an arm entirely missing has no estimable
+  contrast; the toolkit reports it as NaN and leaves it out of both the prior and the pool,
+  where limma fits it at reduced rank and puts it into both. The docs record the difference.
 
 ## Breaking Changes
 
