@@ -737,6 +737,14 @@ right, as R's `lm.fit` does) and dropping the rest.
   and `P.Value` are NaN, as limma's are NA. Its residual variance is still an
   estimate of the noise, so it goes into the prior, and its residual df into
   the pool behind the df cap - as in limma.
+- **An interaction feature with an empty cell** - no Control/Post value, say -
+  cannot estimate the difference of differences either, and is reported the
+  same way. On its samples the interaction column equals the visit column, so
+  keeping columns left to right alone would report Treatment's Post - Pre
+  change as the interaction; each feature's tested column is therefore also
+  checked against the span of the other columns on its observed samples.
+  limma reports NA there with `model.matrix(~ group * visit)`, which puts the
+  interaction last.
 
 Before 26.9.0 a feature whose observed design was singular was dropped from
 the results, and when the subject missing was the one the intercept stands

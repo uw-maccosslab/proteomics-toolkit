@@ -873,7 +873,7 @@ class TestMissingValuesInTheDesign:
 
     def test_a_feature_missing_an_arm_reports_no_contrast_but_informs_the_prior(self):
         feature_data, metadata_df, config = _make_limma_fixture()
-        config.moderation = "limma"
+        config.moderation = "global"
         feature_data.iloc[20:30, :6] = np.nan  # arm A (Control) entirely missing
         result = run_moderated_linear_model(feature_data, metadata_df, config).set_index("Protein")
 
@@ -883,6 +883,26 @@ class TestMissingValuesInTheDesign:
         # which count toward the pool exactly as the complete features' 10 do.
         assert (missing_arm["residual_df"] == 5).all()
         assert result["total_df"].dropna().le(50 * 10 + 10 * 5).all()
+
+    def test_an_interaction_with_an_empty_cell_reports_no_contrast(self):
+        """With no Control/Post value the interaction column equals the visit column on the samples
+        observed, so the difference of differences cannot be estimated. Keeping the interaction
+        column and dropping the visit one instead would report Treatment's Post - Pre change - a
+        pure visit effect - as the interaction. limma, with the interaction last as
+        ``model.matrix(~ group * visit)`` puts it, reports NA there; so does the toolkit."""
+        log_data, metadata_df, config = _make_interaction_fixture()
+        cell = metadata_df.set_index("Sample").loc[log_data.columns]
+        control_post = ((cell["Group"] == "Control") & (cell["Visit"] == "Post")).to_numpy()
+        main_only = [f"P{i:04d}" for i in range(10, 15)]  # 2.0 x Treatment + 1.5 x Post, no interaction
+        log_data.loc[main_only, control_post] = np.nan
+        result = run_moderated_linear_model(log_data, metadata_df, config).set_index("Protein")
+
+        assert result.loc[main_only, ["logFC", "t", "P.Value"]].isna().all().all()
+        # Their residual variance still informs the prior: three cells observed, one parameter each.
+        observed = int((~control_post).sum())
+        assert (result.loc[main_only, "residual_df"] == observed - 3).all()
+        complete = result.drop(index=main_only)
+        assert complete["logFC"].notna().all()
 
 
 class TestLimmaTrendDefault:

@@ -75,9 +75,14 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   estimate (left to right, as R's `lm.fit` pivots). A subject absent from a feature drops out of
   that feature's comparison. A feature missing a whole arm reports NaN for its contrast, as
   limma's is NA, but its residual variance and df now go into the prior and the pooled df, as in
-  limma. `AveExpr` is reported for every feature with an observed value. All of this is pinned
-  to R limma 3.66.0 (`eBayes(legacy = TRUE)`, since missing values make the residual df unequal).
-  With complete data nothing changes.
+  limma. So does an interaction feature with an empty cell (no Control/Post value, say), whose
+  difference of differences cannot be estimated: keeping design columns left to right alone would
+  have reported Treatment's Post - Pre change as the interaction, so each feature's tested column
+  is also checked against the span of the others on its observed samples. `AveExpr` is reported
+  for every feature with an observed value. All of this is pinned to R limma 3.66.0
+  (`eBayes(legacy = TRUE)`, since missing values make the residual df unequal). With complete
+  data nothing changes: the fit is bit-identical, and features are fitted one missing-value
+  pattern at a time, so no more than one pattern's design is held in memory.
 
 ## Breaking Changes
 
@@ -140,8 +145,8 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   the stated tolerances (1e-12 to 1e-9) are explained in the test's docstring.
 - `TestMissingValuesInTheDesign` reproduces the dropped and wrong paired results directly: the
   fold change of a feature missing one subject equals the mean within-subject difference over the
-  other subjects, on the right residual df, and a feature missing a whole arm reports no contrast
-  but contributes its residual df.
+  other subjects, on the right residual df; a feature missing a whole arm, and an interaction
+  feature with an empty cell, report no contrast but contribute their residual df.
 - `TestLimmaTrendIntensityNPeptidesGolden` pins `limma-trend-intensity-n-peptides` to R limma
   3.66.0: `tests/fixtures/limma_trend_intensity_n_peptides.json`, written by
   `tests/fixtures/generate_limma_trend_intensity_n_peptides.R`. limma's `fitFDist` takes one
