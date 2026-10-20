@@ -1269,7 +1269,7 @@ wheels = [
 
 [[package]]
 name = "proteomics-toolkit"
-version = "26.8.0"
+version = "26.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
