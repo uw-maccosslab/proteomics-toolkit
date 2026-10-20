@@ -114,18 +114,26 @@ def _apply_log_transformation_if_needed(data, config):
     transformed_data = data.copy()
     sample_data_subset = transformed_data[numeric_columns]
 
-    # Handle negative values if any exist
-    if (sample_data_subset < 0).any().any():
-        print("  -> Handling negative values...")
-        min_val = sample_data_subset.min().min()
-        shift_amount = abs(min_val) + 1
-        transformed_data[numeric_columns] = transformed_data[numeric_columns] + shift_amount
-        print(f"     Shifted all values by +{shift_amount:.2f}")
-
-    # Determine pseudocount
     if config.log_pseudocount is None:
-        pseudocount = max(1e-6, sample_data_subset.min().min() / 100) if sample_data_subset.min().min() > 0 else 0.1
+        # The default, as Skyline-PRISM logs its LINEAR parquet: a value of 0 or less has no
+        # logarithm, and is a missing value, not a small one, so it becomes NaN and nothing is
+        # added to the rest. Every test here handles a missing value (the moderated model fits a
+        # feature on its observed samples, as limma's lmFit does). Before 26.9.0 the default added
+        # min / 100 to every value, and shifted everything up if any value was negative; on a
+        # 3,595-protein cohort that moved low-abundance log ratios by up to 1.4e-3 against PRISM.
+        not_positive = int((sample_data_subset <= 0).sum().sum())
+        if not_positive:
+            print(f"  -> {not_positive} value(s) of 0 or less have no logarithm: treated as missing")
+        transformed_data[numeric_columns] = sample_data_subset.where(sample_data_subset > 0)
+        pseudocount = 0.0
     else:
+        # An explicit pseudocount keeps the earlier behavior, so a result that set one reproduces.
+        if (sample_data_subset < 0).any().any():
+            print("  -> Handling negative values...")
+            min_val = sample_data_subset.min().min()
+            shift_amount = abs(min_val) + 1
+            transformed_data[numeric_columns] = transformed_data[numeric_columns] + shift_amount
+            print(f"     Shifted all values by +{shift_amount:.2f}")
         pseudocount = config.log_pseudocount
 
     # Apply appropriate log transformation
@@ -210,7 +218,7 @@ class StatisticalConfig:
         # Log transformation parameters
         self.log_transform_before_stats = "auto"  # "auto", True, False
         self.log_base = "log2"  # "log2", "log10", "ln"
-        self.log_pseudocount = None  # None for auto, or specific value
+        self.log_pseudocount = None  # None: values <= 0 become missing, nothing added (as PRISM); or a number to add
 
         # Normalization method (used for auto log transformation)
         self.normalization_method = None  # Set this to the normalization method used
@@ -1670,8 +1678,9 @@ def _fit_moderated_t(feature_data, metadata_df, config):
                 beta_out[i] = float(c_k @ beta)
                 vc_out[i] = v_c
 
-    # Empirical Bayes prior (Smyth 2004)
-    valid = np.isfinite(s2_out) & (s2_out > 0) & (df_out > 0)
+    # Empirical Bayes prior (Smyth 2004). As in limma's fitFDist, a zero variance is usable (it is
+    # floored, not dropped); only a missing or negative one is not.
+    valid = np.isfinite(s2_out) & (s2_out > -1e-15) & (df_out > 0)
     if valid.sum() < 2:
         raise ValueError("Not enough features with valid residual variances to fit empirical Bayes prior.")
 
@@ -1692,20 +1701,51 @@ def _fit_moderated_t(feature_data, metadata_df, config):
     }
 
 
+def _limma_variance_floor(s2):
+    """Residual variances floored away from zero exactly as limma's ``fitFDist`` floors them.
+
+    A residual variance of exactly zero (replicates that agree to the last digit) has no
+    logarithm, so the moment fit cannot use it as it is. limma neither drops it nor fails: it
+    clips negatives to zero, takes the median, warns, and raises everything below ``1e-5`` x the
+    median to that value (with a median of zero it warns that more than half are zero and floors
+    at ``1e-5``). Skyline-PRISM's ``EmpiricalBayes`` does the same, with the same warnings, so
+    the three agree on data with zero variances. Only the prior FIT sees the floored values; the
+    posterior combines the prior with each feature's own variance, as limma's ``squeezeVar`` does.
+
+    Args:
+        s2: Residual variances already restricted to the usable ones (finite, ``> -1e-15``).
+
+    Returns:
+        The floored variances.
+    """
+    x = np.maximum(np.asarray(s2, dtype=float), 0.0)
+    median = float(np.median(x))
+    if median == 0.0:
+        warnings.warn(
+            "More than half of residual variances are exactly zero: eBayes unreliable", UserWarning, stacklevel=3
+        )
+        median = 1.0
+    elif np.any(x == 0.0):
+        warnings.warn("Zero sample variances detected, have been offset away from zero", UserWarning, stacklevel=3)
+    return np.maximum(x, 1e-5 * median)
+
+
 def _fit_limma_prior(s2_valid, d_valid, robust=False, winsor_sigma=4.0):
     """Fit Smyth's (s0^2, d0) hyperparameters from residual variances.
 
-    Implements Smyth (2004) method-of-moments on ``log(s^2)``. When
+    Implements Smyth (2004) method-of-moments on ``log(s^2)``, after flooring zero variances as
+    limma's ``fitFDist`` does (:func:`_limma_variance_floor`). When
     ``robust=True``, Winsorizes the centred z-statistic at ``±winsor_sigma``
     standard deviations before the moment fit so a handful of extreme
     features don't inflate the prior. Matches the intent (but not the
     precise Fisher-scoring algorithm) of limma's ``robust=TRUE``.
 
-    Returns a ``(s0_sq, d0)`` tuple. Returns ``(mean(s^2), inf)`` when no
-    excess variance is detected.
+    Returns a ``(s0_sq, d0)`` tuple. Returns ``(mean(s^2), inf)`` - the mean of the floored
+    variances, as limma's - when no excess variance is detected.
     """
     from scipy.special import polygamma
 
+    s2_valid = _limma_variance_floor(s2_valid)
     log_s2 = np.log(s2_valid)
     d = np.asarray(d_valid, dtype=float)
     z = log_s2 - polygamma(0, d / 2.0) + np.log(d / 2.0)
@@ -1779,7 +1819,7 @@ def _calibrate_trend_to_design(fit, trend_shape, robust=False):
     s2 = np.asarray(fit["s2"], dtype=float)
     d = np.asarray(fit["df"], dtype=float)
     shape = np.asarray(trend_shape, dtype=float)
-    ok = np.isfinite(s2) & (s2 > 0) & np.isfinite(d) & (d > 0) & np.isfinite(shape) & (shape > 0)
+    ok = np.isfinite(s2) & (s2 > -1e-15) & np.isfinite(d) & (d > 0) & np.isfinite(shape) & (shape > 0)
     if ok.sum() < 2:
         raise ValueError("Not enough features with a valid residual variance and trend value to calibrate the prior.")
     return _fit_limma_prior(s2[ok] / shape[ok], d[ok], robust=robust)
@@ -1918,11 +1958,15 @@ def _protein_level_peptide_counts(feature_data, count_col, moderation):
 
 
 def _usable_for_prior(s2, d, covariate):
-    """The features a limma-trend prior is fitted on: a positive, finite variance, df and covariate."""
+    """The features a limma-trend prior is fitted on: a finite variance, df and covariate.
+
+    A variance of exactly zero counts, as in limma's ``fitFDist`` (``x > -1e-15``), and is floored
+    by :func:`_limma_variance_floor`; Skyline-PRISM's ``EmpiricalBayes`` uses the same rule.
+    """
     s2 = np.asarray(s2, dtype=float)
     d = np.asarray(d, dtype=float)
     covariate = np.asarray(covariate, dtype=float)
-    return np.isfinite(s2) & (s2 > 0) & np.isfinite(d) & (d > 0) & np.isfinite(covariate)
+    return np.isfinite(s2) & (s2 > -1e-15) & np.isfinite(d) & (d > 0) & np.isfinite(covariate)
 
 
 def _can_fit_intensity_and_counts(s2, d, covariate, log_counts):
@@ -2034,7 +2078,7 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log
 
     basis = design(covariate[ok], None if log_counts is None else log_counts[ok])
     d_ok = d[ok]
-    e = np.log(s2[ok]) - polygamma(0, d_ok / 2.0) + np.log(d_ok / 2.0)
+    e = np.log(_limma_variance_floor(s2[ok])) - polygamma(0, d_ok / 2.0) + np.log(d_ok / 2.0)
     coef, _, rank, _ = np.linalg.lstsq(basis, e, rcond=None)
     if robust:
         fitted = basis @ coef
@@ -2049,8 +2093,8 @@ def _fit_limma_trend_prior(s2, d, covariate, robust=False, winsor_sigma=4.0, log
     # lm.fit's mean(effects[-(1:rank)]^2): the residual mean square on n - rank df.
     e_var = float(resid @ resid / (n_ok - rank) - np.mean(polygamma(1, d_ok / 2.0)))
 
-    # The curve at every feature with a covariate, including any left out of the fit (a zero or
-    # missing variance), as limma predicts the spline at those.
+    # The curve at every feature with a covariate, including any left out of the fit (a missing
+    # variance), as limma predicts the spline at those.
     e_mean = np.full(len(s2), np.nan)
     has_covariate = np.isfinite(covariate)
     e_mean[has_covariate] = (
@@ -2157,6 +2201,120 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config, moderation):
     return result
 
 
+def _clowess(x, y, frac, iterations, delta):
+    """R's ``lowess()``: Cleveland's ``clowess``, line for line from R's ``src/library/stats/src/lowess.c``.
+
+    statsmodels implements the same algorithm but advances differently after a run of points
+    within ``delta`` reaches the end of the data, so where points crowd at the top of the range it
+    interpolates from different anchor points: 2e-6 from R on 600 log-intensity points, where
+    this, and Skyline-PRISM's ``Lowess.Fit``, agree with R to about 1e-10 (``lowess.json``).
+
+    Args:
+        x: Abscissae, sorted ascending.
+        y: Ordinates, in the same order.
+        frac: Span, the fraction of points in each local fit (R's ``f``).
+        iterations: Robustness iterations (R's ``iter``).
+        delta: Points within this distance of the last fitted one are interpolated, not fitted.
+
+    Returns:
+        The smoothed value at each ``x``.
+    """
+    n = len(x)
+    ys = np.empty(n)
+    if n < 2:
+        ys[:] = y
+        return ys
+    ns = max(2, min(n, int(frac * n + 1e-7)))
+    span = x[-1] - x[0]
+    rw = np.ones(n)
+    res = np.zeros(n)
+
+    def fit_at(i, nleft, nright, robust):
+        # lowest(): tricube weights out to the larger of the two window edges, picking up ties on the
+        # right, then the weighted local linear fit's value at x[i] (None when every weight is zero).
+        xs = x[i]
+        h = max(xs - x[nleft], x[nright] - xs)
+        h9, h1 = 0.999 * h, 0.001 * h
+        r = np.abs(x[nleft:] - xs)
+        beyond = np.flatnonzero((r > h9) & (x[nleft:] > xs))
+        stop = beyond[0] if beyond.size else n - nleft
+        r = r[:stop]
+        w = np.where(r <= h1, 1.0, (1.0 - (r / h) ** 3) ** 3) if h > 0 else np.ones(stop)
+        w = np.where(r <= h9, w, 0.0)
+        if robust:
+            w = w * rw[nleft : nleft + stop]
+        total = w.sum()
+        if total <= 0.0:
+            return None
+        w = w / total
+        xw = x[nleft : nleft + stop]
+        if h > 0.0:
+            center = float(w @ xw)
+            c = float(w @ (xw - center) ** 2)
+            if np.sqrt(c) > 0.001 * span:
+                w = w * ((xs - center) / c * (xw - center) + 1.0)
+        return float(w @ y[nleft : nleft + stop])
+
+    for iteration in range(iterations + 1):
+        nleft, nright, last, i = 0, ns - 1, -1, 0
+        while True:
+            if nright < n - 1 and x[i] - x[nleft] > x[nright + 1] - x[i]:
+                nleft += 1
+                nright += 1
+                continue
+            fitted = fit_at(i, nleft, nright, iteration > 0)
+            ys[i] = y[i] if fitted is None else fitted
+            if last < i - 1:
+                alpha = (x[last + 1 : i] - x[last]) / (x[i] - x[last])
+                ys[last + 1 : i] = alpha * ys[i] + (1.0 - alpha) * ys[last]
+            last = i
+            cut = x[last] + delta
+            i = last + 1
+            while i < n and x[i] <= cut:
+                if x[i] == x[last]:
+                    ys[i] = ys[last]
+                    last = i
+                i += 1
+            i = max(last + 1, i - 1)
+            if last >= n - 1:
+                break
+        res = y - ys
+        if iteration == iterations:
+            break
+        scale = float(np.mean(np.abs(res)))
+        cmad = 6.0 * float(np.median(np.abs(res)))
+        if cmad < 1e-7 * scale:
+            break
+        r = np.abs(res)
+        rw = np.where(r <= 0.001 * cmad, 1.0, np.where(r <= 0.999 * cmad, (1.0 - (r / cmad) ** 2) ** 2, 0.0))
+    return ys
+
+
+def _prior_lowess(y, x):
+    """The LOWESS every LOWESS-based variance prior fits: R's ``lowess(x, y, f = 0.5, iter = 3)``.
+
+    That includes R's default interpolation distance, ``delta`` = 1% of the range of ``x``: the
+    smoother fits at points at least that far apart and interpolates linearly between them, and
+    tied x values take their tie's fitted value exactly. Skyline-PRISM fits the same LOWESS
+    (``VariancePriors.SmoothTrend``), so the two tools' peptide-count and intensity-trend priors
+    agree on real data, where points crowd within 1% of each other, and not only on inputs spaced
+    wider than that. It also makes the fit close to linear in the number of points, where an exact
+    fit is quadratic - what PRISM added it for, on peptide-level data. Before 26.9.0 the toolkit
+    used statsmodels' ``lowess`` at its default ``delta=0``; on a 3,595-protein cohort that moved
+    the intensity trend by up to 1.4e-3 relative against PRISM. statsmodels at ``delta`` = 1% is
+    not a substitute: see :func:`_clowess`.
+
+    Returns:
+        A sorted ``(x, fitted)`` array, as statsmodels' ``lowess(..., return_sorted=True)`` gave.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    order = np.argsort(x, kind="stable")  # ties keep their order, as R's order() does
+    xs, ys = x[order], y[order]
+    span = float(xs[-1] - xs[0]) if xs.size else 0.0
+    return np.column_stack([xs, _clowess(xs, ys, 0.5, 3, 0.01 * span)])
+
+
 def _fit_count_dependent_prior(fit, counts):
     """LOWESS prior on log(s^2) vs log(peptide count).
 
@@ -2164,11 +2322,16 @@ def _fit_count_dependent_prior(fit, counts):
     of prior variances aligned to ``fit["features"]``, plus the aligned
     count array for diagnostics.
     """
-    from statsmodels.nonparametric.smoothers_lowess import lowess
-
-    s2 = fit["s2"]
+    s2 = np.asarray(fit["s2"], dtype=float)
     counts = np.asarray(counts, dtype=float)
-    valid = np.isfinite(s2) & (s2 > 0) & np.isfinite(counts) & (counts >= 1)
+    # A zero variance has no logarithm and is left out of the LOWESS. "Zero" is anything at or below
+    # limma's floor, 1e-5 x the median (as in _limma_variance_floor): replicates that agree exactly
+    # give 0 from one least-squares solve and 1e-29 from another, and an exact 0 test kept the
+    # second as a log variance of -66 that bent the whole curve - 4e-3 in p between this toolkit and
+    # Skyline-PRISM, whose VariancePriors.PeptideCountTrend uses the same rule.
+    usable = s2[np.isfinite(s2) & (s2 > -1e-15)]
+    floor = 1e-5 * float(np.median(np.maximum(usable, 0.0))) if usable.size else 0.0
+    valid = np.isfinite(s2) & (s2 > floor) & (s2 > 0) & np.isfinite(counts) & (counts >= 1)
     if valid.sum() < 5:
         raise ValueError(
             "deqms moderation needs at least 5 features with positive peptide counts "
@@ -2177,7 +2340,7 @@ def _fit_count_dependent_prior(fit, counts):
 
     log_counts_valid = np.log(counts[valid])
     log_s2_valid = np.log(s2[valid])
-    smoothed = lowess(log_s2_valid, log_counts_valid, frac=0.5, it=3, return_sorted=True)
+    smoothed = _prior_lowess(log_s2_valid, log_counts_valid)
     xs, ys = smoothed[:, 0], smoothed[:, 1]
 
     with np.errstate(invalid="ignore"):
@@ -2334,8 +2497,6 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config, pepti
         :func:`_per_feature_group_stats`, enriched with the per-point
         LOWESS predictions for plotting.
     """
-    from statsmodels.nonparametric.smoothers_lowess import lowess
-
     fg = _per_feature_group_stats(raw_feature_data, metadata_df, config)
     mask = (
         np.isfinite(fg["mean_intensity"].to_numpy())
@@ -2353,7 +2514,7 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config, pepti
     fg_valid = fg[mask].copy()
     log_mean = np.log(fg_valid["mean_intensity"].to_numpy())
     log_var_raw = 2.0 * np.log(fg_valid["sd_intensity"].to_numpy())
-    smoothed = lowess(log_var_raw, log_mean, frac=0.5, it=3, return_sorted=True)
+    smoothed = _prior_lowess(log_var_raw, log_mean)
     xs, ys = smoothed[:, 0], smoothed[:, 1]
 
     # Per (feature, group) predicted log(raw variance) from the LOWESS.
@@ -2373,7 +2534,7 @@ def _fit_intensity_trend_prior(fit, raw_feature_data, metadata_df, config, pepti
             log_counts_fit = np.log(fg_counts[mask])
             ok = np.isfinite(log_counts_fit) & np.isfinite(resid)
             if ok.sum() >= 5 and np.ptp(log_counts_fit[ok]) > 0:
-                sm2 = lowess(resid[ok], log_counts_fit[ok], frac=0.5, it=3, return_sorted=True)
+                sm2 = _prior_lowess(resid[ok], log_counts_fit[ok])
                 xs2, ys2 = sm2[:, 0], sm2[:, 1]
                 all_log_counts = np.log(np.where(fg_counts > 0, fg_counts, np.nan))
                 pep_adj = np.interp(all_log_counts, xs2, ys2, left=ys2[0], right=ys2[-1])

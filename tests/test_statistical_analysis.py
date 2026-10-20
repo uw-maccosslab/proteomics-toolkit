@@ -13,9 +13,12 @@ import pytest
 from proteomics_toolkit.statistical_analysis import (
     MODERATIONS,
     StatisticalConfig,
+    _apply_log_transformation_if_needed,
     _calibrate_trend_to_design,
+    _fit_count_dependent_prior,
     _fit_limma_prior,
     _peptide_count_basis,
+    _prior_lowess,
     _sanitize_formula_term,
     _trigamma_inverse,
     apply_multiple_testing_correction,
@@ -819,6 +822,95 @@ class TestLimmaEbayesGolden:
         for name in ("trend_paired_missing_subject_legacy", "trend_within_subject_missing_legacy"):
             assert all(v != "nan" for v in cases[name]["t"])
             assert len(set(cases[name]["df_residual"])) >= 3
+
+
+_LOWESS_GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "lowess.json").read_text(encoding="utf-8"))
+
+
+class TestPriorLowessMatchesR:
+    """The LOWESS behind the peptide-count and intensity-trend priors, against R's ``lowess()``.
+
+    ``tests/fixtures/lowess.json`` comes from ``generate_lowess.R``: R's ``lowess(x, y, f = 0.5,
+    iter = 3)`` at its default ``delta`` (1% of the range of x), on inputs where the interpolation
+    happens - crowded points and tied peptide counts. ``_prior_lowess`` is R's algorithm
+    (``_clowess``) and agrees to ~5e-14; the tolerance is 1e-12, left for summation order.
+    statsmodels at the same ``delta`` misses by 2e-6 on the crowded case, and at its default
+    ``delta=0`` (what the toolkit used before 26.9.0) by 7e-4. Skyline-PRISM's ``Lowess.Fit`` agrees
+    with this fixture to 3e-10.
+    """
+
+    @pytest.mark.parametrize("case", _LOWESS_GOLDEN["cases"], ids=[c["name"] for c in _LOWESS_GOLDEN["cases"]])
+    def test_matches_r_lowess(self, case):
+        fitted = _prior_lowess(_floats(case["y"]), _floats(case["x"]))
+        assert np.array_equal(fitted[:, 0], _floats(case["fitted_x"]))
+        assert np.allclose(fitted[:, 1], _floats(case["fitted_y"]), rtol=0, atol=1e-12)
+
+    def test_peptide_count_prior_is_r_lowess_on_log_count(self):
+        """The whole peptide-count prior, end to end, from R's smoother: exp of the curve at each count."""
+        case = next(c for c in _LOWESS_GOLDEN["cases"] if c["name"] == "tied_peptide_counts")
+        log_counts, log_s2 = _floats(case["x"]), _floats(case["y"])
+        prior, _ = _fit_count_dependent_prior({"s2": np.exp(log_s2)}, np.round(np.exp(log_counts)))
+        expected = np.exp(np.interp(log_counts, _floats(case["fitted_x"]), _floats(case["fitted_y"])))
+        assert np.allclose(prior, expected, rtol=1e-12, atol=0)
+
+
+class TestLimmaVarianceFloor:
+    """A zero residual variance is floored as limma's fitFDist floors it, and says so (pinned by the
+    ``*_zero_variance`` cases of the limma golden, which the earlier drop-them rule failed)."""
+
+    def test_zero_variances_are_floored_with_limmas_warning(self):
+        rng = np.random.default_rng(5)
+        s2 = np.concatenate([rng.chisquare(6, 50) / 6 * 0.2, [0.0, 0.0]])
+        with pytest.warns(UserWarning, match="Zero sample variances detected, have been offset away from zero"):
+            s0_sq, d0 = _fit_limma_prior(s2, np.full(len(s2), 6.0))
+        assert np.isfinite(s0_sq) and d0 > 0
+
+    def test_mostly_zero_variances_warn_that_ebayes_is_unreliable(self):
+        s2 = np.array([0.0, 0.0, 0.0, 0.1, 0.2])
+        with pytest.warns(UserWarning, match="More than half of residual variances are exactly zero"):
+            _fit_limma_prior(s2, np.full(5, 4.0))
+
+    def test_peptide_count_prior_treats_a_variance_at_limmas_floor_as_zero(self):
+        """An exact 0 and the 1e-29 a QR solve can leave in its place both stay out of the count trend.
+
+        Included, the 1e-29 is a log variance of -66 that bends the whole curve: on a cohort with
+        three exactly constant proteins it moved p by 4e-3 between this toolkit and Skyline-PRISM,
+        whose VariancePriors.PeptideCountTrend uses the same rule.
+        """
+        rng = np.random.default_rng(12)
+        counts = np.round(np.exp(rng.uniform(0, np.log(40), 60)))
+        s2 = (0.05 + 0.6 / counts) * rng.chisquare(6, 60) / 6
+        expected, _ = _fit_count_dependent_prior({"s2": s2}, counts)
+        actual, _ = _fit_count_dependent_prior(
+            {"s2": np.concatenate([s2, [0.0, 1.6829032644714918e-29]])}, np.concatenate([counts, counts[:2]])
+        )
+        np.testing.assert_array_equal(actual[:60], expected)
+        # The two left out of the fit still get the curve's value at their counts.
+        np.testing.assert_array_equal(actual[60:], expected[:2])
+
+
+class TestLogTransformDefault:
+    """No pseudocount by default, as Skyline-PRISM: a value of 0 or less is missing, not small."""
+
+    @staticmethod
+    def _config(pseudocount=None):
+        config = StatisticalConfig()
+        config.log_transform_before_stats = True
+        config.log_pseudocount = pseudocount
+        return config
+
+    def test_values_of_zero_or_less_become_missing_and_nothing_is_added(self):
+        data = pd.DataFrame({"S1": [100.0, 0.0, 1024.0], "S2": [-5.0, 256.0, 64.0]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            logged = _apply_log_transformation_if_needed(data, self._config())
+        expected = pd.DataFrame({"S1": [np.log2(100.0), np.nan, 10.0], "S2": [np.nan, 8.0, 6.0]})
+        pd.testing.assert_frame_equal(logged, expected)
+
+    def test_an_explicit_pseudocount_keeps_the_earlier_behavior(self):
+        data = pd.DataFrame({"S1": [100.0, 0.0], "S2": [3.0, 256.0]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            logged = _apply_log_transformation_if_needed(data, self._config(1.0))
+        assert np.allclose(logged.to_numpy(), np.log2(data.to_numpy() + 1.0))
 
 
 class TestMissingValuesInTheDesign:

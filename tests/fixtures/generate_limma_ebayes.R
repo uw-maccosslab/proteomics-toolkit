@@ -23,9 +23,14 @@
 # Why R and not inmoose: inmoose 0.9.1's eBayes crashes whenever df.prior is infinite (its
 # B-statistic step applies `~` to a Python bool), which is exactly the case the cap matters most
 # for, and its ns() refuses the two-column (spline df 2) basis that limma uses for 3 to 5 features.
-# limma itself is the definition. Skyline-PRISM pins its own df cap to the same R calls
-# (dotnet/tests/fixtures/differential/generate_ebayes.R in maccoss/skyline-prism); the first four
-# cases below are the same matrices.
+# limma itself is the definition.
+#
+# The same generator, cases and seeds live in Skyline-PRISM
+# (dotnet/tests/fixtures/differential/generate_limma_ebayes.R), and the two write byte-identical JSON:
+# the toolkit's moderated linear model and PRISM's moderated t - every prior, design and
+# missing-value rule here - are pinned to one reference, which is how the two tools are held to the
+# same numbers. Change a case in both, or neither. The first four cases are also the matrices of
+# PRISM's older ebayes.json.
 #
 # Prerequisites (one-off):
 #   install.packages("BiocManager")
@@ -375,6 +380,40 @@ cases <- c(cases, encode_case(
   "90 features, 4 subjects at weeks 0, 2, 4, 6, 12, [1, week, subject dummies]: every 10th feature lacks the reference subject S1 entirely, every 13th lacks S3; the slope stays estimable from the others",
   expr, "linear_trend", trend_design, list(time = weeks, subject = who), trend = TRUE, binds = FALSE,
   legacy = TRUE))
+
+# --- Residual variances of zero --------------------------------------------------------------------
+#
+# A feature whose replicates agree exactly within each arm has a residual variance of zero, which
+# has no logarithm. fitFDist neither drops it nor fails: it floors every variance at 1e-5 x the
+# median (warning "Zero sample variances detected") and fits the prior with it. The posterior still
+# uses the feature's own zero. (Through lmFit's QR the residual may come out at 1e-30 rather than
+# exactly 0; it is floored to the same value either way.) Dropping those features from the prior fit
+# - what the toolkit did before 26.9.0 - changes the prior for every feature, so these cases fail it.
+zero_rows <- function(levels, effects, n_a, n_b) {
+  t(mapply(function(lv, e) c(rep(lv, n_a), rep(lv + e, n_b)), levels, effects))
+}
+
+set.seed(3030)
+n_feat <- 40
+noise <- 0.2 + 0.8 * ((0:(n_feat - 1)) / (n_feat - 1))
+expr <- 16 + noise * matrix(rnorm(n_feat * 8), nrow = n_feat)
+expr[1:4, 5:8] <- expr[1:4, 5:8] + 1.5
+expr <- rbind(expr, zero_rows(c(12.5, 17.25, 21), c(0.75, -1.5, 0), 4, 4))
+cases <- c(cases, encode_case(
+  "global_zero_variance",
+  "40 features plus 3 whose replicates agree exactly within each arm (residual variance 0), 4 vs 4: fitFDist floors every variance at 1e-5 x the median and fits the prior with them, rather than dropping them",
+  expr, "unpaired", c4$design, c4$labels, trend = FALSE, binds = FALSE))
+
+set.seed(3131)
+n_feat <- 80
+level <- sort(runif(n_feat, 12, 27))
+expr <- level + sqrt(trend_variance(level)) * matrix(rnorm(n_feat * 8), nrow = n_feat)
+expr[seq(5, n_feat, by = 11), 5:8] <- expr[seq(5, n_feat, by = 11), 5:8] + 1.2
+expr <- rbind(expr, zero_rows(c(13, 19.5, 25.25), c(0.5, 0, -0.25), 4, 4))
+cases <- c(cases, encode_case(
+  "trend_zero_variance",
+  "limma-trend over 80 features plus 3 with zero residual variance at low, middle and high Amean, 4 vs 4: the floored variances enter the spline fit and the prior df",
+  expr, "unpaired", c4$design, c4$labels, trend = TRUE, binds = FALSE))
 
 versions <- js_obj(list(
   R = js_str(paste(R.version$major, R.version$minor, sep = ".")),
