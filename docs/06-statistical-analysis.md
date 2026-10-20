@@ -804,6 +804,12 @@ paired t, Wilcoxon), where the toolkit's simple tests drop a feature's missing
 values per feature. With complete data, which is Skyline's normal output, none
 of this differs.
 
+**Adjusted p-values** count only the features that have a p-value, in both, as
+R's `p.adjust` does (an `NA` is not counted in `n`) and limma's `topTable` with
+it. A feature that could not be tested gets `adj.P.Val` = NaN. Before 26.9.0
+the toolkit counted it as p = 1, which made every other adjusted p larger by up
+to n_total / n_tested.
+
 Checked end to end on 2,500 simulated proteins with every kind of gap (scattered
 blanks, whole arms and subjects missing, exactly constant proteins), under
 unpaired, paired and within-subject trend designs and every prior: the two tools
@@ -1212,7 +1218,7 @@ behavior, so a result recorded with one reproduces.
 | `log_transform_before_stats` | str/bool | `'auto'`, `True`, `False` - see [Log transformation](#log-transformation) |
 | `log_base` | str | `'log2'` (default), `'log10'`, `'ln'` |
 | `log_pseudocount` | float or None | `None` (default): when the log is taken, values of 0 or less become missing and nothing is added, as Skyline-PRISM does. A number is added before the log instead (the pre-26.9.0 behavior). See [Log transformation](#log-transformation) |
-| `correction_method` | str | `'fdr_bh'` (BH), `'bonferroni'`, `'fdr_by'`, etc. |
+| `correction_method` | str | `'fdr_bh'` (BH), `'bonferroni'`, `'fdr_by'`, etc. Corrects over the features that have a p-value; an untested feature's `adj.P.Val` is NaN |
 | `use_adjusted_pvalue` | str | `'adjusted'` or `'unadjusted'` |
 | `p_value_threshold` | float | Volcano plot line (default 0.05) |
 | `fold_change_threshold` | float | FC threshold for significance calls (default 1.5) |

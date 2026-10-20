@@ -254,6 +254,33 @@ class TestMultipleTestingCorrection:
         assert isinstance(corrected, pd.DataFrame)
         assert "adj.P.Val" in corrected.columns
 
+    # R 4.5.1, p.adjust(c(0.01, 0.04, 0.2, NA), method): the NA is left out of n, as limma's
+    # topTable and Skyline-PRISM leave out a feature they could not test.
+    @pytest.mark.parametrize(
+        "method,expected",
+        [
+            ("fdr_bh", [0.03, 0.06, 0.2]),
+            ("bonferroni", [0.03, 0.12, 0.6]),
+            ("holm", [0.03, 0.08, 0.2]),
+            ("fdr_by", [0.055, 0.11, 0.3666666666666667]),
+        ],
+    )
+    def test_an_untested_feature_is_not_counted(self, method, expected):
+        results_df = pd.DataFrame(
+            {
+                "Protein": [f"P{i}" for i in range(4)],
+                "P.Value": [0.01, 0.04, 0.2, np.nan],
+                "logFC": [1.0, -0.5, 0.8, np.nan],
+            }
+        )
+        config = StatisticalConfig()
+        config.correction_method = method
+        corrected = apply_multiple_testing_correction(results_df, config)
+        np.testing.assert_allclose(corrected["adj.P.Val"].to_numpy()[:3], expected, rtol=1e-12)
+        assert np.isnan(corrected["adj.P.Val"].iloc[3])
+        assert not corrected["Significant"].iloc[3]
+        assert corrected["Significance"].iloc[3] == "Not significant"
+
 
 # ---------------------------------------------------------------------------
 # Peptide-level statistics

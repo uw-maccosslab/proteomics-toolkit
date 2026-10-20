@@ -87,6 +87,15 @@ for the LOWESS-based priors, and limma's floor for zero residual variances.
   data nothing changes: the fit is bit-identical, and features are fitted one missing-value
   pattern at a time, so no more than one pattern's design is held in memory.
 
+- **Adjusted p-values counted features that could not be tested.**
+  `apply_multiple_testing_correction` filled a missing p-value with 1.0 before correcting. So a
+  feature with no p-value (an arm entirely missing, or too few values for its test) still counted
+  as a comparison, and every adjusted p was larger by up to n_total / n_tested. R's `p.adjust`
+  leaves an `NA` out of `n`, and so do limma's `topTable` and Skyline-PRISM. The toolkit now does
+  too, for every test and every correction method, and an untested feature's `adj.P.Val` is NaN
+  rather than 1.0. Skyline-PRISM's end-to-end golden found it: one untested feature in 12 made the
+  toolkit's adjusted p 12/11 of limma's. With complete data nothing changes.
+
 ## Breaking Changes
 
 - **The default prior changed, so every default moderated p-value changes.** A config that does
@@ -216,6 +225,9 @@ for the LOWESS-based priors, and limma's floor for zero residual variances.
   written by `tests/fixtures/generate_lowess.R`, on crowded intensities, tied peptide counts and
   hand-placed points either side of `delta`. Agreement is ~5e-14 against a 1e-12 tolerance, and the
   peptide-count prior computed end to end from R's smoother matches to 1e-12.
+- `TestMultipleTestingCorrection` pins Benjamini-Hochberg, Bonferroni, Holm and
+  Benjamini-Yekutieli with a missing p-value to R 4.5.1's `p.adjust`; the code before this release
+  fails all four.
 - `TestLogTransformDefault` checks that values of 0 or less become missing with nothing added, and
   that an explicit pseudocount keeps the earlier behavior.
 - An end-to-end comparison with Skyline-PRISM (2,500 proteins, 32 samples, scattered blanks, whole
@@ -232,8 +244,8 @@ for the LOWESS-based priors, and limma's floor for zero residual variances.
 - `docs/06-statistical-analysis.md` gains "Same results as Skyline-PRISM": which reference each
   piece is pinned to in both tools and how closely, the three conventions the toolkit now shares
   with PRISM (no pseudocount, R's LOWESS, limma's zero-variance floor), missing values fitted as
-  limma's `lmFit` fits them in both (in PRISM from maccoss/skyline-prism#148), and the options only
-  one tool has. "Log transformation"
+  limma's `lmFit` fits them in both (in PRISM from maccoss/skyline-prism#148), adjusted p-values
+  over the features tested, and the options only one tool has. "Log transformation"
   states the new default.
 - `docs/06-statistical-analysis.md` uses Skyline-PRISM's names throughout, states the default
   chosen by level, and has a table of which priors work at which level. It explains why limma-trend
