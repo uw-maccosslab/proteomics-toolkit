@@ -720,19 +720,43 @@ the cap moves a p-value by 0.1% at t = 3 and 4.5% at t = 8. `posterior_df`
 keeps the uncapped value (it is the posterior variance's df), and `total_df`
 is the one the p-value used.
 
-**Features whose contrast cannot be estimated** - an arm entirely missing, so
-the design restricted to that feature's observed samples cannot separate the
-groups - are where the toolkit and limma part. The toolkit leaves such a
-feature out of the fit: its row reports NaN, and it contributes nothing to
-the prior or to the pool, so the cap is the residual df the prior was
-actually estimated from. limma fits it anyway, at its reduced rank, and puts
-its variance into the prior as well as its df into the pool. So the two
-differ in the prior, not only in the cap, and no choice of cap alone
-reproduces limma there. Measured with limma 3.66.0 on 8 complete features
-(3 vs 3) plus 8 observed only in arm B: limma pools 48 df rather than 32, but
-its prior variance also moves from 0.181 to 0.173, and the first feature's t
-from -1.007 to -1.030. With every arm observed for every feature - the normal
-case for Skyline data - the two are the same.
+### Missing values
+
+Skyline exports are normally complete, but merging documents with different
+target lists, or filtering, leaves features with missing values. Each such
+feature is fitted the way limma's `lmFit` fits it: on the samples where it
+was observed, keeping the design columns those samples can estimate (left to
+right, as R's `lm.fit` does) and dropping the rest.
+
+- **A subject with no value for a feature** - in a paired or within-subject
+  design - drops out of that feature's comparison, which is made on the
+  remaining subjects with correspondingly fewer residual df.
+- **A subject missing one timepoint** keeps the design full rank and costs
+  that feature one residual df.
+- **A feature missing a whole arm** has no estimable contrast: `logFC`, `t`
+  and `P.Value` are NaN, as limma's are NA. Its residual variance is still an
+  estimate of the noise, so it goes into the prior, and its residual df into
+  the pool behind the df cap - as in limma.
+- **An interaction feature with an empty cell** - no Control/Post value, say -
+  cannot estimate the difference of differences either, and is reported the
+  same way. On its samples the interaction column equals the visit column, so
+  keeping columns left to right alone would report Treatment's Post - Pre
+  change as the interaction; each feature's tested column is therefore also
+  checked against the span of the other columns on its observed samples.
+  limma reports NA there with `model.matrix(~ group * visit)`, which puts the
+  interaction last.
+
+Before 26.9.0 a feature whose observed design was singular was dropped from
+the results, and when the subject missing was the one the intercept stands
+for, the singular inverse instead produced a meaningless result - on one test
+cohort, p = 0.98 for a protein with a real change - which then also entered
+the prior every other feature was shrunk toward.
+
+These cases are pinned to R limma 3.66.0 with `eBayes(legacy = TRUE)`: with
+missing values the residual df differ between features, and limma 3.58 and
+later then switch to `fitFDistUnequalDF1`, a different prior estimator that
+the toolkit does not implement (it keeps `fitFDist`'s moments, as limma did
+before 3.58). With complete data the two are the same.
 
 ### Where the intensity prior's level and weight come from
 

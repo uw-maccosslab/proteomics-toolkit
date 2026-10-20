@@ -722,6 +722,9 @@ def _run_golden_case(case):
     else:
         metadata_df["Week"] = _floats(case["time"])
         config.time_column = "Week"
+        if "subject" in case:
+            metadata_df["Subject"] = case["subject"]
+            config.subject_column = "Subject"
     result = run_moderated_linear_model(pd.DataFrame(expr, index=features, columns=samples), metadata_df, config)
     return result.set_index("Protein").loc[features]
 
@@ -746,6 +749,12 @@ class TestLimmaEbayesGolden:
       the inverse trigamma, a Newton solve that both limma and the toolkit stop at a relative step
       of 1e-8. Newton converges quadratically, so the solution is far better than its last step
       (measured agreement is ~1e-13), but 1e-9 relative is the bound that does not rely on that.
+
+    The ``*_missing_*`` cases pin how a feature with missing values is fitted: on its observed
+    samples, with the design columns they can estimate, as ``lmFit`` does. A subject absent from a
+    feature drops out of that feature's comparison; a feature missing a whole arm reports no
+    contrast (NaN, as limma's NA) but its residual variance and df still go to the prior and the
+    pool. Those cases run limma with ``legacy=TRUE`` (see ``_fit_limma_trend_prior``).
     """
 
     @pytest.mark.parametrize("case", _LIMMA_GOLDEN["cases"], ids=[c["name"] for c in _LIMMA_GOLDEN["cases"]])
@@ -754,8 +763,9 @@ class TestLimmaEbayesGolden:
 
         assert np.allclose(result["AveExpr"], _floats(case["amean"]), rtol=1e-12, atol=0)
         assert np.allclose(result["residual_df"], _floats(case["df_residual"]), rtol=0, atol=0)
-        assert np.allclose(result["logFC"], _floats(case["logfc"]), rtol=1e-10, atol=1e-10)
-        assert np.allclose(result["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10)
+        # equal_nan: where limma's coefficient is NA (an aliased tested column), so is the toolkit's.
+        assert np.allclose(result["logFC"], _floats(case["logfc"]), rtol=1e-10, atol=1e-10, equal_nan=True)
+        assert np.allclose(result["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10, equal_nan=True)
 
         expected_d0 = float(case["df_prior"])
         d0 = (result["posterior_df"] - result["residual_df"]).to_numpy(dtype=float)
@@ -768,10 +778,17 @@ class TestLimmaEbayesGolden:
         assert np.allclose(result[prior_column], _floats(case["s2_prior"]), rtol=1e-9, atol=0)
         assert np.allclose(result["posterior_s2"], _floats(case["s2_post"]), rtol=1e-9, atol=0)
         assert np.allclose(result["total_df"], _floats(case["df_total"]), rtol=1e-12, atol=0)
-        assert np.allclose(result["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
+        assert np.allclose(result["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0, equal_nan=True)
 
     @pytest.mark.parametrize(
-        "name", ["global_infinite_prior", "global_large_finite_prior", "trend_infinite_prior", "trend_five_features"]
+        "name",
+        [
+            "global_infinite_prior",
+            "global_large_finite_prior",
+            "trend_infinite_prior",
+            "trend_five_features",
+            "global_missing_arm_legacy",
+        ],
     )
     def test_df_cap_binds_where_limma_says_it_does(self, name):
         """The binding cases really reach the cap, so the golden cannot pass with it missing."""
@@ -791,32 +808,101 @@ class TestLimmaEbayesGolden:
         """Every branch of limma's spline df, 1 + (n >= 3) + (n >= 6) + (n >= 30), is reached."""
         assert {c["spline_df"] for c in _LIMMA_GOLDEN["cases"] if c["trend"]} == {2, 3, 4}
 
-    @pytest.mark.parametrize("name", ["global_infinite_prior", "trend_infinite_prior"])
-    def test_a_feature_missing_an_arm_is_left_out_of_the_prior_and_the_pool(self, name):
-        """A deliberate difference from limma, pinned so it cannot drift.
+    def test_missing_data_cases_reach_each_kind_of_aliasing(self):
+        """The missing-data goldens exercise what they are named for, so they cannot quietly stop."""
+        cases = {c["name"]: c for c in _LIMMA_GOLDEN["cases"]}
+        # An arm entirely missing: no contrast, but residual df that count.
+        arm = cases["global_missing_arm_legacy"]
+        assert any(v == "nan" for v in arm["t"])
+        assert float(arm["df_pooled"]) == 48.0
+        # Subjects missing: every feature keeps a contrast, on fewer residual df.
+        for name in ("trend_paired_missing_subject_legacy", "trend_within_subject_missing_legacy"):
+            assert all(v != "nan" for v in cases[name]["t"])
+            assert len(set(cases[name]["df_residual"])) >= 3
 
-        Rows observed only in arm B have no estimable contrast. The toolkit reports them as NaN
-        and leaves them out of the prior and the pooled df, so the rest of the result is exactly
-        what limma gives on the complete features alone - the golden case, where the cap binds.
-        limma would fit those rows at reduced rank and put their variance into the prior as well
-        as their df into the pool (on 8 + 8 such features: pooled 48 rather than 32, and the prior
-        variance 0.181 -> 0.173), so counting their df alone would match limma's cap on a prior
-        that is not limma's. See "Degrees of freedom: limma's cap" in the docs.
-        """
-        case = next(c for c in _LIMMA_GOLDEN["cases"] if c["name"] == name)
-        expr = np.array([_floats(row) for row in case["expr"]])
-        b_only = expr + np.random.default_rng(11).normal(0.0, 0.7, size=expr.shape)
-        b_only[:, :3] = np.nan
-        both = dict(case, expr=[[repr(float(v)) for v in row] for row in np.vstack([expr, b_only])])
-        result = _run_golden_case(both)
 
-        n = expr.shape[0]
-        missing_arm = result.iloc[n:]
-        assert missing_arm[["t", "P.Value", "residual_df", "total_df"]].isna().all().all()
-        complete = result.iloc[:n]
-        assert np.allclose(complete["total_df"], float(case["df_pooled"]), rtol=0, atol=0)
-        assert np.allclose(complete["t"], _floats(case["t"]), rtol=1e-10, atol=1e-10)
-        assert np.allclose(complete["P.Value"], _floats(case["p"]), rtol=1e-9, atol=0)
+class TestMissingValuesInTheDesign:
+    """A feature with missing values is fitted on its observed samples, as limma's lmFit does.
+
+    Before 26.9.0 a paired or within-subject feature with one subject entirely missing was either
+    dropped (the subject's design column was empty, so ``inv(X'X)`` failed) or - when the missing
+    subject was the one the intercept stands for - given a meaningless result from a numerically
+    singular inverse, which also entered the prior every other feature was shrunk toward. On the
+    data below, with prot1 missing subject P3 and prot2 missing the reference subject P0, the old
+    code dropped prot1 and gave prot2, which carries a real change, t = 0.03 and p = 0.98 on 3
+    residual df.
+    """
+
+    @staticmethod
+    def _paired(n_subjects=6, n_features=40, seed=1):
+        rng = np.random.default_rng(seed)
+        subject_level = rng.normal(0, 1.5, n_subjects)
+        values = 15 + np.hstack([subject_level, subject_level])[None, :] + rng.normal(
+            0, 0.3, (n_features, 2 * n_subjects)
+        )
+        values[:5, n_subjects:] += 1.0
+        samples = [f"P{j}_{t}" for t in ("Pre", "Post") for j in range(n_subjects)]
+        metadata_df = pd.DataFrame(
+            {
+                "Sample": samples,
+                "Subject": [f"P{j}" for j in range(n_subjects)] * 2,
+                "Time": ["Pre"] * n_subjects + ["Post"] * n_subjects,
+            }
+        )
+        config = StatisticalConfig()
+        config.analysis_type, config.subject_column, config.paired_column = "paired", "Subject", "Time"
+        config.paired_label1, config.paired_label2 = "Pre", "Post"
+        return values, samples, metadata_df, config
+
+    @pytest.mark.parametrize("absent", [0, 3], ids=["reference subject", "another subject"])
+    def test_a_subject_with_no_value_drops_out_of_that_features_comparison(self, absent):
+        values, samples, metadata_df, config = self._paired()
+        n = len(samples) // 2
+        values[2, [absent, absent + n]] = np.nan
+        result = run_moderated_linear_model(
+            pd.DataFrame(values, index=[f"prot{i}" for i in range(len(values))], columns=samples), metadata_df, config
+        ).set_index("Protein")
+
+        others = [j for j in range(n) if j != absent]
+        # A paired design's Post coefficient is the mean within-subject difference, over the
+        # subjects observed at both timepoints.
+        expected = float(np.mean(values[2, [j + n for j in others]] - values[2, others]))
+        assert np.isclose(result.loc["prot2", "logFC"], expected, rtol=1e-12, atol=1e-12)
+        assert result.loc["prot2", "residual_df"] == len(others) - 1
+        assert result.loc["prot2", "P.Value"] < 0.01  # it carries a real change of 1.0, not p = 0.98
+
+    def test_a_feature_missing_an_arm_reports_no_contrast_but_informs_the_prior(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "global"
+        feature_data.iloc[20:30, :6] = np.nan  # arm A (Control) entirely missing
+        result = run_moderated_linear_model(feature_data, metadata_df, config).set_index("Protein")
+
+        missing_arm = result.iloc[20:30]
+        assert missing_arm[["logFC", "t", "P.Value"]].isna().all().all()
+        # Six observed samples against one estimable column (the intercept): 5 residual df each,
+        # which count toward the pool exactly as the complete features' 10 do.
+        assert (missing_arm["residual_df"] == 5).all()
+        assert result["total_df"].dropna().le(50 * 10 + 10 * 5).all()
+
+    def test_an_interaction_with_an_empty_cell_reports_no_contrast(self):
+        """With no Control/Post value the interaction column equals the visit column on the samples
+        observed, so the difference of differences cannot be estimated. Keeping the interaction
+        column and dropping the visit one instead would report Treatment's Post - Pre change - a
+        pure visit effect - as the interaction. limma, with the interaction last as
+        ``model.matrix(~ group * visit)`` puts it, reports NA there; so does the toolkit."""
+        log_data, metadata_df, config = _make_interaction_fixture()
+        cell = metadata_df.set_index("Sample").loc[log_data.columns]
+        control_post = ((cell["Group"] == "Control") & (cell["Visit"] == "Post")).to_numpy()
+        main_only = [f"P{i:04d}" for i in range(10, 15)]  # 2.0 x Treatment + 1.5 x Post, no interaction
+        log_data.loc[main_only, control_post] = np.nan
+        result = run_moderated_linear_model(log_data, metadata_df, config).set_index("Protein")
+
+        assert result.loc[main_only, ["logFC", "t", "P.Value"]].isna().all().all()
+        # Their residual variance still informs the prior: three cells observed, one parameter each.
+        observed = int((~control_post).sum())
+        assert (result.loc[main_only, "residual_df"] == observed - 3).all()
+        complete = result.drop(index=main_only)
+        assert complete["logFC"].notna().all()
 
 
 class TestLimmaTrendDefault:

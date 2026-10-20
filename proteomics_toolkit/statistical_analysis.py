@@ -1311,6 +1311,54 @@ def _drop_aliased_columns(X, tested_index=1):
     return X[:, kept], kept.index(tested_index)
 
 
+def _estimable_columns(X, tol=1e-7):
+    """Indices of the design columns a least-squares fit can estimate, kept left to right.
+
+    This is how R's ``lm.fit`` (LINPACK ``dqrdc2``) decides, and so how limma's ``lmFit`` fits a
+    feature with missing values: a column whose part outside the span of the columns kept before
+    it is below ``tol`` of its own norm is aliased, dropped, and its coefficient is NA. Order
+    matters - an aliased pair loses its LATER column - which is why every design here puts the
+    intercept first and the tested coefficient second.
+
+    Args:
+        X: Design matrix restricted to one feature's observed samples.
+        tol: R's ``lm.fit`` default.
+
+    Returns:
+        List of column indices, in order.
+    """
+    kept = []
+    basis = np.empty((X.shape[0], 0))
+    for j in range(X.shape[1]):
+        column = X[:, j]
+        norm = np.linalg.norm(column)
+        if norm == 0.0:
+            continue
+        remainder = column - basis @ (basis.T @ column)
+        remainder = remainder - basis @ (basis.T @ remainder)  # once more, for orthogonality
+        size = np.linalg.norm(remainder)
+        if size <= tol * norm:
+            continue
+        kept.append(j)
+        basis = np.column_stack([basis, remainder / size])
+    return kept
+
+
+def _tested_is_estimable(X, tested_index, tol=1e-7):
+    """Whether the tested coefficient can be estimated from these samples: its column must not lie
+    in the span of the other columns.
+
+    Surviving :func:`_estimable_columns` is not enough. That keeps columns left to right, and the
+    tested column sits second, so it always survives - and when it is aliased with a LATER column,
+    that column is dropped and the tested coefficient silently absorbs it. An interaction feature
+    with no Control/Post value is the case: there the interaction column equals the visit column,
+    and the "interaction" reported would be Treatment's Post - Pre change. This is the per-feature
+    form of the check :func:`_drop_aliased_columns` makes on the whole design.
+    """
+    order = [j for j in range(X.shape[1]) if j != tested_index] + [tested_index]
+    return _estimable_columns(X[:, order], tol=tol)[-1:] == [len(order) - 1]
+
+
 def _fit_moderated_t(feature_data, metadata_df, config):
     """Fit per-feature linear model and compute moderated t-statistics.
 
@@ -1449,7 +1497,9 @@ def _fit_moderated_t(feature_data, metadata_df, config):
         # Design: intercept + interaction + group + level (+ subject block + covariates).
         # The interaction sits at index 1 so it is never the column dropped as aliased,
         # and its coefficient is the difference of differences
-        # (alt - ref at level_alt) - (alt - ref at level_ref).
+        # (alt - ref at level_alt) - (alt - ref at level_ref). A feature missing a whole cell
+        # cannot estimate it, however the columns are ordered; _tested_is_estimable catches that
+        # per feature, as _drop_aliased_columns does for the design as a whole.
         design_blocks = [np.ones_like(group_ind), group_ind * level_ind, group_ind, level_ind]
         subj_col = config.subject_column
         if subj_col and subj_col in meta.columns:
@@ -1559,7 +1609,15 @@ def _fit_moderated_t(feature_data, metadata_df, config):
     Y_all = feature_data[sample_cols]
     features = list(Y_all.index)
 
-    # Per-feature OLS loop (stays robust to NaN patterns)
+    # Per-feature OLS, fitted the way limma's lmFit fits a row with missing values: on the
+    # samples observed, with the design columns those samples can estimate. A subject with no
+    # value for a feature leaves its own column empty (or, for the subject the intercept stands
+    # for, makes the remaining subject columns sum to the intercept), so that column is dropped
+    # and the feature is fitted on the other subjects - rather than the feature being dropped,
+    # or its singular design inverted into a meaningless t. A feature whose TESTED coefficient
+    # cannot be estimated from its samples (an arm entirely missing, or an interaction cell empty)
+    # reports no contrast, but its residual variance and df are still estimates of the noise, and
+    # go to the prior and the pooled df as in limma.
     n_features = len(features)
     beta_out = np.full(n_features, np.nan)
     s2_out = np.full(n_features, np.nan)
@@ -1568,31 +1626,49 @@ def _fit_moderated_t(feature_data, metadata_df, config):
     ave_out = np.full(n_features, np.nan)
     nsamp_out = np.full(n_features, 0, dtype=int)
 
-    for i, feat in enumerate(features):
-        y = Y_all.loc[feat].to_numpy(dtype=float)
-        mask = np.isfinite(y)
-        if mask.sum() <= X.shape[1]:
-            continue
-        y_i = y[mask]
+    # Every design here tests one coefficient, so the contrast is a unit vector.
+    (tested,) = np.flatnonzero(contrast)
+    Y = Y_all.to_numpy(dtype=float)
+    observed = np.isfinite(Y)
+
+    # Features sharing a missing-value pattern share a design - with complete data, all of them -
+    # so they are grouped first, and each pattern's design is built, used for its features, and
+    # released. Keeping every pattern's design to the end held two (observed samples x columns)
+    # matrices per pattern, and scattered missingness can make a pattern per feature: about 7.7 GB
+    # for 10,000 features over 500 samples and 101 design columns, against a 40 MB matrix.
+    by_pattern = {}
+    for i in range(n_features):
+        if observed[i].any():
+            # limma's Amean: over every observed value, whether or not the feature can be fitted.
+            ave_out[i] = float(np.nanmean(Y[i, observed[i]]))
+            by_pattern.setdefault(observed[i].tobytes(), []).append(i)
+
+    for rows in by_pattern.values():
+        mask = observed[rows[0]]
         X_i = X[mask, :]
+        kept = _estimable_columns(X_i)
+        X_k = X_i[:, kept]
         try:
-            XtX = X_i.T @ X_i
-            XtX_inv = np.linalg.inv(XtX)
+            XtX_inv = np.linalg.inv(X_k.T @ X_k)
         except np.linalg.LinAlgError:
             continue
-        beta = XtX_inv @ X_i.T @ y_i
-        resid = y_i - X_i @ beta
-        d_i = len(y_i) - X.shape[1]
+        d_i = int(mask.sum()) - X_k.shape[1]
         if d_i <= 0:
             continue
-        s2_i = float(resid @ resid / d_i)
-        v_c_i = float(contrast @ XtX_inv @ contrast)
-        beta_out[i] = float(contrast @ beta)
-        s2_out[i] = s2_i
-        df_out[i] = d_i
-        vc_out[i] = v_c_i
-        ave_out[i] = float(np.nanmean(y_i))
-        nsamp_out[i] = len(y_i)
+        estimable = tested in kept and _tested_is_estimable(X_i, tested)
+        c_k = contrast[kept]
+        v_c = float(c_k @ XtX_inv @ c_k) if estimable else np.nan
+        projection = XtX_inv @ X_k.T
+        for i in rows:
+            y_i = Y[i, mask]
+            beta = projection @ y_i
+            resid = y_i - X_k @ beta
+            s2_out[i] = float(resid @ resid / d_i)
+            df_out[i] = d_i
+            nsamp_out[i] = len(y_i)
+            if estimable:
+                beta_out[i] = float(c_k @ beta)
+                vc_out[i] = v_c
 
     # Empirical Bayes prior (Smyth 2004)
     valid = np.isfinite(s2_out) & (s2_out > 0) & (df_out > 0)
@@ -2023,12 +2099,8 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config, moderation):
             s0_sq_per_feature,  # limit d0 -> inf
         )
         df_post = np.where(np.isfinite(d0_arr), df_resid + d0_arr, np.inf)
-        # limma's sum(df.residual), pooled over the features fitted here - the features the
-        # prior was estimated from. limma also fits a feature whose contrast cannot be estimated
-        # (an arm entirely missing) and puts its variance into the prior and its df into this
-        # pool. The toolkit leaves such a feature out of both, so the cap stays the information
-        # the prior actually used; counting its df alone would give limma's cap on a prior that
-        # is not limma's. See "Degrees of freedom: limma's cap" in docs/06-statistical-analysis.md.
+        # limma's sum(df.residual): every feature fitted, including one whose contrast cannot be
+        # estimated (an arm entirely missing), whose residual df still went into the prior.
         df_pooled = float(np.nansum(df_resid))
         df_total = np.where(np.isfinite(df_resid), np.minimum(df_post, df_pooled), np.nan)
         se = np.sqrt(s2_post * v_c)
