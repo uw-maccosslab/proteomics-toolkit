@@ -79,9 +79,10 @@ filterwarnings = [
     "ignore::UserWarning:matplotlib",
     "ignore::FutureWarning:sklearn",
     "ignore::UserWarning:sklearn",
-    # Many tests exercise the deprecated intensity trend on purpose. The warning itself is
-    # asserted with pytest.warns, which records it whatever this filter says.
-    "ignore:moderation='intensity_trend' is deprecated:FutureWarning",
+    # Many tests exercise the deprecated intensity priors on purpose. The warnings themselves are
+    # asserted with pytest.warns, which records them whatever this filter says.
+    "ignore:moderation='intensity-trend' is deprecated:FutureWarning",
+    "ignore:moderation='intensity-peptide-trend' is deprecated:FutureWarning",
 ]
 
 [tool.ruff]

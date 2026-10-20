@@ -3676,7 +3676,13 @@ def plot_variance_vs_intensity(
     results: pd.DataFrame,
     figsize: Tuple[float, float] = (13, 5.5),
 ) -> plt.Figure:
-    """Diagnostic for the ``intensity_trend`` moderation prior.
+    """Diagnostic for the ``intensity-trend`` and ``intensity-peptide-trend`` moderation priors.
+
+    Both are deprecated: they take their shape from QC/reference pools or the
+    design groups rather than from the residuals the test uses, and are tilted
+    by intensity (and, shaped on the pools, the peptide-count stage by peptide
+    count as well). The default, ``limma-trend``, has no LOWESS to draw;
+    docs/06-statistical-analysis.md shows limma's plotSA drawn by hand instead.
 
     Plotted in the space the prior is actually fit in: ``log(within-group
     variance)`` against ``log(within-group mean intensity)``, one point per
@@ -3704,20 +3710,23 @@ def plot_variance_vs_intensity(
     prior's SHAPE. Its level is then fitted to the design's own residual
     variances, and when that moves it the curve actually used is drawn dashed.
     For a QC/reference source the dashed curve sits above the cloud, by the
-    biology the pools do not carry. With ``intensity_peptide_trend`` the
+    biology the pools do not carry. With ``intensity-peptide-trend`` the
     dashed curve is the intensity stage at the fitted level; each feature's
     prior then also carries its peptide-count adjustment from the right panel.
 
     The right panel shows the residual after the intensity stage against
-    peptide count when ``moderation="intensity_peptide_trend"`` was used,
-    so the value of the second stage is visible. With plain
-    ``intensity_trend`` it shows the residual distribution instead.
+    peptide count when ``moderation="intensity-peptide-trend"`` was used,
+    with the second stage's LOWESS. A downward trend there says the groups
+    the shape is fitted on get less noisy with more peptides; it does not say
+    the study residuals fall the same way, and with a QC/reference source they
+    fall less, because the biology they add does not average over peptides.
+    With plain ``intensity-trend`` it shows the residual distribution instead.
 
     Parameters
     ----------
     results : pd.DataFrame
         Output of :func:`~proteomics_toolkit.statistical_analysis.run_moderated_linear_model`
-        with ``moderation="intensity_trend"`` or ``"intensity_peptide_trend"``.
+        with ``moderation="intensity-trend"`` or ``"intensity-peptide-trend"``.
     figsize : tuple
         Figure size.
 
@@ -3732,8 +3741,8 @@ def plot_variance_vs_intensity(
     except ValueError as e:
         raise ValueError(
             "Results DataFrame does not carry intensity-trend points. "
-            "Run run_moderated_linear_model with config.moderation='intensity_trend' "
-            "or 'intensity_peptide_trend' first."
+            "Run run_moderated_linear_model with config.moderation='intensity-trend' "
+            "or 'intensity-peptide-trend' first."
         ) from e
 
     mean_intensity = pts["mean_intensity"].to_numpy(dtype=float)
@@ -3807,15 +3816,14 @@ def plot_variance_vs_intensity(
             ax2.axhline(0, color="gray", linestyle="--", linewidth=1.2)
             ax2.set_xlabel("log(peptide count)")
             ax2.set_ylabel("residual log(variance) after intensity stage")
-            ax2.set_title("Peptide-count stage\n(downward trend = real information added)")
+            ax2.set_title("Peptide-count stage\n(shaped on these groups, not on the residuals)")
             ax2.grid(True, alpha=0.3)
     else:
         ax2.hist(resid, bins=60, color="steelblue", edgecolor="black", linewidth=0.3)
         ax2.axvline(0, color="crimson", linestyle="--", linewidth=1.5)
         ax2.set_xlabel("residual log(variance) after intensity stage")
         ax2.set_ylabel("(feature, group) pairs")
-        ax2.set_title(f"Residual spread, SD = {np.nanstd(resid):.2f}\n"
-                      "(use moderation='intensity_peptide_trend' to reduce)")
+        ax2.set_title(f"Residual spread, SD = {np.nanstd(resid):.2f}")
         ax2.grid(True, alpha=0.3)
 
     return fig
