@@ -3293,15 +3293,24 @@ def apply_multiple_testing_correction(results_df, config):
             f"{(results_df['P.Value'] < config.p_value_threshold).sum()}"
         )
     else:
-        # Apply correction
-        all_pvalues = results_df["P.Value"].fillna(1.0)
-        rejected, adj_pvalues, _, _ = multipletests(all_pvalues, method=correction_method)
+        # Correct over the features that have a p-value. A feature that could not be tested (an
+        # arm entirely missing, say) is not a comparison made, so it is not counted: R's p.adjust
+        # leaves NA out of n, and so do limma's topTable and Skyline-PRISM. Counting it as p = 1,
+        # as this did before 26.9.0, made every adjusted p larger by up to n_total / n_tested.
+        tested = results_df["P.Value"].notna().to_numpy()
+        adj_pvalues = np.full(len(results_df), np.nan)
+        rejected = np.zeros(len(results_df), dtype=bool)
+        rejected[tested], adj_pvalues[tested], _, _ = multipletests(
+            results_df["P.Value"].to_numpy(dtype=float)[tested], method=correction_method
+        )
 
         results_df["adj.P.Val"] = adj_pvalues
         results_df["Significant"] = rejected
 
         print("Multiple testing correction applied:")
         print(f"  Method: {correction_method}")
+        if not tested.all():
+            print(f"  Features with no p-value (not tested, not counted): {int((~tested).sum())}")
         print(f"  Significant proteins (FDR < 0.05): {(results_df['adj.P.Val'] < 0.05).sum()}")
 
     # Add significance categories
