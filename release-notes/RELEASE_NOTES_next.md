@@ -15,6 +15,9 @@ names (`global`, `limma-trend`, `limma-trend-intensity-n-peptides`, `peptide-cou
 `intensity-trend`), so one setting means the same prior in both tools. Moderated p-values are also
 now read on limma's capped degrees of freedom, for every prior. Both priors are pinned to R limma
 3.66.0, and Skyline-PRISM makes the same changes, so the two tools agree on default runs.
+The toolkit also adopts the three conventions that still separated a default run from
+Skyline-PRISM on real data: no log pseudocount (a value of 0 or less is missing), R's `lowess()`
+for the LOWESS-based priors, and limma's floor for zero residual variances.
 
 ## New Features
 
@@ -131,6 +134,24 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   rather than silently.
 - **P-values change wherever the df cap binds, under every prior** (see Bug Fixes). The t
   statistics, posterior variances and prior df are unchanged.
+- **No log pseudocount by default.** When the toolkit takes the log (`log_transform_before_stats`),
+  a value of 0 or less now becomes missing and nothing is added to the rest, as Skyline-PRISM logs
+  its linear parquet. The default used to add the smallest value / 100 to every value, and shift
+  everything up if any value was negative; on a 3,595-protein cohort that moved low-abundance log
+  ratios by up to 1.4e-3 against PRISM. Every test handles the missing values (the moderated model
+  as limma does). Setting `config.log_pseudocount` to a number keeps the earlier behavior.
+- **The peptide-count and intensity-trend priors smooth with R's `lowess()`,** at its default
+  interpolation distance of 1% of the x range, as Skyline-PRISM does. They used statsmodels'
+  `lowess` at `delta=0`, which on the same cohort moved the intensity trend by up to 1.4e-3
+  relative against PRISM. statsmodels at 1% still differs from R where points crowd at the top of
+  the range (2e-6 on 600 points), so the toolkit now carries R's algorithm (`_clowess`), which
+  agrees with R to ~5e-14. The intensity trend on peptide-level data is also much faster: the fit
+  is close to linear in the number of points rather than quadratic (80,000 points in about 1 s).
+- **A residual variance of exactly zero is floored, not dropped,** as limma's `fitFDist` floors it:
+  at 1e-5 x the median, with limma's warning ("Zero sample variances detected, have been offset
+  away from zero"), and Skyline-PRISM does the same. Dropping such features from the prior fit
+  changed it for every feature: on the new golden cases, a prior df of 3.3 against limma's 0.68,
+  and p-values off by orders of magnitude.
 
 ## Testing
 
@@ -183,11 +204,25 @@ now read on limma's capped degrees of freedom, for every prior. Both priors are 
   counts, while the default on the same few proteins uses limma-trend and says so.
 - `TestTrendCalibration` checks limma-trend's overall null rate on its unpaired and paired
   simulations, beside the intensity trend's.
+- Two zero-variance cases in `limma_ebayes.json` (the global prior and limma-trend, each with
+  three features whose replicates agree exactly) pin limma's floor; the code before this release
+  fails both. `TestLimmaVarianceFloor` checks limma's two warnings.
+- `TestPriorLowessMatchesR` pins the priors' LOWESS to R's `lowess()`: `tests/fixtures/lowess.json`,
+  written by `tests/fixtures/generate_lowess.R`, on crowded intensities, tied peptide counts and
+  hand-placed points either side of `delta`. Agreement is ~5e-14 against a 1e-12 tolerance, and the
+  peptide-count prior computed end to end from R's smoother matches to 1e-12.
+- `TestLogTransformDefault` checks that values of 0 or less become missing with nothing added, and
+  that an explicit pseudocount keeps the earlier behavior.
 - New tests for both deprecation warnings and their reasons, the warning for an ignored
   `variance_prior_group_column`, and both residual-fitted priors with `robust=True`.
 
 ## Documentation
 
+- `docs/06-statistical-analysis.md` gains "Same results as Skyline-PRISM": which reference each
+  piece is pinned to in both tools and how closely, the three conventions the toolkit now shares
+  with PRISM (no pseudocount, R's LOWESS, limma's zero-variance floor), the one difference left
+  (PRISM tests only complete features), and the options only one tool has. "Log transformation"
+  states the new default.
 - `docs/06-statistical-analysis.md` uses Skyline-PRISM's names throughout, states the default
   chosen by level, and has a table of which priors work at which level. It explains why limma-trend
   replaced the intensity trend, with the null-calibration measurements by intensity fifth, and

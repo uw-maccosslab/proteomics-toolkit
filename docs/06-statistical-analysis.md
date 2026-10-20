@@ -758,6 +758,50 @@ later then switch to `fitFDistUnequalDF1`, a different prior estimator that
 the toolkit does not implement (it keeps `fitFDist`'s moments, as limma did
 before 3.58). With complete data the two are the same.
 
+### Same results as Skyline-PRISM
+
+The toolkit and Skyline-PRISM run the same moderated t under the same names
+(`config.moderation` takes `prism differential --prior`'s tokens) and choose
+the same default by level. They are not one code base, so they are held to
+each other through references outside both: each piece below is pinned in both
+repositories to the same reference, and agrees with it - and so with the other
+tool - to the precision shown.
+
+| Piece | Reference | Toolkit agrees to |
+|---|---|---|
+| `global`, `limma-trend`, the df cap, missing values, zero variances | R limma 3.66.0 `lmFit` + `eBayes`, called whole (`tests/fixtures/limma_ebayes.json`) | 1e-11 or better |
+| `limma-trend-intensity-n-peptides` | limma's `fitFDist` with the count block added (`limma_trend_intensity_n_peptides.json`, byte-identical in both repositories) | ~1e-14 |
+| the LOWESS behind `peptide-count` and `intensity-trend` | R `lowess(x, y, f = 0.5, iter = 3)` (`tests/fixtures/lowess.json`) | ~5e-14 (PRISM ~3e-10) |
+
+Three conventions used to separate a default toolkit run from PRISM. From
+26.9.0 the toolkit follows PRISM - and R - in each:
+
+- **No log pseudocount.** A value of 0 or less becomes missing, and nothing
+  is added before the log (see [Log transformation](#log-transformation)).
+  The toolkit used to add the smallest value / 100, which on a 3,595-protein
+  cohort moved low-abundance log ratios by up to 1.4e-3.
+- **R's LOWESS.** The peptide-count and intensity-trend priors smooth with R's
+  `lowess()` algorithm at its default interpolation distance, 1% of the x
+  range, as PRISM does. The toolkit used statsmodels at `delta = 0`, which
+  moved the intensity trend by up to 1.4e-3 relative on the same cohort;
+  statsmodels at 1% is still not R's (2e-6 off where points crowd at the top
+  of the range), so the toolkit carries R's algorithm itself.
+- **Zero residual variances are floored, not dropped,** at 1e-5 x the median,
+  with limma's warning, as limma's `fitFDist` and PRISM do. Dropping them
+  changed the prior df several-fold on data that had them.
+
+One difference remains: **Skyline-PRISM tests only features observed in every
+compared sample**, where the toolkit fits a feature with missing values on its
+observed samples, as limma does ([Missing values](#missing-values)). With
+complete data, which is Skyline's normal output, there is no difference.
+
+Outside the priors the two tools also differ in what they offer:
+`robust=True`, the interaction design and the deprecated
+`intensity-peptide-trend` are the toolkit's alone, and the subject-blocked
+design (limma's `duplicateCorrelation`) is PRISM's alone. For a trend PRISM
+reports the slope times the span of x, the toolkit the slope per unit of x;
+the t and p are the same.
+
 ### Where the intensity prior's level and weight come from
 
 This describes the deprecated `intensity-trend` (and the deprecated `intensity-peptide-trend`).
@@ -1121,6 +1165,16 @@ See [08-enrichment.md](08-enrichment.md) for the full enrichment workflow.
 - Set it to `False` when the data is already log-transformed (e.g.,
   after [`vsn_normalize`](05-normalization.md) or `rlr_normalize`).
 
+When the toolkit takes the log, **a value of 0 or less becomes missing and
+nothing is added to the rest** (`config.log_pseudocount = None`, the default),
+as Skyline-PRISM logs its linear parquet: such a value has no logarithm, and
+a missing value is what it is, not a small one. Every test handles missing
+values. Before 26.9.0 the default added the smallest value / 100 to every value
+(and shifted everything up if any value was negative), which on a 3,595-protein
+cohort moved low-abundance log ratios by up to 1.4e-3 against PRISM. Set
+`config.log_pseudocount` to a number to add it instead; that keeps the earlier
+behavior, so a result recorded with one reproduces.
+
 ## StatisticalConfig reference
 
 | Attribute | Type | Description |
@@ -1142,6 +1196,7 @@ See [08-enrichment.md](08-enrichment.md) for the full enrichment workflow.
 | `covariates` | list | Additional covariates to control for (e.g. `['Age', 'Sex']`). Honored by `mixed_effects` for all designs, and by `moderated_linear_model` for `analysis_type` in `'unpaired'`, `'linear_trend'`, and `'interaction'`. See [Covariate adjustment](#covariate-adjustment). |
 | `log_transform_before_stats` | str/bool | `'auto'`, `True`, `False` - see [Log transformation](#log-transformation) |
 | `log_base` | str | `'log2'` (default), `'log10'`, `'ln'` |
+| `log_pseudocount` | float or None | `None` (default): when the log is taken, values of 0 or less become missing and nothing is added, as Skyline-PRISM does. A number is added before the log instead (the pre-26.9.0 behavior). See [Log transformation](#log-transformation) |
 | `correction_method` | str | `'fdr_bh'` (BH), `'bonferroni'`, `'fdr_by'`, etc. |
 | `use_adjusted_pvalue` | str | `'adjusted'` or `'unadjusted'` |
 | `p_value_threshold` | float | Volcano plot line (default 0.05) |
