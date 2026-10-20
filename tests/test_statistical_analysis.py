@@ -870,6 +870,24 @@ class TestLimmaVarianceFloor:
         with pytest.warns(UserWarning, match="More than half of residual variances are exactly zero"):
             _fit_limma_prior(s2, np.full(5, 4.0))
 
+    def test_peptide_count_prior_treats_a_variance_at_limmas_floor_as_zero(self):
+        """An exact 0 and the 1e-29 a QR solve can leave in its place both stay out of the count trend.
+
+        Included, the 1e-29 is a log variance of -66 that bends the whole curve: on a cohort with
+        three exactly constant proteins it moved p by 4e-3 between this toolkit and Skyline-PRISM,
+        whose VariancePriors.PeptideCountTrend uses the same rule.
+        """
+        rng = np.random.default_rng(12)
+        counts = np.round(np.exp(rng.uniform(0, np.log(40), 60)))
+        s2 = (0.05 + 0.6 / counts) * rng.chisquare(6, 60) / 6
+        expected, _ = _fit_count_dependent_prior({"s2": s2}, counts)
+        actual, _ = _fit_count_dependent_prior(
+            {"s2": np.concatenate([s2, [0.0, 1.6829032644714918e-29]])}, np.concatenate([counts, counts[:2]])
+        )
+        np.testing.assert_array_equal(actual[:60], expected)
+        # The two left out of the fit still get the curve's value at their counts.
+        np.testing.assert_array_equal(actual[60:], expected[:2])
+
 
 class TestLogTransformDefault:
     """No pseudocount by default, as Skyline-PRISM: a value of 0 or less is missing, not small."""

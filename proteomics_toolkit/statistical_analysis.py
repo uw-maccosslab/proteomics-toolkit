@@ -2322,9 +2322,16 @@ def _fit_count_dependent_prior(fit, counts):
     of prior variances aligned to ``fit["features"]``, plus the aligned
     count array for diagnostics.
     """
-    s2 = fit["s2"]
+    s2 = np.asarray(fit["s2"], dtype=float)
     counts = np.asarray(counts, dtype=float)
-    valid = np.isfinite(s2) & (s2 > 0) & np.isfinite(counts) & (counts >= 1)
+    # A zero variance has no logarithm and is left out of the LOWESS. "Zero" is anything at or below
+    # limma's floor, 1e-5 x the median (as in _limma_variance_floor): replicates that agree exactly
+    # give 0 from one least-squares solve and 1e-29 from another, and an exact 0 test kept the
+    # second as a log variance of -66 that bent the whole curve - 4e-3 in p between this toolkit and
+    # Skyline-PRISM, whose VariancePriors.PeptideCountTrend uses the same rule.
+    usable = s2[np.isfinite(s2) & (s2 > -1e-15)]
+    floor = 1e-5 * float(np.median(np.maximum(usable, 0.0))) if usable.size else 0.0
+    valid = np.isfinite(s2) & (s2 > floor) & (s2 > 0) & np.isfinite(counts) & (counts >= 1)
     if valid.sum() < 5:
         raise ValueError(
             "deqms moderation needs at least 5 features with positive peptide counts "

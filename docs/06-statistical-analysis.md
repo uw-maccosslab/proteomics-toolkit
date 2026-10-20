@@ -788,7 +788,12 @@ Three conventions used to separate a default toolkit run from PRISM. From
   of the range), so the toolkit carries R's algorithm itself.
 - **Zero residual variances are floored, not dropped,** at 1e-5 x the median,
   with limma's warning, as limma's `fitFDist` and PRISM do. Dropping them
-  changed the prior df several-fold on data that had them.
+  changed the prior df several-fold on data that had them. The peptide-count
+  prior's LOWESS, which cannot take the log of a zero, leaves out every
+  variance at or below that floor - in both tools - so that an exact 0 and the
+  1e-29 another least-squares solve leaves in its place are treated alike;
+  counting the 1e-29 moved p by 4e-3 between the tools on a cohort with three
+  exactly constant proteins.
 
 One difference remains: **Skyline-PRISM tests only features observed in every
 compared sample**, where the toolkit fits a feature with missing values on its

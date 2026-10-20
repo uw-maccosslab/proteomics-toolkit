@@ -23,9 +23,14 @@
 # Why R and not inmoose: inmoose 0.9.1's eBayes crashes whenever df.prior is infinite (its
 # B-statistic step applies `~` to a Python bool), which is exactly the case the cap matters most
 # for, and its ns() refuses the two-column (spline df 2) basis that limma uses for 3 to 5 features.
-# limma itself is the definition. Skyline-PRISM pins its own df cap to the same R calls
-# (dotnet/tests/fixtures/differential/generate_ebayes.R in maccoss/skyline-prism); the first four
-# cases below are the same matrices.
+# limma itself is the definition.
+#
+# The same generator, cases and seeds live in Skyline-PRISM
+# (dotnet/tests/fixtures/differential/generate_limma_ebayes.R), and the two write byte-identical JSON:
+# the toolkit's moderated linear model and PRISM's moderated t - every prior, design and
+# missing-value rule here - are pinned to one reference, which is how the two tools are held to the
+# same numbers. Change a case in both, or neither. The first four cases are also the matrices of
+# PRISM's older ebayes.json.
 #
 # Prerequisites (one-off):
 #   install.packages("BiocManager")

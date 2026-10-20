@@ -15,6 +15,10 @@
 # Nothing here imports the toolkit. Each case's x and y are written into the fixture; the test hands
 # them to the toolkit, so it never depends on R's random numbers.
 #
+# The same generator lives in Skyline-PRISM (dotnet/tests/fixtures/differential/generate_lowess.R) and
+# the two write byte-identical JSON, which pins PRISM's Lowess.Fit to the same reference. Change a
+# case in both, or neither.
+#
 # Run from the repository root (on Windows, Rscript.exe is in the R installation's bin folder):
 #   Rscript tests/fixtures/generate_lowess.R
 #

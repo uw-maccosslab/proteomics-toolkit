@@ -152,6 +152,11 @@ for the LOWESS-based priors, and limma's floor for zero residual variances.
   away from zero"), and Skyline-PRISM does the same. Dropping such features from the prior fit
   changed it for every feature: on the new golden cases, a prior df of 3.3 against limma's 0.68,
   and p-values off by orders of magnitude.
+- **The peptide-count prior leaves out every residual variance at or below limma's floor**, not
+  just exact zeros, from its LOWESS on log peptide count. Replicates that agree exactly give a
+  variance of 0 from one least-squares solve and 1e-29 from another, and the 1e-29 entered the fit as
+  a log variance of -66 that bent the whole curve: on a cohort with three exactly constant proteins
+  that moved p by 4e-3 between the toolkit and Skyline-PRISM, which uses the same rule.
 
 ## Testing
 
@@ -213,6 +218,12 @@ for the LOWESS-based priors, and limma's floor for zero residual variances.
   peptide-count prior computed end to end from R's smoother matches to 1e-12.
 - `TestLogTransformDefault` checks that values of 0 or less become missing with nothing added, and
   that an explicit pseudocount keeps the earlier behavior.
+- An end-to-end comparison with Skyline-PRISM (2,500 proteins, 32 samples, scattered blanks, whole
+  arms and whole subjects missing, exactly constant proteins; unpaired, paired and within-subject
+  trend designs; every prior) agreed on which proteins were tested and on p to 1.6e-12 (the default,
+  limma-trend and global priors), 6e-11 (peptide-count) and 3e-10 (intensity-trend), with t to 3e-11.
+  It found the peptide-count rounding difference above and a Skyline-PRISM difference in the
+  intensity trend's one-value groups, both fixed.
 - New tests for both deprecation warnings and their reasons, the warning for an ignored
   `variance_prior_group_column`, and both residual-fitted priors with `robust=True`.
 
