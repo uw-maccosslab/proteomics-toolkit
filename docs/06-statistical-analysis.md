@@ -795,10 +795,20 @@ Three conventions used to separate a default toolkit run from PRISM. From
   counting the 1e-29 moved p by 4e-3 between the tools on a cohort with three
   exactly constant proteins.
 
-One difference remains: **Skyline-PRISM tests only features observed in every
-compared sample**, where the toolkit fits a feature with missing values on its
-observed samples, as limma does ([Missing values](#missing-values)). With
-complete data, which is Skyline's normal output, there is no difference.
+**Missing values** are fitted the same way in both, as limma's `lmFit` fits
+them ([Missing values](#missing-values)), from Skyline-PRISM's release after
+dotnet-v26.29.0 (maccoss/skyline-prism#148); before that PRISM tested only
+features observed in every compared sample. Two of PRISM's paths still do: its
+subject-blocked design, and its simple tests (Welch, Student, Mann-Whitney,
+paired t, Wilcoxon), where the toolkit's simple tests drop a feature's missing
+values per feature. With complete data, which is Skyline's normal output, none
+of this differs.
+
+Checked end to end on 2,500 simulated proteins with every kind of gap (scattered
+blanks, whole arms and subjects missing, exactly constant proteins), under
+unpaired, paired and within-subject trend designs and every prior: the two tools
+tested the same proteins and agreed on p to 1.6e-12 (the default, limma-trend,
+global), 6e-11 (peptide-count) and 3e-10 (intensity-trend).
 
 Outside the priors the two tools also differ in what they offer:
 `robust=True`, the interaction design and the deprecated
