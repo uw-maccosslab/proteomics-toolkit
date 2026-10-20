@@ -231,8 +231,9 @@ for the LOWESS-based priors, and limma's floor for zero residual variances.
 
 - `docs/06-statistical-analysis.md` gains "Same results as Skyline-PRISM": which reference each
   piece is pinned to in both tools and how closely, the three conventions the toolkit now shares
-  with PRISM (no pseudocount, R's LOWESS, limma's zero-variance floor), the one difference left
-  (PRISM tests only complete features), and the options only one tool has. "Log transformation"
+  with PRISM (no pseudocount, R's LOWESS, limma's zero-variance floor), missing values fitted as
+  limma's `lmFit` fits them in both (in PRISM from maccoss/skyline-prism#148), and the options only
+  one tool has. "Log transformation"
   states the new default.
 - `docs/06-statistical-analysis.md` uses Skyline-PRISM's names throughout, states the default
   chosen by level, and has a table of which priors work at which level. It explains why limma-trend
