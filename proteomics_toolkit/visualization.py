@@ -696,7 +696,8 @@ def plot_sample_correlation_heatmap(
         if pd.isna(group):
             group = "Unknown"
         groups.append(group)
-    unique_groups = list(set(groups))
+    # Sorted so the group-to-colour mapping and legend order are the same on every run.
+    unique_groups = sorted(set(groups), key=str)
 
     # Use provided group colors or create color palette for groups
     if group_colors is None:
@@ -1126,7 +1127,8 @@ def plot_pca(
         if pd.isna(group):
             group = "Unknown"
         groups.append(group)
-    unique_groups = list(set(groups))
+    # Sorted so the group-to-colour mapping and legend order are the same on every run.
+    unique_groups = sorted(set(groups), key=str)
 
     # Set colors
     if group_colors is None:
@@ -1846,7 +1848,8 @@ def plot_control_group_correlation_analysis(
                 found_samples.append(sample)
 
         if found_samples:
-            control_groups[control_type] = list(set(found_samples))
+            # dict.fromkeys de-duplicates but keeps the column order, so the heatmap axes are stable.
+            control_groups[control_type] = list(dict.fromkeys(found_samples))
 
     if not control_groups:
         print("No control samples found matching the patterns!")
