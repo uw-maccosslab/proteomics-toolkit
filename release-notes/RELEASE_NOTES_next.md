@@ -10,7 +10,11 @@
 
 ## Bug Fixes
 
-<!-- Description of the bug and its impact, then what was fixed. -->
+- **The LICENSE file disagreed with the declared license.** From 26.1.0 through
+  26.10.0 the package declared Apache-2.0 in `pyproject.toml`, and PyPI lists it that
+  way, but the `LICENSE` file shipped in the sdist and wheel held the MIT text.
+  `LICENSE` now holds the Apache License 2.0 text, matching the metadata and the lab's
+  other tools.
 
 ## Performance
 
