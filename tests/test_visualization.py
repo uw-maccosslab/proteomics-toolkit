@@ -496,7 +496,7 @@ class TestPlotSampleClustermap:
         plt.close(grid.figure)
 
     def test_clustermap_label_fallback_disabled(self):
-        """Passing an empty fallback list reproduces the legacy index-fallback behaviour."""
+        """Passing an empty fallback list reproduces the legacy index-fallback behavior."""
         df, sample_cols, _ = self._build_data()
         df = df.copy()
         df["Gene"] = ["NA"] * len(df)

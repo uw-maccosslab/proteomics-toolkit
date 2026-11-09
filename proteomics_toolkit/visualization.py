@@ -60,8 +60,8 @@ def _ordered_groups(groups) -> list:
     Labels are de-duplicated in first-seen order, then sorted. Labels that cannot be
     compared with each other (for example ``1`` and ``"a"``) are sorted by their text
     instead, and labels with the same text (``1`` and ``"1"``) keep their first-seen
-    order. Iterating a ``set`` directly would not do: Python randomises string hashing in
-    each process, so the order, and with it each group's colour, would change between runs.
+    order. Iterating a ``set`` directly would not do: Python randomizes string hashing in
+    each process, so the order, and with it each group's color, would change between runs.
     """
     distinct = list(dict.fromkeys(groups))
     try:
@@ -2722,7 +2722,7 @@ def plot_sample_clustermap(
             ``label_column`` is missing for a row. When ``None``, defaults to
             ``["leading_uniprot_id", "protein_group"]`` if those columns are
             present in ``data`` (a PRISM-friendly default). Pass ``[]`` to
-            disable fallback and reproduce the legacy behaviour of falling
+            disable fallback and reproduce the legacy behavior of falling
             back directly to the DataFrame index.
         title: Figure suptitle.
         zscore: z-score features (rows) before clustering and plotting. The
@@ -3148,7 +3148,7 @@ def plot_missing_value_heatmap(
     max_features: int = 500,
     cluster_features: bool = True,
 ) -> plt.Figure:
-    """Visualise the missing-value pattern across samples x features.
+    """Visualize the missing-value pattern across samples x features.
 
     Produces a binary heatmap where dark cells indicate missing (NaN or zero)
     values and light cells indicate detected values. Useful for spotting
@@ -3213,9 +3213,9 @@ def plot_identifications_per_sample(
     sample_columns : list of str
         Names of the sample columns to include.
     sample_metadata : dict, optional
-        Mapping from sample name to metadata dict; used to colour bars by group.
+        Mapping from sample name to metadata dict; used to color bars by group.
     group_column : str
-        Key in ``sample_metadata`` entries to use for group colouring.
+        Key in ``sample_metadata`` entries to use for group coloring.
     feature_label : str
         Label for the feature axis (e.g. "protein" or "peptide").
     figsize : tuple
@@ -3228,7 +3228,7 @@ def plot_identifications_per_sample(
     sample_data = data[sample_columns]
     counts = (~(sample_data.isna() | (sample_data == 0))).sum(axis=0)
 
-    # Assign colours by group if metadata is available
+    # Assign colors by group if metadata is available
     if sample_metadata is not None:
         groups = [sample_metadata.get(s, {}).get(group_column, "Unknown") for s in sample_columns]
         unique_groups = _ordered_groups(groups)
@@ -3413,7 +3413,7 @@ def plot_peptide_coverage_map(
     Renders the protein amino-acid sequence as text along the top of each
     row, with peptide bars drawn beneath at their true start/end
     residue positions. Long proteins wrap to multiple rows at
-    ``wrap_residues`` (default 60). Peptide bars are coloured by
+    ``wrap_residues`` (default 60). Peptide bars are colored by
     per-peptide **abundance**, **fold-change**, or **detection frequency**
     depending on ``color_by``. Overlapping peptides (e.g. from missed
     cleavages) stack vertically within a row.
@@ -3525,18 +3525,18 @@ def plot_peptide_coverage_map(
     lengths = [lengths[i] for i in keep_idx]
     subset = subset.iloc[keep_idx]
 
-    # Compute per-peptide colour values
+    # Compute per-peptide color values
     sample_frame = subset[sample_columns]
     if color_by == "detection":
         values = (~(sample_frame.isna() | (sample_frame == 0))).sum(axis=1).to_numpy() / len(sample_columns)
-        colour_label = "Detection frequency"
+        color_label = "Detection frequency"
         default_cmap = "Blues"
         norm: "Normalize | TwoSlopeNorm" = Normalize(vmin=0.0, vmax=1.0)
     elif color_by == "abundance":
         mean_int = sample_frame.mean(axis=1).to_numpy(dtype=float)
         with np.errstate(invalid="ignore", divide="ignore"):
             values = np.log2(np.where(mean_int > 0, mean_int, np.nan))
-        colour_label = "log2(mean intensity)"
+        color_label = "log2(mean intensity)"
         default_cmap = "viridis"
         finite = values[np.isfinite(values)]
         norm = Normalize(vmin=float(np.nanmin(finite)), vmax=float(np.nanmax(finite)))
@@ -3562,7 +3562,7 @@ def plot_peptide_coverage_map(
             study_mean = subset[study_cols].mean(axis=1).to_numpy(dtype=float)
             with np.errstate(invalid="ignore", divide="ignore"):
                 values = np.log2(np.where((ref_mean > 0) & (study_mean > 0), study_mean / ref_mean, np.nan))
-        colour_label = "log2 fold-change"
+        color_label = "log2 fold-change"
         default_cmap = "coolwarm"
         finite = values[np.isfinite(values)]
         if finite.size:
@@ -3686,11 +3686,11 @@ def plot_peptide_coverage_map(
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
 
-    # Colourbar
+    # Colorbar
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap_obj)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, orientation="vertical", fraction=0.02, pad=0.02)
-    cbar.set_label(colour_label)
+    cbar.set_label(color_label)
 
     plt.tight_layout()
     return fig
@@ -3915,7 +3915,7 @@ def plot_variance_vs_intensity(
         ax.plot(log_mean[order], yhat[order] + np.log(level), color="crimson", linestyle="--", linewidth=1.8,
                 label=label)
 
-    # Reference slopes anchored at the cloud centre, for regime reading.
+    # Reference slopes anchored at the cloud center, for regime reading.
     slope = float(np.polyfit(log_mean, log_var, 1)[0])
     cx, cy = float(np.median(log_mean)), float(np.median(log_var))
     span = np.array([log_mean.min(), log_mean.max()])

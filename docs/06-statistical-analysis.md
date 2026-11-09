@@ -246,14 +246,14 @@ Both coefficients land where theory says they should. If a protein abundance
 is a rollup of `n` peptides with independent errors, its variance scales as
 `1/n`, i.e. a peptide coefficient of exactly -1; the observed -0.89 says
 averaging is nearly ideal, with a small shortfall consistent with correlated
-peptide-level error (shared ionisation suppression, interference, and rollup
+peptide-level error (shared ionization suppression, interference, and rollup
 shrinkage). The abundance coefficient of 1.60 again sits between the
 shot-noise and constant-CV extremes. So the second stage is recovering a real
 statistical property of the rollup rather than fitting noise.
 
 Because the model is additive in the two log terms, conditioning stage 1 on
 mean per-peptide intensity (`log(abundance) - log(n_peptides)`) instead of
-protein abundance is only a reparameterisation, and measurably makes no
+protein abundance is only a reparameterization, and measurably makes no
 difference (CV RMSE 0.8325 vs 0.8314). Protein abundance is kept as the more
 directly interpretable choice.
 
@@ -357,7 +357,7 @@ Until 26.9.0 the default was the intensity trend, with its shape taken from
 the design groups or, with `variance_prior_group_column`, the QC and reference
 pools. Its overall false-positive rate was right - about 5% of null p-values
 below 0.05 - but split by intensity it was not: optimistic for bright
-features and conservative for dim ones, the two cancelling in the average.
+features and conservative for dim ones, the two canceling in the average.
 The calibration work for 26.8.0 (below) was all measured overall, which is
 how it went unseen.
 
@@ -1229,7 +1229,7 @@ configuration errors early.
 
 ## Next steps
 
-- [Visualise results](07-visualization.md)
+- [Visualize results](07-visualization.md)
 - [Run enrichment](08-enrichment.md)
 - [Binary classification](09-classification.md)
 - [Common pitfalls](11-pitfalls.md)

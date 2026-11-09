@@ -29,4 +29,7 @@ changes. -->
 
 ## Documentation
 
-<!-- Docs added or updated. -->
+- **American spelling throughout.** Docstrings, comments, the user guide and the tutorial
+  notebook used British spellings in places (`colour`, `behaviour`, `visualise`,
+  `centred`). They now use American ones. No function, parameter or result column
+  changed name. `CLAUDE.md` now asks for American spelling.

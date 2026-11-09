@@ -77,6 +77,9 @@ entries between releases.
 - `logging.getLogger(__name__)` at module level; no bare `print()` in library code
 - Domain-specific variable names from mass spectrometry are preferred
   (`mz`, `rt`, `precursor_mz`, `fragment_charge`)
+- American spelling in code, comments, docs, plot labels and release notes (`color`,
+  `behavior`, `normalize`, `center`), even where older text in the repository is British.
+  Leave third-party names as they are, such as matplotlib's `"Greys"` colormap.
 
 ## Project Structure
 
