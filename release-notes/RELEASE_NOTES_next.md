@@ -33,6 +33,10 @@ a matplotlib warning from the default PCA colours, and a crash in
 - **`plot_comparative_pca` failed with matplotlib 3.9 or later** when `group_colors`
   was not given, because it called `plt.cm.get_cmap`, which matplotlib 3.9 removed.
   It now calls `plt.get_cmap`.
+- **The LICENSE file disagreed with the declared license.** Since 26.1.0 the package
+  has declared Apache-2.0 in `pyproject.toml`, and PyPI lists it that way, but the
+  `LICENSE` file shipped in the sdist and wheel held the MIT text. `LICENSE` now
+  holds the Apache License 2.0 text, matching the metadata and the lab's other tools.
 
 ## Testing
 
