@@ -27,6 +27,24 @@ ptk.plot_volcano(
 )
 ```
 
+### Saving a figure
+
+`plot_volcano` shows its figure and returns None. Pass `show=False` to get the
+figure back instead, for example to save it:
+
+```python
+fig = ptk.plot_volcano(results, fc_threshold=0.5, label_top_n=15, show=False)
+fig.savefig('figures/volcano.png', dpi=150, bbox_inches='tight')
+```
+
+In a notebook the figure is still drawn at the end of the cell. The same `show`
+parameter is on `plot_box_plot`, `plot_pca`, `plot_comparative_pca`,
+`plot_normalization_comparison`, `plot_sample_correlation_heatmap`,
+`plot_sample_correlation_triangular_heatmap` and
+`plot_control_correlation_analysis`. The newer plot functions (for example
+`plot_grouped_heatmap` and `plot_variance_vs_intensity`) always return their
+figure and do not need it.
+
 ## Summary table
 
 ```python

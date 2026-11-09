@@ -1097,7 +1097,7 @@ def plot_fold_change_pca(
         ax.scatter(
             coords[mask, 0],
             coords[mask, 1],
-            c=color,
+            color=color,
             label=f"{group} (n={mask.sum()})",
             s=100,
             alpha=0.7,
