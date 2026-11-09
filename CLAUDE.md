@@ -35,6 +35,12 @@ Shared fixtures are in `tests/conftest.py`.
 
 Run tests before committing. All tests must pass.
 
+`tests/test_public_api.py` pins what code outside this repository calls: the lab's
+notebooks, Skyline-PRISM's parity fixtures, and PyPI users. Its tables are in
+`tests/downstream_contract.py` and only ever grow. When it fails, the change broke a
+caller: keep the old name, keyword or parameter order working (an alias, a new
+parameter added keyword-only at the end) rather than editing the table.
+
 ## Release Notes
 
 Release notes are kept in `release-notes/` following the naming convention:
