@@ -27,7 +27,7 @@ instead of capping at 50.
 - `plot_cluster_heatmap` parameter `max_proteins_per_cluster` now accepts
   `None` (the new default) which renders every protein. The previous default
   was `50`. Callers that explicitly pass an integer keep their previous
-  behaviour.
+  behavior.
 - `TemporalClusteringConfig.max_proteins_per_cluster_heatmap` default changed
   from `30` to `None`. `run_temporal_analysis` now passes this through to
   `plot_cluster_heatmap`, so by default the dispatcher's heatmap shows every

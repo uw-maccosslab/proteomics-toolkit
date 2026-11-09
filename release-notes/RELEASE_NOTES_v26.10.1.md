@@ -3,9 +3,9 @@
 ## Overview
 
 Bug-fix release with no breaking changes. The `LICENSE` file shipped in the package
-now holds the Apache-2.0 text the metadata declares, and plots that colour samples by
+now holds the Apache-2.0 text the metadata declares, and plots that color samples by
 group (`plot_pca`, `plot_sample_correlation_heatmap`) draw the same figure on every
-run instead of reassigning group colours between runs.
+run instead of reassigning group colors between runs.
 
 ## Bug Fixes
 
@@ -14,10 +14,10 @@ run instead of reassigning group colours between runs.
   way, but the `LICENSE` file shipped in the sdist and wheel held the MIT text.
   `LICENSE` now holds the Apache License 2.0 text, matching the metadata and the lab's
   other tools.
-- **Group colours and legend order changed from run to run.** `plot_pca` and
+- **Group colors and legend order changed from run to run.** `plot_pca` and
   `plot_sample_correlation_heatmap` took their groups from `list(set(groups))`.
-  Python randomises string hashing in each process, so which group got which tab10
-  colour, and the legend order, varied between runs of the same notebook. The data
+  Python randomizes string hashing in each process, so which group got which tab10
+  color, and the legend order, varied between runs of the same notebook. The data
   and statistics were unaffected, but rerunning a notebook changed its figures. Both
   now sort the groups through a shared helper, which falls back to sorting by text
   when labels of different types cannot be compared, and keeps labels with the same
