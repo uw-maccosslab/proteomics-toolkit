@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from proteomics_toolkit.visualization import plot_pca
+from proteomics_toolkit.visualization import _ordered_groups, plot_pca
 
 GROUPS = ["Xray", "Control", "reference", "qc"]
 SAMPLES = [f"{g}_{i}" for g in GROUPS for i in range(3)]
@@ -95,6 +95,20 @@ def test_pca_legend_is_sorted():
     labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
     assert labels == sorted(GROUPS)
     plt.close("all")
+
+
+def test_ordered_groups_sorts_comparable_labels_naturally():
+    assert _ordered_groups(["b", "a", "b", "c"]) == ["a", "b", "c"]
+    # Numbers sort as numbers, not as text (which would give 1, 10, 2).
+    assert _ordered_groups([10, 2, 1, 2]) == [1, 2, 10]
+
+
+def test_ordered_groups_handles_mixed_types():
+    # Ints and strings cannot be compared, so they sort by text.
+    assert _ordered_groups(["b", 1, "a"]) == [1, "a", "b"]
+    # 1 and "1" have the same text, so they keep first-seen order rather than set order.
+    assert _ordered_groups(["1", 1]) == ["1", 1]
+    assert _ordered_groups([1, "1"]) == [1, "1"]
 
 
 def test_digest_helper_is_stable():

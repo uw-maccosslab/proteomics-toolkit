@@ -54,6 +54,22 @@ def _make_display_labels(sample_columns: List[str]) -> List[str]:
     return labels
 
 
+def _ordered_groups(groups) -> list:
+    """Return the distinct group labels in an order that is the same on every run.
+
+    Labels are de-duplicated in first-seen order, then sorted. Labels that cannot be
+    compared with each other (for example ``1`` and ``"a"``) are sorted by their text
+    instead, and labels with the same text (``1`` and ``"1"``) keep their first-seen
+    order. Iterating a ``set`` directly would not do: Python randomises string hashing in
+    each process, so the order, and with it each group's colour, would change between runs.
+    """
+    distinct = list(dict.fromkeys(groups))
+    try:
+        return sorted(distinct)
+    except TypeError:
+        return sorted(distinct, key=str)
+
+
 def _color_to_rgba(color: Union[str, tuple, np.ndarray]) -> tuple:
     """
     Convert any color format (hex string, named color, RGB tuple, etc.) to RGBA tuple.
@@ -696,8 +712,7 @@ def plot_sample_correlation_heatmap(
         if pd.isna(group):
             group = "Unknown"
         groups.append(group)
-    # Sorted so the group-to-colour mapping and legend order are the same on every run.
-    unique_groups = sorted(set(groups), key=str)
+    unique_groups = _ordered_groups(groups)
 
     # Use provided group colors or create color palette for groups
     if group_colors is None:
@@ -853,7 +868,7 @@ def plot_sample_correlation_triangular_heatmap(
             group = "Unknown"
         groups.append(str(group))
 
-    unique_groups = sorted(set(groups))
+    unique_groups = _ordered_groups(groups)
 
     # Use provided group colors or create color palette for groups
     if group_colors is None:
@@ -1127,8 +1142,7 @@ def plot_pca(
         if pd.isna(group):
             group = "Unknown"
         groups.append(group)
-    # Sorted so the group-to-colour mapping and legend order are the same on every run.
-    unique_groups = sorted(set(groups), key=str)
+    unique_groups = _ordered_groups(groups)
 
     # Set colors
     if group_colors is None:
@@ -3217,7 +3231,7 @@ def plot_identifications_per_sample(
     # Assign colours by group if metadata is available
     if sample_metadata is not None:
         groups = [sample_metadata.get(s, {}).get(group_column, "Unknown") for s in sample_columns]
-        unique_groups = sorted(set(groups))
+        unique_groups = _ordered_groups(groups)
         palette = sns.color_palette("Set1", n_colors=max(len(unique_groups), 3))
         group_to_color = {g: palette[i % len(palette)] for i, g in enumerate(unique_groups)}
         bar_colors = [group_to_color[g] for g in groups]

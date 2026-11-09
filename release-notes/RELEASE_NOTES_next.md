@@ -20,8 +20,12 @@
   Python randomises string hashing in each process, so which group got which tab10
   colour, and the legend order, varied between runs of the same notebook. The data
   and statistics were unaffected, but rerunning a notebook changed its figures. Both
-  now sort the groups (`sorted(set(groups), key=str)`), as
-  `plot_sample_correlation_triangular_heatmap` already did.
+  now sort the groups through a shared helper, which falls back to sorting by text
+  when labels of different types cannot be compared, and keeps labels with the same
+  text (`1` and `"1"`) in first-seen order.
+  `plot_sample_correlation_triangular_heatmap` and `plot_identifications_per_sample`,
+  which already sorted, use the helper too, so mixed-type labels no longer make them
+  raise `TypeError`.
 - **`plot_control_group_correlation_analysis` shuffled its samples.** It
   de-duplicated each control group's samples through a set, so their order on the
   correlation grid varied between runs. It now keeps the order of `sample_columns`.
