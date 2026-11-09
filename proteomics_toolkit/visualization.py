@@ -88,7 +88,8 @@ def plot_box_plot(
     log_transform: bool = True,
     figsize: Tuple[int, int] = (16, 8),
     title: str = "Protein Intensity Distribution by Sample",
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Create box plot of protein intensities by sample.
 
@@ -108,6 +109,16 @@ def plot_box_plot(
         Figure size (width, height)
     title : str
         Plot title
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     # Prepare data
@@ -241,12 +252,15 @@ def plot_box_plot(
     ax.legend(handles=legend_elements, loc="upper right")
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     # Print summary statistics
     print("Box plot summary:")
     print(f"Total samples plotted: {len(box_data)}")
     print(f"Average proteins per sample: {np.mean([len(data) for data in box_data]):.0f}")
+
+    return None if show else fig
 
 
 def plot_volcano(
@@ -266,7 +280,8 @@ def plot_volcano(
     axis_label_fontsize: int = 20,
     tick_label_fontsize: int = 16,
     legend_loc: str = "upper right",
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Create volcano plot for differential analysis results.
 
@@ -307,6 +322,16 @@ def plot_volcano(
     legend_loc : str
         Legend location (default: "upper right"). Options: "upper left", "upper right",
         "lower left", "lower right", "center left", "center right", etc.
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     if len(differential_df) == 0:
@@ -490,7 +515,8 @@ def plot_volcano(
     ax.legend(loc=legend_loc, frameon=True, fancybox=True, shadow=True, fontsize=11)
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     # Print summary
     n_significant = len(df[df[p_col_used] < p_threshold])
@@ -504,6 +530,8 @@ def plot_volcano(
     print(f"Up-regulated ({fc_description} > {fc_threshold}, {p_type_label} < {p_threshold}): {n_up}")
     print(f"Down-regulated ({fc_description} < -{fc_threshold}, {p_type_label} < {p_threshold}): {n_down}")
 
+    return None if show else fig
+
 
 def plot_normalization_comparison(
     original_data: pd.DataFrame,
@@ -511,7 +539,8 @@ def plot_normalization_comparison(
     sample_columns: List[str],
     method: str = "Normalized",
     figsize: Tuple[int, int] = (15, 6),
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Compare data distributions before and after normalization.
 
@@ -527,6 +556,16 @@ def plot_normalization_comparison(
         Normalization method name for plot title
     figsize : Tuple[int, int]
         Figure size (width, height)
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
@@ -586,7 +625,8 @@ def plot_normalization_comparison(
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     # Print statistics
     original_medians = log2_original.median()
@@ -603,6 +643,8 @@ def plot_normalization_comparison(
         f"{1 - (norm_medians.max() - norm_medians.min()) / (original_medians.max() - original_medians.min()):.1%}"
     )
 
+    return None if show else fig
+
 
 def plot_sample_correlation_heatmap(
     data: pd.DataFrame,
@@ -611,7 +653,8 @@ def plot_sample_correlation_heatmap(
     figsize: Tuple[int, int] = (12, 10),
     method: Literal["pearson", "kendall", "spearman"] = "pearson",
     group_colors: Optional[Dict[str, str]] = None,
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Plot correlation heatmap between samples.
 
@@ -629,6 +672,16 @@ def plot_sample_correlation_heatmap(
         Correlation method ('pearson', 'spearman')
     group_colors : Optional[Dict[str, str]]
         Dictionary mapping group names to colors. If None, colors are auto-generated.
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     # Calculate correlation matrix
@@ -697,7 +750,8 @@ def plot_sample_correlation_heatmap(
         g.ax_heatmap.set_ylabel("Samples")
         g.fig.suptitle(f"Sample Correlation Heatmap ({method.title()})", fontsize=16, y=1.02)
 
-    plt.show()
+    if show:
+        plt.show()
 
     # Print correlation statistics
     correlation_values = correlation_matrix.values
@@ -708,6 +762,8 @@ def plot_sample_correlation_heatmap(
     print(f"Mean correlation: {np.mean(upper_triangle):.3f}")
     print(f"Min correlation: {np.min(upper_triangle):.3f}")
     print(f"Max correlation: {np.max(upper_triangle):.3f}")
+
+    return None if show else g.fig
 
 
 def plot_sample_correlation_triangular_heatmap(
@@ -723,7 +779,8 @@ def plot_sample_correlation_triangular_heatmap(
     group_column: str = "Study",
     max_samples_for_annotations: int = 30,
     cmap: str = "coolwarm",
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Plot triangular correlation heatmap between samples with color bars for group identification.
 
@@ -753,6 +810,16 @@ def plot_sample_correlation_triangular_heatmap(
         Maximum number of samples to show correlation values (default: 30)
     cmap : str
         Colormap for correlation values (default: "coolwarm")
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
     from matplotlib.patches import Patch
 
@@ -950,7 +1017,8 @@ def plot_sample_correlation_triangular_heatmap(
     )
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     # Print correlation statistics
     correlation_values = correlation_matrix.values
@@ -972,6 +1040,8 @@ def plot_sample_correlation_triangular_heatmap(
         if count > 0:
             print(f"  {group}: {count} samples")
 
+    return None if show else fig
+
 
 def plot_pca(
     data: pd.DataFrame,
@@ -981,7 +1051,8 @@ def plot_pca(
     figsize: Tuple[int, int] = (10, 8),
     title: str = "Principal Component Analysis",
     log_transform: bool = False,
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Plot PCA of samples.
 
@@ -1001,6 +1072,16 @@ def plot_pca(
         Plot title
     log_transform : bool
         If True, apply log2 transform before PCA
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     try:
@@ -1058,7 +1139,7 @@ def plot_pca(
         ax.scatter(
             pca_result[group_indices, 0],
             pca_result[group_indices, 1],
-            c=group_colors[group],
+            color=group_colors[group],
             label=group,
             alpha=0.7,
             s=100,
@@ -1073,12 +1154,15 @@ def plot_pca(
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     print("PCA summary:")
     print(f"PC1 explains {pca.explained_variance_ratio_[0]:.1%} of variance")
     print(f"PC2 explains {pca.explained_variance_ratio_[1]:.1%} of variance")
     print(f"Total variance explained: {pca.explained_variance_ratio_[:2].sum():.1%}")
+
+    return None if show else fig
 
 
 def plot_comparative_pca(
@@ -1090,7 +1174,8 @@ def plot_comparative_pca(
     group_colors: Optional[Dict[str, str]] = None,
     group_order: Optional[List[str]] = None,
     figsize: Tuple[int, int] = (24, 8),
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Plot comparative PCA analysis across normalization methods.
 
@@ -1110,6 +1195,16 @@ def plot_comparative_pca(
         Colors for groups
     figsize : Tuple[int, int]
         Figure size
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     try:
@@ -1187,7 +1282,7 @@ def plot_comparative_pca(
         if group_colors is None:
             import matplotlib.pyplot as plt
 
-            tab10_cmap = plt.cm.get_cmap("tab10")
+            tab10_cmap = plt.get_cmap("tab10")
             colors = [tab10_cmap(i / max(1, len(unique_groups) - 1)) for i in range(len(unique_groups))]
             current_group_colors = {group: colors[i] for i, group in enumerate(unique_groups)}
         else:
@@ -1200,7 +1295,7 @@ def plot_comparative_pca(
                 ax.scatter(
                     group_data["PC1"],
                     group_data["PC2"],
-                    c=current_group_colors.get(group, "#7f7f7f"),
+                    color=current_group_colors.get(group, "#7f7f7f"),
                     label=group,
                     alpha=0.7,
                     s=100,
@@ -1228,7 +1323,8 @@ def plot_comparative_pca(
     plot_single_pca(axes[2], vsn_pca_df, vsn_pca, "VSN Normalized")
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     # Print summary statistics
     print("\n=== PCA SUMMARY STATISTICS ===")
@@ -1275,6 +1371,8 @@ def plot_comparative_pca(
     print_pca_summary(original_pca, original_pca_df, "Original Data")
     print_pca_summary(median_pca, median_pca_df, "Median Normalized")
     print_pca_summary(vsn_pca, vsn_pca_df, "VSN Normalized")
+
+    return None if show else fig
 
 
 def plot_control_correlation(
@@ -1435,7 +1533,8 @@ def plot_control_correlation_analysis(
     control_column: str = "Subject",
     control_labels: Optional[List[str]] = None,
     figsize: Tuple[int, int] = (24, 8),
-) -> None:
+    show: bool = True,
+) -> plt.Figure | None:
     """
     Plot control sample correlation analysis across normalization methods.
 
@@ -1459,6 +1558,16 @@ def plot_control_correlation_analysis(
         like 'Pool', 'Control', 'QC', 'Standard', etc.
     figsize : Tuple[int, int]
         Figure size
+    show : bool
+        If True (the default), show the figure and return None, as earlier versions did.
+        If False, return the figure without showing it, so it can be saved
+        (``fig.savefig(...)``) or changed before display.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure or None
+        The figure when ``show`` is False, otherwise None. Calls that stop early
+        because there is nothing to plot return None.
     """
 
     try:
@@ -1667,7 +1776,8 @@ def plot_control_correlation_analysis(
     )
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
     # Print correlation summary
     print("\n=== CONTROL CORRELATION SUMMARY ===")
@@ -1693,6 +1803,8 @@ def plot_control_correlation_analysis(
     print_correlation_summary(corr_original, "Original Data")
     print_correlation_summary(corr_median, "Median Normalized")
     print_correlation_summary(corr_vsn, "VSN Normalized")
+
+    return None if show else fig
 
 
 def plot_control_group_correlation_analysis(
