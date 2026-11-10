@@ -2,7 +2,8 @@
 
 The tables are in ``tests/downstream_contract.py``, whose docstring says where they come from and
 how to extend them. The first tests check them against the package: every pinned name still exists,
-every call made downstream still binds, and every config attribute callers set still exists.
+the package's ``__all__`` still lists its pinned names, every call made downstream still binds, and
+every config attribute callers set still exists.
 
 The smoke tests then make the calls notebooks make most, on the bundled example data, chained the
 way the PRISM-era notebooks chain them, and check the columns and keys callers read from the
@@ -60,13 +61,15 @@ def _missing(paths):
     return missing
 
 
-def _signature_problems(signature, positional, keywords):
+def _signature_problems(signature, positional, keywords, required):
     """Say why calls passing ``positional`` by position and ``keywords`` by name would now fail.
 
     Args:
         signature: The callable's current ``inspect.Signature``.
         positional: The parameters callers fill by position, in order, as named when pinned.
         keywords: The keyword names callers pass.
+        required: The parameters the callable required when pinned. ``positional`` and ``keywords``
+            pool every caller, so only these are known to be passed by all of them.
 
     Returns:
         A list of problems; empty when every such call still binds.
@@ -92,14 +95,13 @@ def _signature_problems(signature, positional, keywords):
             signature.bind_partial(**{keyword: None})
         except TypeError:
             problems.append(f"no longer accepts the keyword {keyword!r}")
-    passed = set(positional) | set(keywords)
     for param in params:
         if (
             param.default is P.empty
             and param.kind not in (P.VAR_POSITIONAL, P.VAR_KEYWORD)
-            and param.name not in passed
+            and param.name not in required
         ):
-            problems.append(f"{param.name!r} is required, but no caller passes it; give it a default")
+            problems.append(f"{param.name!r} is required, but was not when callers were pinned; give it a default")
     return problems
 
 
@@ -116,16 +118,23 @@ class TestNamesStillExist:
         missing = _missing(DOWNSTREAM_CALLS)
         assert not missing, f"Names callers call are gone: {missing}"
 
+    def test_package_all_keeps_pinned_names(self):
+        # A name can stay importable and still drop out of ``__all__``, and then
+        # ``from proteomics_toolkit import *`` no longer binds it.
+        dropped = sorted(set(PUBLIC_NAMES[""].split()) - set(ptk.__all__))
+        assert not dropped, f"Names dropped from proteomics_toolkit.__all__: {dropped}"
+
 
 class TestCallsStillBind:
     def test_downstream_calls(self):
         problems = []
-        for path, (positional, keywords) in DOWNSTREAM_CALLS.items():
+        for path, (positional, keywords, required) in DOWNSTREAM_CALLS.items():
             try:
                 signature = inspect.signature(_resolve(path))
             except (ImportError, AttributeError):
                 continue  # reported by TestNamesStillExist
-            problems += [f"{path}: {p}" for p in _signature_problems(signature, positional.split(), keywords.split())]
+            found = _signature_problems(signature, positional.split(), keywords.split(), required.split())
+            problems += [f"{path}: {p}" for p in found]
         assert not problems, "Calls made downstream would now fail:\n" + "\n".join(problems)
 
     def test_config_attributes_callers_set(self):
@@ -144,7 +153,7 @@ class TestSignatureCheck:
         pass
 
     def problems(self, changed):
-        return _signature_problems(inspect.signature(changed), ["data"], ["sample_columns", "method"])
+        return _signature_problems(inspect.signature(changed), ["data"], ["sample_columns", "method"], ["data"])
 
     def test_unchanged_signature_passes(self):
         assert self.problems(self.pinned) == []
@@ -179,7 +188,23 @@ class TestSignatureCheck:
         def changed(data, sample_columns=None, method="median", *, span):
             pass
 
-        assert self.problems(changed) == ["'span' is required, but no caller passes it; give it a default"]
+        assert self.problems(changed) == ["'span' is required, but was not when callers were pinned; give it a default"]
+
+    def test_optional_parameter_made_required_fails(self):
+        # Some caller passes method, so it is among the pinned keywords, but a caller that leaves it
+        # out would now fail.
+        def changed(data, sample_columns=None, *, method):
+            pass
+
+        assert self.problems(changed) == [
+            "'method' is required, but was not when callers were pinned; give it a default"
+        ]
+
+    def test_required_parameter_made_optional_passes(self):
+        def changed(data=None, sample_columns=None, method="median"):
+            pass
+
+        assert self.problems(changed) == []
 
     def test_var_keyword_accepts_any_keyword(self):
         def changed(data, **kwargs):

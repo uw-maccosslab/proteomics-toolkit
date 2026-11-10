@@ -4,9 +4,10 @@ The toolkit is called from the lab's analysis notebooks, from Skyline-PRISM's pa
 anyone who installs it from PyPI. Several of the lab's repositories install this folder editable, so
 they run whatever is checked out here. ``tests/test_public_api.py`` checks these tables.
 
-The tables only ever grow. When a check fails, the change broke a caller: keep the old name, position
-or keyword working (an alias, a new parameter added keyword-only at the end, a FutureWarning for a
-release before a behavior change) rather than editing the entry.
+The tables only ever grow; the one thing that may shrink is the list of parameters a call requires.
+When a check fails, the change broke a caller: keep the old name, position or keyword working (an
+alias, a new parameter added keyword-only at the end with a default, a FutureWarning for a release
+before a behavior change) rather than editing the entry.
 
 ``PUBLIC_NAMES`` is every public name as of 26.10.1. The other tables come from a scan of the lab's
 notebooks and scripts in November 2026, when 26.10.1 was current. To find usage added since, run
@@ -19,7 +20,8 @@ Paths are relative to the package: ``"normalization.median_normalize"`` is
 """
 
 # Every public function and class each module defines, and the package's ``__all__`` (key ""), as
-# of 26.10.1. Each must still exist at that path.
+# of 26.10.1. Each must still exist at that path, and the "" names must stay in ``__all__``, since
+# ``from proteomics_toolkit import *`` binds only what ``__all__`` lists.
 PUBLIC_NAMES = {
     "": (
         "analyze_negative_values apply_systematic_color_scheme BATCH_SUFFIX_DELIMITER calculate_temporal_means"
@@ -119,133 +121,196 @@ DOWNSTREAM_ATTRIBUTES = {
 }
 
 # Calls made downstream: path -> (the parameters callers fill by position, in order; the keywords
-# callers pass). The private names are here because callers use them: Skyline-PRISM references its
-# priors to _fit_intensity_trend_prior and _fit_count_dependent_prior, and notebooks import the rest.
+# callers pass; the parameters the callable required, with no default, when the entry was added). The
+# first two are what the scanned calls pass between them, not what each one passes, so a parameter
+# outside the third may be left out by some caller: it must never become required. A required one
+# may become optional; drop it from the third then. The private names are here because callers use
+# them: Skyline-PRISM references its priors to _fit_intensity_trend_prior and
+# _fit_count_dependent_prior, and notebooks import the rest.
 DOWNSTREAM_CALLS = {
-    "analyze_negative_values": ("", "data normalization_method sample_columns"),
+    "analyze_negative_values": ("", "data normalization_method sample_columns", "data normalization_method"),
     "classify_samples": (
         "sample_metadata",
         "apply_systematic_colors control_column control_labels group_column group_labels sample_metadata"
         " systematic_color_palette",
+        "sample_metadata group_column group_labels control_column control_labels",
     ),
-    "cluster_proteins_kmeans": ("data sample_columns", "k k_range log_transform n_init random_state standardize"),
-    "compute_paired_fold_changes": ("protein_data sample_metadata config", ""),
-    "compute_shap_values": ("model X", "feature_names"),
-    "display_analysis_summary": ("differential_results config", "config differential_results label_top_n"),
+    "cluster_proteins_kmeans": (
+        "data sample_columns",
+        "k k_range log_transform n_init random_state standardize",
+        "data sample_columns",
+    ),
+    "compute_paired_fold_changes": ("protein_data sample_metadata config", "", "protein_data sample_metadata config"),
+    "compute_shap_values": ("model X", "feature_names", "model X"),
+    "display_analysis_summary": (
+        "differential_results config",
+        "config differential_results label_top_n",
+        "differential_results config",
+    ),
     "enhanced_sample_processing": (
         "",
         "control_column control_labels group_column group_labels metadata protein_data strict_validation"
         " toolkit_module",
+        "metadata protein_data group_column group_labels control_column control_labels toolkit_module",
     ),
-    "EnrichmentConfig": ("", "enrichr_libraries min_genes pvalue_cutoff top_n"),
+    "EnrichmentConfig": ("", "enrichr_libraries min_genes pvalue_cutoff top_n", ""),
     "export_complete_analysis": (
         "",
         "analysis_description config_dict differential_results filtered_data normalized_data output_prefix"
         " sample_metadata",
+        "normalized_data sample_metadata config_dict",
     ),
-    "generate_sample_matching_diagnostic_report": ("validation_results", ""),
-    "get_intensity_trend_points": ("results_df", ""),
+    "generate_sample_matching_diagnostic_report": ("validation_results", "", "validation_results"),
+    "get_intensity_trend_points": ("results_df", "", "results_df"),
     "inter_vs_intra_group_variance": (
         "data sample_columns sample_metadata",
         "group_column log_transform min_per_group",
+        "data sample_columns sample_metadata group_column",
     ),
-    "load_prism_data": ("parquet_file metadata_file", ""),
-    "load_prism_peptide_data": ("parquet_file", "peptide_cols"),
-    "load_skyline_data": ("", "metadata_file peptide_file protein_file"),
-    "method_specificity_score": ("data sample_columns sample_metadata", "group_column log_transform"),
-    "parse_enrichr_results": ("results config", ""),
-    "permanova": ("data sample_columns sample_metadata", "factor log_transform metric n_permutations random_state"),
+    "load_prism_data": ("parquet_file metadata_file", "", "parquet_file"),
+    "load_prism_peptide_data": ("parquet_file", "peptide_cols", "parquet_file"),
+    "load_skyline_data": ("", "metadata_file peptide_file protein_file", "protein_file metadata_file"),
+    "method_specificity_score": (
+        "data sample_columns sample_metadata",
+        "group_column log_transform",
+        "data sample_columns sample_metadata group_column",
+    ),
+    "parse_enrichr_results": ("results config", "", "results"),
+    "permanova": (
+        "data sample_columns sample_metadata",
+        "factor log_transform metric n_permutations random_state",
+        "data sample_columns sample_metadata factor",
+    ),
     "plot_box_plot": (
         "data sample_columns sample_metadata",
         "data figsize group_colors group_order log_transform sample_columns sample_metadata title",
+        "data sample_columns sample_metadata",
     ),
-    "plot_control_correlation": ("", "cluster control_columns data group_colors sample_metadata title"),
+    "plot_control_correlation": (
+        "",
+        "cluster control_columns data group_colors sample_metadata title",
+        "data control_columns",
+    ),
     "plot_control_correlation_analysis": (
         "",
         "control_column control_labels median_normalized_data original_data sample_columns sample_metadata"
         " vsn_normalized_data",
+        "original_data median_normalized_data vsn_normalized_data sample_columns sample_metadata",
     ),
-    "plot_enrichment_barplot": ("enrichment_df", "title top_n"),
-    "plot_enrichment_comparison": ("enrichment_dict", "title top_n_per_group"),
-    "plot_fold_change_pca": ("fold_change_matrix group_labels", "group_colors title"),
+    "plot_enrichment_barplot": ("enrichment_df", "title top_n", "enrichment_df"),
+    "plot_enrichment_comparison": ("enrichment_dict", "title top_n_per_group", "enrichment_dict"),
+    "plot_fold_change_pca": (
+        "fold_change_matrix group_labels",
+        "group_colors title",
+        "fold_change_matrix group_labels",
+    ),
     "plot_pca": (
         "data sample_columns sample_metadata",
         "data figsize group_colors log_transform sample_columns sample_metadata title",
+        "data sample_columns sample_metadata",
     ),
-    "plot_pca_loadings": ("data sample_columns", "annotation_column log_transform top_n"),
-    "plot_regression_scatter": ("results", "title"),
-    "plot_roc_comparison": ("results_dict", "title"),
-    "plot_roc_curve": ("classification_results", "color title"),
-    "plot_selection_frequency": ("results", "title top_n"),
-    "plot_shap_summary": ("explanation", "max_display plot_type title"),
-    "plot_variance_vs_intensity": ("results", "figsize"),
+    "plot_pca_loadings": ("data sample_columns", "annotation_column log_transform top_n", "data sample_columns"),
+    "plot_regression_scatter": ("results", "title", "results"),
+    "plot_roc_comparison": ("results_dict", "title", "results_dict"),
+    "plot_roc_curve": ("classification_results", "color title", "classification_results"),
+    "plot_selection_frequency": ("results", "title top_n", "results"),
+    "plot_shap_summary": ("explanation", "max_display plot_type title", "explanation"),
+    "plot_variance_vs_intensity": ("results", "figsize", "results"),
     "plot_volcano": (
         "differential_df",
         "alpha axis_label_fontsize differential_df enable_pvalue_fallback fc_threshold figsize gene_column"
         " label_fontsize label_top_n legend_loc normalization_method p_threshold point_size tick_label_fontsize title"
         " use_adjusted_pvalue",
+        "differential_df",
     ),
-    "query_enrichr": ("gene_list config", "description"),
+    "query_enrichr": ("gene_list config", "description", "gene_list"),
     "run_binary_classification": (
         "fold_change_matrix group_labels",
         "annotations cv_method feature_proteins feature_selection fold_change_matrix gene_col group_labels id_col"
         " method n_top_features return_model",
+        "fold_change_matrix group_labels",
     ),
     "run_comprehensive_statistical_analysis": (
         "normalized_data sample_metadata config",
         "config normalized_data protein_annotations sample_metadata",
+        "normalized_data sample_metadata config",
     ),
     "run_differential_enrichment": (
         "results_df",
         "config gene_column logfc_column logfc_threshold pvalue_column pvalue_threshold results_df",
+        "results_df",
     ),
     "run_elasticnet_regression": (
         "data target",
         "annotations gene_col id_col log_transform n_jobs n_permutations outer_cv random_state",
+        "data target",
     ),
-    "run_enrichment_analysis": ("gene_list", "config description"),
-    "run_moderated_linear_model": ("feature_data metadata_df config", ""),
+    "run_enrichment_analysis": ("gene_list", "config description", "gene_list"),
+    "run_moderated_linear_model": ("feature_data metadata_df config", "", "feature_data metadata_df config"),
     "run_rfecv_stability": (
         "data labels",
         "annotations consensus_threshold estimator gene_col id_col inner_cv log_transform n_jobs n_permutations"
         " outer_cv prefilter_top_var random_state step",
+        "data labels",
     ),
-    "StatisticalConfig": ("", ""),
-    "strip_batch_suffix": ("column_names", ""),
+    "StatisticalConfig": ("", "", ""),
+    "strip_batch_suffix": ("column_names", "", "column_names"),
     "validate_metadata_data_consistency": (
         "",
         "control_column control_labels metadata metadata_sample_names protein_columns verbose",
+        "metadata metadata_sample_names protein_columns control_column control_labels",
     ),
-    "classification.compute_shap_values": ("", "X annotations feature_names gene_col id_col model"),
-    "classification.plot_roc_comparison": ("", "figsize results_dict title"),
-    "classification.plot_shap_summary": ("explanation", "max_display plot_type title"),
+    "classification.compute_shap_values": ("", "X annotations feature_names gene_col id_col model", "model X"),
+    "classification.plot_roc_comparison": ("", "figsize results_dict title", "results_dict"),
+    "classification.plot_shap_summary": ("explanation", "max_display plot_type title", "explanation"),
     "classification.run_binary_classification": (
         "",
         "annotations cv_method feature_proteins feature_selection fold_change_matrix gene_col group_labels id_col"
         " method n_top_features return_model",
+        "fold_change_matrix group_labels",
     ),
-    "classification.select_features_by_mad": ("fold_change_matrix", "fold_change_matrix n_top_features"),
-    "data_import.clean_description": ("protein_description", ""),
-    "data_import.clean_sample_names": ("sample_columns", "auto_detect common_prefix common_suffix"),
-    "data_import.identify_and_classify_controls": ("sample_metadata", ""),
-    "data_import.identify_sample_columns": ("data metadata", ""),
-    "data_import.load_prism_data": ("", "metadata_file parquet_file"),
-    "data_import.load_skyline_data": ("", "metadata_file peptide_file protein_file"),
-    "data_import.match_samples_to_metadata": ("cleaned_sample_names metadata", "include_unmatched"),
-    "data_import.parse_gene_from_description": ("protein_description", ""),
-    "data_import.parse_uniprot_identifier": ("protein_id", ""),
-    "data_import.strip_batch_suffix": ("column_names", ""),
-    "enrichment.EnrichmentConfig": ("", "enrichr_libraries min_genes pvalue_cutoff top_n"),
-    "enrichment.get_available_libraries": ("", ""),
-    "enrichment.merge_enrichment_results": ("enrichment_dict", ""),
-    "enrichment.parse_enrichr_results": ("results config", ""),
-    "enrichment.plot_enrichment_barplot": ("enrichment_df", "figsize title top_n"),
-    "enrichment.plot_enrichment_comparison": ("enrichment_dict", "figsize title top_n_per_group"),
-    "enrichment.query_enrichr": ("gene_list config", ""),
-    "enrichment.run_differential_enrichment": ("results_df", "config logfc_threshold pvalue_threshold verbose"),
-    "enrichment.run_enrichment_analysis": ("gene_list config", "verbose"),
-    "enrichment.run_enrichment_by_group": ("data_df", "config gene_column group_column verbose"),
-    "export._add_annotations_to_normalized_data": ("", "annotation_cols filtered_data normalized_data"),
+    "classification.select_features_by_mad": (
+        "fold_change_matrix",
+        "fold_change_matrix n_top_features",
+        "fold_change_matrix",
+    ),
+    "data_import.clean_description": ("protein_description", "", "protein_description"),
+    "data_import.clean_sample_names": ("sample_columns", "auto_detect common_prefix common_suffix", "sample_columns"),
+    "data_import.identify_and_classify_controls": ("sample_metadata", "", "sample_metadata"),
+    "data_import.identify_sample_columns": ("data metadata", "", "data metadata"),
+    "data_import.load_prism_data": ("", "metadata_file parquet_file", "parquet_file"),
+    "data_import.load_skyline_data": ("", "metadata_file peptide_file protein_file", "protein_file metadata_file"),
+    "data_import.match_samples_to_metadata": (
+        "cleaned_sample_names metadata",
+        "include_unmatched",
+        "cleaned_sample_names metadata",
+    ),
+    "data_import.parse_gene_from_description": ("protein_description", "", "protein_description"),
+    "data_import.parse_uniprot_identifier": ("protein_id", "", "protein_id"),
+    "data_import.strip_batch_suffix": ("column_names", "", "column_names"),
+    "enrichment.EnrichmentConfig": ("", "enrichr_libraries min_genes pvalue_cutoff top_n", ""),
+    "enrichment.get_available_libraries": ("", "", ""),
+    "enrichment.merge_enrichment_results": ("enrichment_dict", "", "enrichment_dict"),
+    "enrichment.parse_enrichr_results": ("results config", "", "results"),
+    "enrichment.plot_enrichment_barplot": ("enrichment_df", "figsize title top_n", "enrichment_df"),
+    "enrichment.plot_enrichment_comparison": ("enrichment_dict", "figsize title top_n_per_group", "enrichment_dict"),
+    "enrichment.query_enrichr": ("gene_list config", "", "gene_list"),
+    "enrichment.run_differential_enrichment": (
+        "results_df",
+        "config logfc_threshold pvalue_threshold verbose",
+        "results_df",
+    ),
+    "enrichment.run_enrichment_analysis": ("gene_list config", "verbose", "gene_list"),
+    "enrichment.run_enrichment_by_group": (
+        "data_df",
+        "config gene_column group_column verbose",
+        "data_df group_column",
+    ),
+    "export._add_annotations_to_normalized_data": (
+        "",
+        "annotation_cols filtered_data normalized_data",
+        "normalized_data filtered_data annotation_cols",
+    ),
     "export.create_config_dict_from_notebook_vars": (
         "",
         "FORCE_CATEGORICAL additional_interactions analysis_description analysis_type control_column control_labels"
@@ -253,136 +318,246 @@ DOWNSTREAM_CALLS = {
         " group_column group_labels group_order handle_negatives interaction_terms label_top_proteins log_base"
         " log_pseudocount log_transform_before_stats metadata_file min_detection_rate min_positive_replacement"
         " min_samples_per_group negative_handling_method normalization_method optimize_vsn output_prefix"
-        " p_value_threshold paired_column paired_label1 paired_label2 peptide_file protein_file q_value_max random_seed"
-        " remove_common_prefix statistical_test_method subject_column systematic_color_palette toolkit_path"
-        " use_adjusted_pvalue use_systematic_colors",
+        " p_value_threshold paired_column paired_label1 paired_label2 peptide_file protein_file q_value_max"
+        " random_seed remove_common_prefix statistical_test_method subject_column systematic_color_palette"
+        " toolkit_path use_adjusted_pvalue use_systematic_colors",
+        "",
     ),
-    "export.export_analysis_results": ("", "normalized_data output_prefix sample_metadata"),
+    "export.export_analysis_results": (
+        "",
+        "normalized_data output_prefix sample_metadata",
+        "normalized_data sample_metadata",
+    ),
     "export.export_complete_analysis": (
         "",
         "analysis_description config_dict differential_results filtered_data normalized_data output_prefix"
         " sample_metadata",
+        "normalized_data sample_metadata config_dict",
     ),
-    "export.export_significant_proteins_summary": ("", "config_dict differential_results output_prefix"),
-    "export.export_timestamped_config": ("", "analysis_description computed_values config_dict output_prefix"),
+    "export.export_significant_proteins_summary": (
+        "",
+        "config_dict differential_results output_prefix",
+        "differential_results config_dict",
+    ),
+    "export.export_timestamped_config": (
+        "",
+        "analysis_description computed_values config_dict output_prefix",
+        "config_dict",
+    ),
     "marker_discovery.inter_vs_intra_group_variance": (
         "",
         "annotation_columns data group_column log_transform min_per_group sample_columns sample_metadata",
+        "data sample_columns sample_metadata group_column",
     ),
     "multivariate.permanova": (
         "",
         "data factor log_transform metric n_permutations random_state sample_columns sample_metadata",
+        "data sample_columns sample_metadata factor",
     ),
-    "normalization.analyze_negative_values": ("data", "normalization_method sample_columns"),
+    "normalization.analyze_negative_values": (
+        "data",
+        "normalization_method sample_columns",
+        "data normalization_method",
+    ),
     "normalization.calculate_detailed_normalization_stats": (
         "original_data normalized_data",
         "control_labels method normalized_data original_data sample_metadata",
+        "original_data normalized_data method",
     ),
-    "normalization.calculate_normalization_stats": ("data normalized_data method", "method"),
-    "normalization.get_normalization_characteristics": ("", ""),
-    "normalization.handle_negative_values": ("data", "data method min_positive_value sample_columns"),
-    "normalization.is_normalization_log_transformed": ("normalization_method", ""),
-    "normalization.loess_normalize": ("data", "sample_columns span"),
-    "normalization.log_transform": ("data", "base"),
-    "normalization.mad_normalize": ("data sample_columns", "sample_columns"),
-    "normalization.median_normalize": ("data sample_columns", "sample_columns"),
-    "normalization.quantile_normalize": ("data", "sample_columns"),
-    "normalization.rlr_normalize": ("data sample_columns", "sample_columns"),
-    "normalization.vsn_normalize": ("data", "optimize_params sample_columns"),
-    "normalization.z_score_normalize": ("data sample_columns", "sample_columns"),
-    "preprocessing._normalize_group_value": ("value", ""),
+    "normalization.calculate_normalization_stats": (
+        "data normalized_data method",
+        "method",
+        "data normalized_data method",
+    ),
+    "normalization.get_normalization_characteristics": ("", "", ""),
+    "normalization.handle_negative_values": ("data", "data method min_positive_value sample_columns", "data"),
+    "normalization.is_normalization_log_transformed": ("normalization_method", "", "normalization_method"),
+    "normalization.loess_normalize": ("data", "sample_columns span", "data"),
+    "normalization.log_transform": ("data", "base", "data"),
+    "normalization.mad_normalize": ("data sample_columns", "sample_columns", "data"),
+    "normalization.median_normalize": ("data sample_columns", "sample_columns", "data"),
+    "normalization.quantile_normalize": ("data", "sample_columns", "data"),
+    "normalization.rlr_normalize": ("data sample_columns", "sample_columns", "data"),
+    "normalization.vsn_normalize": ("data", "optimize_params sample_columns", "data"),
+    "normalization.z_score_normalize": ("data sample_columns", "sample_columns", "data"),
+    "preprocessing._normalize_group_value": ("value", "", "value"),
     "preprocessing.apply_systematic_color_scheme": (
         "sample_metadata",
         "control_labels group_labels systematic_color_palette",
+        "sample_metadata group_labels control_labels systematic_color_palette",
     ),
-    "preprocessing.assess_data_completeness": ("data sample_columns sample_metadata", ""),
-    "preprocessing.calculate_group_colors": ("sample_metadata", ""),
-    "preprocessing.classify_samples": ("sample_metadata", "control_column control_labels group_column group_labels"),
-    "preprocessing.create_standard_data_structure": ("data cleaned_sample_names", "cleaned_sample_names data"),
-    "preprocessing.filter_proteins_by_completeness": ("data sample_columns min_detection_rate", "min_detection_rate"),
-    "preprocessing.identify_annotation_columns": ("data", ""),
-    "preprocessing.parse_gene_and_description": ("data", ""),
-    "preprocessing.parse_protein_identifiers": ("data", "protein_col"),
-    "statistical_analysis._apply_log_transformation_if_needed": ("data config", ""),
-    "statistical_analysis._create_empty_mixed_effects_result": ("protein_idx reason", ""),
-    "statistical_analysis._create_empty_result": ("protein_idx reason", ""),
-    "statistical_analysis._fit_count_dependent_prior": ("fit counts", ""),
-    "statistical_analysis._fit_intensity_trend_prior": ("fit raw_feature_data metadata_df config", ""),
-    "statistical_analysis.apply_multiple_testing_correction": ("results_df config", ""),
-    "statistical_analysis.display_analysis_summary": ("", "config differential_results label_top_n"),
-    "statistical_analysis.prepare_metadata_dataframe": ("sample_metadata_dict sample_columns config", ""),
+    "preprocessing.assess_data_completeness": (
+        "data sample_columns sample_metadata",
+        "",
+        "data sample_columns sample_metadata",
+    ),
+    "preprocessing.calculate_group_colors": ("sample_metadata", "", "sample_metadata"),
+    "preprocessing.classify_samples": (
+        "sample_metadata",
+        "control_column control_labels group_column group_labels",
+        "sample_metadata group_column group_labels control_column control_labels",
+    ),
+    "preprocessing.create_standard_data_structure": ("data cleaned_sample_names", "cleaned_sample_names data", "data"),
+    "preprocessing.filter_proteins_by_completeness": (
+        "data sample_columns min_detection_rate",
+        "min_detection_rate",
+        "data sample_columns",
+    ),
+    "preprocessing.identify_annotation_columns": ("data", "", "data"),
+    "preprocessing.parse_gene_and_description": ("data", "", "data"),
+    "preprocessing.parse_protein_identifiers": ("data", "protein_col", "data"),
+    "statistical_analysis._apply_log_transformation_if_needed": ("data config", "", "data config"),
+    "statistical_analysis._create_empty_mixed_effects_result": ("protein_idx reason", "", "protein_idx reason"),
+    "statistical_analysis._create_empty_result": ("protein_idx reason", "", "protein_idx reason"),
+    "statistical_analysis._fit_count_dependent_prior": ("fit counts", "", "fit counts"),
+    "statistical_analysis._fit_intensity_trend_prior": (
+        "fit raw_feature_data metadata_df config",
+        "",
+        "fit raw_feature_data metadata_df config",
+    ),
+    "statistical_analysis.apply_multiple_testing_correction": ("results_df config", "", "results_df config"),
+    "statistical_analysis.display_analysis_summary": (
+        "",
+        "config differential_results label_top_n",
+        "differential_results config",
+    ),
+    "statistical_analysis.prepare_metadata_dataframe": (
+        "sample_metadata_dict sample_columns config",
+        "",
+        "sample_metadata_dict sample_columns config",
+    ),
     "statistical_analysis.run_comprehensive_statistical_analysis": (
         "normalized_data sample_metadata config",
         "config normalized_data protein_annotations sample_metadata",
+        "normalized_data sample_metadata config",
     ),
-    "statistical_analysis.run_mann_whitney_test": ("protein_data metadata_df config", ""),
-    "statistical_analysis.run_paired_t_test": ("protein_data metadata_df config", ""),
-    "statistical_analysis.run_unpaired_t_test": ("protein_data metadata_df config", ""),
-    "statistical_analysis.run_wilcoxon_test": ("protein_data metadata_df config", ""),
-    "statistical_analysis.StatisticalConfig": ("", ""),
-    "temporal_clustering.calculate_temporal_means": ("", "data_df metadata_dict subject_column week_column"),
-    "temporal_clustering.classify_trend_pattern": ("trajectory", ""),
+    "statistical_analysis.run_mann_whitney_test": (
+        "protein_data metadata_df config",
+        "",
+        "protein_data metadata_df config",
+    ),
+    "statistical_analysis.run_paired_t_test": (
+        "protein_data metadata_df config",
+        "",
+        "protein_data metadata_df config",
+    ),
+    "statistical_analysis.run_unpaired_t_test": (
+        "protein_data metadata_df config",
+        "",
+        "protein_data metadata_df config",
+    ),
+    "statistical_analysis.run_wilcoxon_test": (
+        "protein_data metadata_df config",
+        "",
+        "protein_data metadata_df config",
+    ),
+    "statistical_analysis.StatisticalConfig": ("", "", ""),
+    "temporal_clustering.calculate_temporal_means": (
+        "",
+        "data_df metadata_dict subject_column week_column",
+        "data_df metadata_dict",
+    ),
+    "temporal_clustering.classify_trend_pattern": ("trajectory", "", "trajectory"),
     "temporal_clustering.cluster_temporal_trends": (
         "temporal_df week_columns config",
         "config temporal_df week_columns",
+        "temporal_df week_columns",
     ),
-    "temporal_clustering.determine_optimal_clusters": ("X_scaled", "X_scaled k_range plot prefer_higher_k random_seed"),
-    "temporal_clustering.filter_significant_proteins": ("merged_df config", ""),
-    "temporal_clustering.get_week_columns": ("temporal_df", ""),
-    "temporal_clustering.merge_with_statistics": ("temporal_df stats_df cluster_labels cluster_names", ""),
-    "temporal_clustering.name_clusters_by_pattern": ("X_scaled labels week_columns", ""),
-    "temporal_clustering.plot_silhouette_analysis": ("X_scaled labels", "cluster_names title"),
+    "temporal_clustering.determine_optimal_clusters": (
+        "X_scaled",
+        "X_scaled k_range plot prefer_higher_k random_seed",
+        "X_scaled",
+    ),
+    "temporal_clustering.filter_significant_proteins": ("merged_df config", "", "merged_df"),
+    "temporal_clustering.get_week_columns": ("temporal_df", "", "temporal_df"),
+    "temporal_clustering.merge_with_statistics": (
+        "temporal_df stats_df cluster_labels cluster_names",
+        "",
+        "temporal_df stats_df cluster_labels cluster_names",
+    ),
+    "temporal_clustering.name_clusters_by_pattern": (
+        "X_scaled labels week_columns",
+        "",
+        "X_scaled labels week_columns",
+    ),
+    "temporal_clustering.plot_silhouette_analysis": (
+        "X_scaled labels",
+        "cluster_names title",
+        "X_scaled labels cluster_names",
+    ),
     "temporal_clustering.run_temporal_analysis": (
         "",
         "config data_df metadata_dict output_prefix run_enrichment stats_df treatment_name",
+        "data_df metadata_dict stats_df treatment_name",
     ),
     "temporal_clustering.TemporalClusteringConfig": (
         "",
         "alpha auto_detect_clusters clustering_method cmap enrichment_pvalue_cutoff enrichment_top_n enrichr_libraries"
         " figsize linewidth max_clusters min_clusters min_fold_change min_genes_for_enrichment n_clusters"
         " p_value_threshold random_seed use_adjusted_pvalue",
+        "",
     ),
     "visualization.plot_box_plot": (
         "",
         "data figsize group_colors group_order log_transform sample_columns sample_metadata title",
+        "data sample_columns sample_metadata",
     ),
     "visualization.plot_comparative_pca": (
         "",
         "figsize group_colors group_order median_normalized_data original_data sample_columns sample_metadata"
         " vsn_normalized_data",
+        "original_data median_normalized_data vsn_normalized_data sample_columns sample_metadata",
     ),
     "visualization.plot_control_correlation_analysis": (
         "",
         "control_column control_labels figsize median_normalized_data original_data sample_columns sample_metadata"
         " vsn_normalized_data",
+        "original_data median_normalized_data vsn_normalized_data sample_columns sample_metadata",
     ),
     "visualization.plot_control_cv_distribution": (
         "",
         "control_column control_labels cv_threshold data figsize normalization_method sample_columns sample_metadata"
         " title_suffix",
+        "data sample_columns sample_metadata control_column control_labels",
     ),
     "visualization.plot_individual_control_pool_analysis": (
         "",
         "control_column control_labels data figsize normalization_method sample_columns sample_metadata",
+        "data sample_columns sample_metadata",
     ),
-    "visualization.plot_normalization_comparison": ("", "method normalized_data original_data sample_columns"),
-    "visualization.plot_pca": ("", "data figsize group_colors log_transform sample_columns sample_metadata title"),
+    "visualization.plot_normalization_comparison": (
+        "",
+        "method normalized_data original_data sample_columns",
+        "original_data normalized_data sample_columns",
+    ),
+    "visualization.plot_pca": (
+        "",
+        "data figsize group_colors log_transform sample_columns sample_metadata title",
+        "data sample_columns sample_metadata",
+    ),
     "visualization.plot_sample_clustermap": (
         "data",
         "cmap col_cluster data figsize group_colors group_column label_column legend_title method metric row_cluster"
         " sample_columns sample_metadata show_col_labels show_row_labels title vmax vmin zscore",
+        "data sample_columns",
     ),
-    "visualization.plot_sample_correlation_heatmap": ("data", "figsize sample_columns sample_metadata"),
+    "visualization.plot_sample_correlation_heatmap": (
+        "data",
+        "figsize sample_columns sample_metadata",
+        "data sample_columns sample_metadata",
+    ),
     "visualization.plot_sample_correlation_triangular_heatmap": (
         "",
         "annot_fontsize data figsize group_colors group_column label_fontsize method sample_columns sample_metadata"
         " show_clustering",
+        "data sample_columns sample_metadata",
     ),
-    "visualization.plot_variance_vs_intensity": ("results", "figsize"),
+    "visualization.plot_variance_vs_intensity": ("results", "figsize", "results"),
     "visualization.plot_volcano": (
         "",
         "differential_df enable_pvalue_fallback fc_threshold figsize label_fontsize label_top_n legend_loc"
         " normalization_method p_threshold title use_adjusted_pvalue",
+        "differential_df",
     ),
 }
 
