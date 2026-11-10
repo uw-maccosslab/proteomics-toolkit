@@ -41,7 +41,7 @@ def _build_distance_matrix(
 
     Drops proteins with any NaN across the requested samples (PERMANOVA
     requires complete cases for the distance computation). With
-    ``strata_labels``, each protein is centred on its mean within each
+    ``strata_labels``, each protein is centered on its mean within each
     stratum before the distances are taken.
     """
     if metric not in SUPPORTED_METRICS:
@@ -140,13 +140,13 @@ def permanova(
             following the standard add-one convention so p > 0.
         random_state: Seed for the permutation RNG.
         strata: Optional metadata field (batch, sack day, cohort) that
-            ``factor`` should be tested within. Each protein is centred
+            ``factor`` should be tested within. Each protein is centered
             on its mean within each stratum before the distances are
             taken, so differences between strata do not count as
             variance, and labels are permuted only within strata. This
             is the PERMANOVA counterpart of a ``~ factor + strata``
             model, and keeps the test exact when ``factor`` is unevenly
-            spread over the strata. Centring makes values negative, so
+            spread over the strata. Centering makes values negative, so
             ``metric="braycurtis"`` is not allowed with ``strata``.
             Samples with no ``strata`` value are dropped.
 

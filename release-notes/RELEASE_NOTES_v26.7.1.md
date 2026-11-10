@@ -2,7 +2,7 @@
 
 ## Overview
 
-Maintenance release. There are no changes to analysis behaviour, function
+Maintenance release. There are no changes to analysis behavior, function
 signatures, or results: code that works on 26.7.0 produces identical output on
 26.7.1. What changed is the release plumbing. The v26.7.0 CI run failed its
 lint job while all three test jobs passed, and because the publish workflow

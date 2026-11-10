@@ -78,7 +78,7 @@ Both functions are exported at the package top level
 
   Requires a peptide-count column in the data (`config.peptide_count_column`,
   default `"n_peptides"`), matching the existing `deqms` requirement. Falls
-  back cleanly to intensity-only behaviour when the counts are degenerate.
+  back cleanly to intensity-only behavior when the counts are degenerate.
 
 - `plot_variance_vs_intensity` now carries `peptide_count_used`,
   `peptide_log_var_adj`, and `intensity_log_var_hat` on the diagnostic

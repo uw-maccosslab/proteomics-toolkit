@@ -517,7 +517,7 @@ def calculate_group_colors(
                 group_colors[group] = "#696969"  # DimGray as default control color
 
     else:
-        # No meaningful groups - use grey
+        # No meaningful groups - use gray
         group_colors = {group: "#7f7f7f" for group in unique_groups}
 
     return group_colors, group_counts

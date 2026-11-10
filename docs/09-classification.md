@@ -27,7 +27,7 @@ leakage-free MAD ranking.
 |---|---|---|
 | `"mad"` *(default)* | no (unsupervised MAD across subjects) | small datasets; the safe default |
 | `"differential_abundance"` | yes, but **nested** - training split only per fold | small datasets when you want a supervised ranker |
-| `"fold_change"` | no in principle, but can correlate with outcome if the treatment effect is asymmetric | legacy behaviour - avoid for small N |
+| `"fold_change"` | no in principle, but can correlate with outcome if the treatment effect is asymmetric | legacy behavior - avoid for small N |
 | explicit `feature_proteins=...` | up to you | features from a truly independent source (different cohort, prior biology) |
 
 Why it matters: on a small cohort, ranking features by `|fold-change|`
@@ -146,7 +146,7 @@ and per-fold ROC curves.
 PRISM and other upstream pipelines often produce opaque feature IDs
 (e.g., `PG0123` protein-group identifiers). The classification API can
 relabel feature IDs to gene symbols at the point where the user
-surface is materialised, so plots, the `feature_importances` Series
+surface is materialized, so plots, the `feature_importances` Series
 index, and SHAP `Explanation.feature_names` show gene names while the
 model is still trained on the original IDs internally.
 

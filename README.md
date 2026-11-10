@@ -380,7 +380,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `cluster_proteins_kmeans()` — K-means clustering of proteins over samples with silhouette-driven k selection; supports per-protein z-score for shape-based clustering
 
 ### multivariate.py
-- `permanova()` — Anderson 2001 PERMANOVA on a sample-by-sample distance matrix with label permutation for significance; supports euclidean, braycurtis, cosine, correlation, and cityblock metrics, and `strata=` to test within batches or days (each protein centred within stratum, labels permuted within stratum)
+- `permanova()` — Anderson 2001 PERMANOVA on a sample-by-sample distance matrix with label permutation for significance; supports euclidean, braycurtis, cosine, correlation, and cityblock metrics, and `strata=` to test within batches or days (each protein centered within stratum, labels permuted within stratum)
 
 ### validation.py
 - `validate_metadata_data_consistency()` — Check metadata matches data columns

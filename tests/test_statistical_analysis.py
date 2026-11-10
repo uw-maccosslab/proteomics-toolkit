@@ -477,7 +477,7 @@ class TestModeratedLinearModelDeqms:
         with pytest.raises(ValueError, match="peptide-count column"):
             run_moderated_linear_model(feature_data, metadata_df, config)
 
-    def test_custom_count_column_honoured(self):
+    def test_custom_count_column_honored(self):
         feature_data, metadata_df, config = _make_limma_fixture()
         rng = np.random.default_rng(1)
         feature_data["custom_count"] = rng.integers(2, 20, size=len(feature_data))
@@ -555,7 +555,7 @@ class TestModeratedLinearModelIntensityPeptideTrend:
         with pytest.raises(ValueError, match="peptide-count column"):
             run_moderated_linear_model(feature_data, metadata_df, config)
 
-    def test_custom_count_column_honoured(self):
+    def test_custom_count_column_honored(self):
         feature_data, metadata_df, config = _make_limma_fixture()
         rng = np.random.default_rng(2)
         feature_data["my_counts"] = rng.integers(2, 30, size=len(feature_data))
@@ -699,7 +699,7 @@ class TestModeratedLinearModelIntensityTrend:
 
         # iterrows must stay quick - small fixture only ~30 rows but the same
         # deepcopy-per-row code path runs. Allow generous headroom (50ms is
-        # still ~3 orders of magnitude faster than the bug's behaviour).
+        # still ~3 orders of magnitude faster than the bug's behavior).
         t0 = time.time()
         rows = list(result.iterrows())
         elapsed = time.time() - t0
@@ -1544,7 +1544,7 @@ class TestPriorCalibrationByIntensity:
     """The property the default prior was chosen for: calibrated BY INTENSITY, not just overall.
 
     A prior can give 5% of null p-values below 0.05 on average while being optimistic for bright
-    features and conservative for dim ones, the two cancelling - which is what the pool-shaped
+    features and conservative for dim ones, the two canceling - which is what the pool-shaped
     intensity trend does, and what every earlier calibration check, measuring the overall rate
     only, missed.
 
@@ -1857,7 +1857,7 @@ def _make_linear_trend_fixture(
     weeks = np.array([t for _ in range(n_subjects) for t in timepoints], dtype=float)
     subjects = [f"S{s:02d}" for s in range(n_subjects) for _ in timepoints]
 
-    # Subject random intercepts shared across all features (mean expression centred at 10).
+    # Subject random intercepts shared across all features (mean expression centered at 10).
     subj_intercepts = rng.normal(0.0, subject_sigma, size=n_subjects)
     subj_intercept_per_sample = np.array([subj_intercepts[s] for s in range(n_subjects) for _ in timepoints])
 

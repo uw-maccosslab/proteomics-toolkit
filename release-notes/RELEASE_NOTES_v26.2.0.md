@@ -23,7 +23,7 @@ by feature comparison with BludauLab's
 - `datasets.load_example_data()` now returns a 5-tuple
   `(protein_data, peptide_data, metadata, sample_columns, protein_sequences)`.
 - Classification default feature selection changed from fold-change
-  to MAD (leakage-free). Old behaviour available via
+  to MAD (leakage-free). Old behavior available via
   `feature_selection="fold_change"`.
 
 ## New Features
@@ -50,7 +50,7 @@ protein-level or peptide-level DataFrame:
 
 - `plot_missing_value_heatmap` — NA/zero pattern across samples x features.
 - `plot_identifications_per_sample` — bar chart of #features identified
-  per sample, coloured by group.
+  per sample, colored by group.
 - `plot_intensity_distributions` — KDE overlay of (log) intensity per
   sample.
 - `plot_cv_distribution` — CV distribution across all samples, or split
@@ -100,7 +100,7 @@ scikit-learn, matplotlib, seaborn, pyarrow, requests) are sufficient.
   peptides; it did not indicate low identification confidence and the
   name misled users into dropping legitimate hits. The column is being
   removed from PRISM in a future release.
-- `load_prism_data` still recognises `low_confidence` in its known-annotation
+- `load_prism_data` still recognizes `low_confidence` in its known-annotation
   set so legacy parquets continue to load cleanly, but its docstring now
   notes the column is deprecated.
 - Regenerated the bundled example dataset to match the new PRISM schema
@@ -200,9 +200,9 @@ callers at the new API.
   acids). Callers must pass the parent-protein sequence so the
   function can render it and locate peptides. Missing / empty values
   raise a clear `ValueError`.
-- **Colour modes** via `color_by`: `"abundance"` *(default, log2 mean
+- **Color modes** via `color_by`: `"abundance"` *(default, log2 mean
   intensity across sample_columns)*, `"fold_change"`
-  *(log2(study/ref), diverging cmap centred at 0)*, or `"detection"`
+  *(log2(study/ref), diverging cmap centered at 0)*, or `"detection"`
   *(fraction of samples detected; the previous default, now opt-in)*.
   For fold-change, pass either a pre-computed `value_column` or
   `(sample_metadata, group_column, group_labels=(ref, study))`.
@@ -212,7 +212,7 @@ callers at the new API.
 - If `start_column` is not supplied, positions are inferred from
   `protein_sequence.find(peptide_sequence)`; unlocatable peptides are
   logged and skipped.
-- **Breaking change:** the previous default behaviour (detection-only,
+- **Breaking change:** the previous default behavior (detection-only,
   no sequence rendering) is no longer reachable with the same
   arguments. Update call sites to pass `protein_sequence` and choose a
   `color_by`.
@@ -256,7 +256,7 @@ callers at the new API.
   and score its held-out test split. This is the statistically correct
   way to use a supervised feature ranker on a small cohort.
 - Legacy ``"fold_change"`` ranking remains available but is no longer
-  the default. The previous fixed behaviour corresponds to
+  the default. The previous fixed behavior corresponds to
   ``feature_selection="fold_change"``.
 - **`select_features_by_mad`** is exposed at the top level
   (`ptk.select_features_by_mad`) so users can inspect the MAD ranking
