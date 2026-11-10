@@ -143,10 +143,16 @@ def permanova(
             ``factor`` should be tested within. Each protein is centered
             on its mean within each stratum before the distances are
             taken, so differences between strata do not count as
-            variance, and labels are permuted only within strata. This
-            is the PERMANOVA counterpart of a ``~ factor + strata``
-            model, and keeps the test exact when ``factor`` is unevenly
-            spread over the strata. Centering makes values negative, so
+            variance, and labels are permuted only within strata. The
+            test is then a one-factor PERMANOVA on stratum-centered
+            data: ``F`` and ``R2`` describe that one-factor fit (``R2``
+            is the share of the within-stratum variance that ``factor``
+            explains, with ``n - n_groups`` residual degrees of
+            freedom), not the partial statistics of a fitted
+            ``~ factor + strata`` model, and differ from them when
+            ``factor`` is unevenly spread over the strata. The
+            permutation p-value stays exact, since labels never move
+            between strata. Centering makes values negative, so
             ``metric="braycurtis"`` is not allowed with ``strata``.
             Samples with no ``strata`` value are dropped.
 
@@ -205,6 +211,14 @@ def permanova(
     distance_sq = distance**2
 
     f_obs = _permanova_pseudo_f(distance_sq, labels_arr)
+    if not np.isfinite(f_obs):
+        # No variation within groups (for example, every sample in a stratum of its own, which
+        # centering sets to zero). No permutation can match a NaN statistic, so the loop below
+        # would report the smallest attainable p-value for a test that compared nothing.
+        raise ValueError(
+            "The pseudo-F statistic is undefined: no variation is left within groups"
+            + (" after centering within strata (are most strata a single sample?)." if strata else ".")
+        )
 
     # SS_total / R^2 are derived from the same squared-distance bookkeeping
     n = len(labels_arr)

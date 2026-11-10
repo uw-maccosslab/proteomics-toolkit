@@ -3431,7 +3431,7 @@ def equivalence_test(
         if correction_method == "none":
             adj[tested] = p_equiv[tested]
         else:
-            adj[tested] = multipletests(p_equiv[tested], method=correction_method)[1]
+            adj[tested] = multipletests(p_equiv[tested], alpha=alpha, method=correction_method)[1]
 
     out["equiv_margin"] = margin
     out["equiv_CI.L"] = ci_low

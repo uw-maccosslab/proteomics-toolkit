@@ -1106,9 +1106,11 @@ A differential test that finds nothing has not shown that nothing changed; the s
 too small. `equivalence_test` asks the opposite question of each feature: is its true log fold
 change inside +/- a margin? It runs two one-sided tests (TOST; Schuirmann 1987) on the
 moderated model's estimate, standard error (`SE`) and degrees of freedom (`total_df`), so the
-empirical-Bayes shrinkage carries over. A feature is `Equivalent` when its TOST p-value,
-Benjamini-Hochberg adjusted over the features, is below `alpha`; that is the same as its
-`1 - 2 * alpha` (90%) confidence interval lying inside the margin.
+empirical-Bayes shrinkage carries over. A single feature passes the unadjusted TOST at level
+`alpha` exactly when its `1 - 2 * alpha` (90%) confidence interval lies inside the margin
+(`max_abs_logFC < margin`). Across many features use the `Equivalent` flag instead: it requires
+the TOST p-value, Benjamini-Hochberg adjusted over the features, to be below `alpha`, which is
+stricter. A feature can have its interval inside the margin and still not be `Equivalent`.
 
 ```python
 results = ptk.run_comprehensive_statistical_analysis(data, metadata, config)  # moderated model
@@ -1120,9 +1122,9 @@ eq['Equivalent'].mean()           # share of proteins shown to change by less th
 | Column | Meaning |
 |---|---|
 | `equiv_CI.L`, `equiv_CI.R` | the `1 - 2 * alpha` confidence interval of logFC |
-| `max_abs_logFC` | the interval bound furthest from zero: the largest change the data are compatible with |
+| `max_abs_logFC` | the interval bound furthest from zero: the largest change the data are compatible with (not FDR-controlled) |
 | `P.Value.equiv`, `adj.P.Val.equiv` | TOST p-value and its adjusted value |
-| `Equivalent` | `adj.P.Val.equiv < alpha` |
+| `Equivalent` | `adj.P.Val.equiv < alpha`: the FDR-controlled decision |
 
 Choose the margin before looking at the results, from what change would matter biologically,
 or report several margins. A feature with a real but small change can be both

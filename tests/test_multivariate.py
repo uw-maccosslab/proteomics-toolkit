@@ -170,3 +170,13 @@ def test_permanova_strata_rejects_braycurtis():
     df, samples, metadata = _stratified_dataset()
     with pytest.raises(ValueError):
         permanova(df, samples, metadata, factor="Group", strata="Day", metric="braycurtis")
+
+
+def test_permanova_rejects_singleton_strata():
+    # Every sample in a stratum of its own: centering zeroes the data and nothing is compared.
+    rng = np.random.default_rng(1)
+    samples = [f"S{i}" for i in range(8)]
+    metadata = {s: {"Group": "A" if i % 2 else "B", "Day": f"D{i}"} for i, s in enumerate(samples)}
+    df = pd.DataFrame(np.power(2.0, rng.normal(10, 0.5, size=(20, 8))), columns=samples)
+    with pytest.raises(ValueError, match="undefined"):
+        permanova(df, samples, metadata, factor="Group", strata="Day", n_permutations=99)

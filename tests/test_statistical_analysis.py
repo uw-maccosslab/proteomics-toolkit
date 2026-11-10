@@ -2760,6 +2760,16 @@ class TestEquivalenceTest:
         with pytest.raises(ValueError):
             equivalence_test(self._results([0.0], [0.1]), margin=margin, alpha=alpha)
 
+    def test_passes_alpha_to_the_correction(self):
+        # Two-stage corrections depend on alpha; the adjusted values must use the caller's level.
+        from statsmodels.stats.multitest import multipletests
+
+        rng = np.random.default_rng(7)
+        res = self._results(rng.normal(0, 0.05, 200), np.full(200, 0.05), df=30.0)
+        out = equivalence_test(res, margin=0.15, alpha=0.1, correction_method="fdr_tsbh")
+        expected = multipletests(out["P.Value.equiv"], alpha=0.1, method="fdr_tsbh")[1]
+        assert np.allclose(out["adj.P.Val.equiv"], expected)
+
     def test_moderated_model_reports_se(self):
         feature_data, metadata_df, config = _make_limma_fixture()
         config.moderation = "global"
