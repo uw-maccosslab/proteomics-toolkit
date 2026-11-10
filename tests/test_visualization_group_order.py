@@ -2,8 +2,8 @@
 
 ``plot_pca`` and ``plot_sample_correlation_heatmap`` took their group order from
 ``list(set(groups))``, and ``plot_control_group_correlation_analysis`` took its sample
-order from ``list(set(found_samples))``. Python randomises string hashing per process
-(``PYTHONHASHSEED``), so the group-to-colour mapping, the legend order and the sample
+order from ``list(set(found_samples))``. Python randomizes string hashing per process
+(``PYTHONHASHSEED``), so the group-to-color mapping, the legend order and the sample
 order on the axes changed from one run to the next. Within one process the order is
 fixed, so the check runs the plots in subprocesses with different hash seeds and
 compares the rendered images.

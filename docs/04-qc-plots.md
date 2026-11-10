@@ -51,7 +51,7 @@ axis titles read correctly.
 # Heatmap of the NA/zero pattern across samples x features
 ptk.plot_missing_value_heatmap(protein_data, all_sample_cols)
 
-# Bar chart of identifications per sample, coloured by group
+# Bar chart of identifications per sample, colored by group
 ptk.plot_identifications_per_sample(
     protein_data, all_sample_cols, sample_metadata=sample_metadata
 )
@@ -114,7 +114,7 @@ ptk.plot_control_correlation_analysis(
 
 Sequence-viewer-style coverage map: the parent protein sequence is
 rendered as text, peptide bars are drawn underneath at their true
-residue positions, long proteins wrap to multiple rows, and bar colour
+residue positions, long proteins wrap to multiple rows, and bar color
 encodes abundance (default), fold-change between two conditions, or
 detection frequency. Load the parent-protein sequences from a FASTA
 file first:
@@ -123,7 +123,7 @@ file first:
 sequences = ptk.load_fasta_sequences('uniprot_human.fasta')
 # Or for the bundled tutorial data: sequences = ptk.datasets.load_example_sequences()
 
-# Default: colour bars by log2 mean abundance across sample_columns
+# Default: color bars by log2 mean abundance across sample_columns
 ptk.plot_peptide_coverage_map(
     peptide_data,
     protein_id='sp|P02768|ALBU_HUMAN',
@@ -132,7 +132,7 @@ ptk.plot_peptide_coverage_map(
     start_column='start_position',   # optional - otherwise located by str.find
 )
 
-# Colour bars by Control-vs-Treatment log2 fold-change
+# Color bars by Control-vs-Treatment log2 fold-change
 ptk.plot_peptide_coverage_map(
     peptide_data,
     protein_id='sp|P02768|ALBU_HUMAN',

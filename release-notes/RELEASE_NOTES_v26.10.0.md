@@ -4,7 +4,7 @@
 
 Feature release with no breaking changes. The older plot functions in `visualization`
 can now hand back their figure, so notebooks can save volcano, PCA and QC plots to
-files. Two plotting bugs are fixed: a matplotlib warning from the default PCA colours,
+files. Two plotting bugs are fixed: a matplotlib warning from the default PCA colors,
 and a crash in `plot_comparative_pca` with matplotlib 3.9 or later.
 
 ## New Features
@@ -17,15 +17,15 @@ and a crash in `plot_comparative_pca` with matplotlib 3.9 or later.
   their figures could not be saved. With `show=False` they return the
   `matplotlib.figure.Figure` without showing it
   (`fig = ptk.plot_volcano(results, show=False); fig.savefig(...)`). The default,
-  `show=True`, keeps the old behaviour: the figure is shown and None is returned.
+  `show=True`, keeps the old behavior: the figure is shown and None is returned.
   Returning the figure in both cases would draw it twice in a notebook whenever the
   call is the last line of a cell, because Jupyter displays both the shown figure
   and the returned one.
 
 ## Bug Fixes
 
-- **Matplotlib warning from the default PCA colours.** `plot_pca` and
-  `plot_comparative_pca` passed each group's colour, an RGBA array from the tab10
+- **Matplotlib warning from the default PCA colors.** `plot_pca` and
+  `plot_comparative_pca` passed each group's color, an RGBA array from the tab10
   colormap when `group_colors` is not given, as `scatter(c=...)`. Matplotlib warned
   that the `*c*` argument "looks like a single numeric RGB or RGBA sequence" on
   every call. They now pass it as `color=`. `classification.plot_fold_change_pca`
@@ -40,7 +40,7 @@ and a crash in `plot_comparative_pca` with matplotlib 3.9 or later.
   - with `show=False` each returns a figure that saves to PNG;
   - by default each returns None;
   - `plot_volcano` with no rows still returns None;
-  - `plot_pca` and `plot_comparative_pca` with the default colours raise neither the
+  - `plot_pca` and `plot_comparative_pca` with the default colors raise neither the
     `*c*` warning nor a deprecation warning.
 
 ## Documentation

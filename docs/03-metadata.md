@@ -28,7 +28,7 @@ group_order = ['A', 'B'] + [g for g in group_distribution if g not in ['A', 'B']
 
 The `group_colors` dict is consumed by the [QC plots](04-qc-plots.md) and
 [results visualization functions](07-visualization.md) to keep group
-colouring consistent across every plot in an analysis.
+coloring consistent across every plot in an analysis.
 
 ## Validating metadata/data consistency
 

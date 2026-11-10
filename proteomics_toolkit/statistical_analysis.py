@@ -1735,7 +1735,7 @@ def _fit_limma_prior(s2_valid, d_valid, robust=False, winsor_sigma=4.0):
 
     Implements Smyth (2004) method-of-moments on ``log(s^2)``, after flooring zero variances as
     limma's ``fitFDist`` does (:func:`_limma_variance_floor`). When
-    ``robust=True``, Winsorizes the centred z-statistic at ``±winsor_sigma``
+    ``robust=True``, Winsorizes the centered z-statistic at ``±winsor_sigma``
     standard deviations before the moment fit so a handful of extreme
     features don't inflate the prior. Matches the intent (but not the
     precise Fisher-scoring algorithm) of limma's ``robust=TRUE``.
@@ -2790,7 +2790,7 @@ def run_moderated_linear_model(feature_data, metadata_df, config):
     on random-label nulls (a 327-peptide cohort and a 3,595-protein serum
     cohort, unpaired, paired and trend designs, plus simulations) it gave
     6-9% in the brightest fifth of features and 2-5% in the dimmest, the
-    two cancelling in the average. On the log2 scale a feature's variance
+    two canceling in the average. On the log2 scale a feature's variance
     is roughly (CV / ln 2)^2; the pools carry technical noise only, whose
     CV falls with intensity, while study samples add biology with a
     roughly constant CV, flat on the log scale. One scale factor cannot

@@ -19,7 +19,7 @@ def _make_clustered_temporal_df(cluster_sizes=(120, 80, 40, 15)):
 
     rows = []
     for cluster_id, n in enumerate(cluster_sizes):
-        # Each cluster gets a distinct mean trajectory so the heatmap colour-codes
+        # Each cluster gets a distinct mean trajectory so the heatmap color-codes
         # them differently. Real data noise comes from rng.normal().
         if cluster_id == 0:
             mean_traj = np.array([1.0, 0.5, 0.0, -0.5, -1.0])  # monotonic down
@@ -92,7 +92,7 @@ class TestPlotClusterHeatmapLabels:
         assert "n=15" in joined, f"missing n=15 in labels: {joined!r}"
 
     def test_default_max_proteins_per_cluster_is_no_cap(self):
-        """The default behaviour (max_proteins_per_cluster=None) shows every
+        """The default behavior (max_proteins_per_cluster=None) shows every
         protein and the y-axis "Proteins (n=...)" reflects the full row count."""
         df, week_cols = _make_clustered_temporal_df(cluster_sizes=(60, 50, 40, 30))
         fig = plot_cluster_heatmap(df, week_cols, show_genes=False)

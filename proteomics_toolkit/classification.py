@@ -498,7 +498,7 @@ def run_binary_classification(
       fold; useful when you want to rank by "are the group means well
       separated relative to within-group spread" rather than a pairwise
       t-statistic.
-    - ``"fold_change"``: legacy behaviour - top by absolute mean
+    - ``"fold_change"``: legacy behavior - top by absolute mean
       fold-change across all subjects. **Leaky on small datasets** when
       classes differ systematically; use MAD, nested DA, or nested
       variance_ratio instead.

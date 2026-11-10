@@ -133,7 +133,7 @@ def test_volcano_with_no_rows_returns_none():
 
 @pytest.mark.parametrize("name", ["plot_pca", "plot_comparative_pca"])
 def test_default_group_colors_raise_no_warning(name, intensities, metadata, differential):
-    """The default tab10 colours are RGBA arrays; passing one as ``c=`` made matplotlib warn
+    """The default tab10 colors are RGBA arrays; passing one as ``c=`` made matplotlib warn
     that it looks like a single numeric RGB(A) sequence, and plot_comparative_pca called
     ``plt.cm.get_cmap``, which matplotlib 3.9 removed."""
     with warnings.catch_warnings():

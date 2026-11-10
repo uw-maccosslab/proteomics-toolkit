@@ -34,7 +34,7 @@ ambiguous" error).
 - New `classification.relabel_features_with_genes(feature_ids, annotation_df, id_col='protein_group', gene_col='leading_gene_name', fallback='id'|'empty')`:
   maps pipeline-internal feature IDs (e.g. PRISM `PG####`
   protein-group identifiers) to human-readable gene symbols at the
-  point where the user surface is materialised (plot labels,
+  point where the user surface is materialized (plot labels,
   importance Series index, SHAP `Explanation.feature_names`). Falls
   back to the original ID when the gene name is missing.
 - `run_binary_classification` and `compute_shap_values` both gained
@@ -75,7 +75,7 @@ ambiguous" error).
   `leading_gene_name` is literally the string `"NA"`. Pass an explicit
   list to override the default; pass `[]` to disable fallback and
   reproduce the legacy index-fallback behavior. The missing-value check
-  is also now case-insensitive and recognises `""`, `"na"`, `"nan"`,
+  is also now case-insensitive and recognizes `""`, `"na"`, `"nan"`,
   `"none"`, `"null"`, and `"n/a"` (previously only the literal
   lowercase `"nan"` was treated as missing).
 
