@@ -5,6 +5,7 @@ This module provides a clean, configuration-driven approach to differential
 protein expression analysis with support for various statistical methods.
 """
 
+import logging
 import warnings
 
 import numpy as np
@@ -14,6 +15,8 @@ from statsmodels.stats.multitest import multipletests
 
 from .normalization import is_normalization_log_transformed
 from .preprocessing import _normalize_group_value
+
+logger = logging.getLogger(__name__)
 
 # Try to import statsmodels for mixed-effects models
 try:
@@ -2183,6 +2186,7 @@ def _moderated_results_df(fit, s0_sq_per_feature, d0, config, moderation):
         {
             "Protein": features,
             "logFC": beta,
+            "SE": se,
             "AveExpr": ave_expr,
             "t": t_mod,
             "P.Value": p_mod,
@@ -3319,6 +3323,132 @@ def apply_multiple_testing_correction(results_df, config):
     results_df.loc[results_df["adj.P.Val"] < 0.01, "Significance"] = "Highly significant (FDR < 0.01)"
 
     return results_df
+
+
+def equivalence_test(
+    results_df: pd.DataFrame,
+    margin: float,
+    alpha: float = 0.05,
+    correction_method: str = "fdr_bh",
+    lfc_column: str = "logFC",
+    se_column: str = "SE",
+    df_column: str = "total_df",
+) -> pd.DataFrame:
+    """Test each feature for equivalence: is its true log fold change inside +/- ``margin``?
+
+    A differential test can only fail to find a change; it cannot show that there is none. The
+    equivalence test reverses the question. For each feature it runs two one-sided t-tests
+    (TOST; Schuirmann 1987): H0 logFC <= -margin and H0 logFC >= +margin. The equivalence
+    p-value is the larger of the two, and a feature is declared equivalent when that p-value,
+    adjusted over the features tested, is below ``alpha``. TOST at level ``alpha`` is the same
+    as asking whether the ``1 - 2 * alpha`` confidence interval of logFC lies inside the margin.
+
+    It reads the estimate, its standard error and its degrees of freedom, so it applies to the
+    output of the moderated linear model (``run_comprehensive_statistical_analysis`` with
+    ``statistical_test_method='moderated_linear_model'``), whose moderated SE and ``total_df``
+    carry the empirical-Bayes shrinkage. Results without an ``SE`` column (from toolkit versions
+    before 26.11.0) get it as ``|logFC / t|``; a feature with t = 0 then has no SE and no test.
+    Without ``df_column`` the normal distribution is used.
+
+    Args:
+        results_df: Per-feature results with ``lfc_column`` and either ``se_column`` or ``t``.
+        margin: Equivalence margin in the units of ``lfc_column`` (log2 for the moderated model:
+            ``np.log2(1.2)`` asks whether each feature changes by less than 1.2-fold).
+        alpha: Significance level for the two one-sided tests and the adjusted p-values.
+        correction_method: Multiple-testing correction passed to ``statsmodels`` ``multipletests``
+            (``"fdr_bh"``, ``"bonferroni"``, ...), or ``"none"``.
+        lfc_column: Column holding the estimated log fold change.
+        se_column: Column holding its standard error.
+        df_column: Column holding the degrees of freedom of the t-statistic.
+
+    Returns:
+        A copy of ``results_df`` with these columns added:
+
+        - ``equiv_margin``: the margin tested.
+        - ``equiv_CI.L``, ``equiv_CI.R``: the ``1 - 2 * alpha`` confidence interval of logFC.
+        - ``max_abs_logFC``: the larger of ``|equiv_CI.L|`` and ``|equiv_CI.R|``, the largest
+          change the data are compatible with at this level; the feature passes TOST (before
+          adjustment) exactly when this is below ``margin``.
+        - ``P.Value.equiv``: TOST p-value; ``adj.P.Val.equiv``: adjusted over the features with
+          a p-value.
+        - ``Equivalent``: ``adj.P.Val.equiv < alpha``.
+
+    Raises:
+        ValueError: if ``margin`` is not positive, ``alpha`` is not in (0, 0.5), or the
+            needed columns are missing.
+
+    Example:
+        >>> results = ptk.run_comprehensive_statistical_analysis(data, metadata, config)
+        >>> eq = ptk.equivalence_test(results, margin=np.log2(1.2))
+        >>> eq["Equivalent"].mean()  # share of proteins shown to change by less than 1.2-fold
+    """
+    from scipy.stats import norm
+    from scipy.stats import t as student_t
+
+    if not margin > 0:
+        raise ValueError(f"margin must be positive; got {margin!r}")
+    if not 0 < alpha < 0.5:
+        raise ValueError(f"alpha must be between 0 and 0.5; got {alpha!r}")
+    if lfc_column not in results_df.columns:
+        raise ValueError(f"results_df has no {lfc_column!r} column")
+
+    out = results_df.copy()
+    lfc = out[lfc_column].to_numpy(dtype=float)
+    if se_column in out.columns:
+        se = out[se_column].to_numpy(dtype=float)
+    elif "t" in out.columns:
+        t_stat = out["t"].to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            se = np.where(np.isfinite(t_stat) & (t_stat != 0), np.abs(lfc / t_stat), np.nan)
+        logger.info("equivalence_test: no %r column; using |%s / t| as the standard error.", se_column, lfc_column)
+    else:
+        raise ValueError(f"results_df needs a {se_column!r} column or a 't' column")
+    df = out[df_column].to_numpy(dtype=float) if df_column in out.columns else np.full(len(out), np.inf)
+
+    usable = np.isfinite(lfc) & np.isfinite(se) & (se > 0) & ~np.isnan(df)
+    p_equiv = np.full(len(out), np.nan)
+    ci_low = np.full(len(out), np.nan)
+    ci_high = np.full(len(out), np.nan)
+    if usable.any():
+        d = df[usable]
+        finite_df = np.isfinite(d)
+        safe_df = np.where(finite_df, d, 1.0)
+        lfc_u, se_u = lfc[usable], se[usable]
+
+        def sf(x):
+            return np.where(finite_df, student_t.sf(x, safe_df), norm.sf(x))
+
+        p_lower = sf((lfc_u + margin) / se_u)  # H0: logFC <= -margin
+        p_upper = sf((margin - lfc_u) / se_u)  # H0: logFC >= +margin
+        p_equiv[usable] = np.maximum(p_lower, p_upper)
+        quantile = np.where(finite_df, student_t.isf(alpha, safe_df), norm.isf(alpha))
+        ci_low[usable] = lfc_u - quantile * se_u
+        ci_high[usable] = lfc_u + quantile * se_u
+
+    tested = np.isfinite(p_equiv)
+    adj = np.full(len(out), np.nan)
+    if tested.any():
+        if correction_method == "none":
+            adj[tested] = p_equiv[tested]
+        else:
+            adj[tested] = multipletests(p_equiv[tested], alpha=alpha, method=correction_method)[1]
+
+    out["equiv_margin"] = margin
+    out["equiv_CI.L"] = ci_low
+    out["equiv_CI.R"] = ci_high
+    out["max_abs_logFC"] = np.fmax(np.abs(ci_low), np.abs(ci_high))
+    out["P.Value.equiv"] = p_equiv
+    out["adj.P.Val.equiv"] = adj
+    out["Equivalent"] = adj < alpha
+    logger.info(
+        "equivalence_test: %d of %d features equivalent within +/-%.3g (%s, alpha %.3g).",
+        int(out["Equivalent"].sum()),
+        int(tested.sum()),
+        margin,
+        correction_method,
+        alpha,
+    )
+    return out
 
 
 def export_results(differential_df: pd.DataFrame, output_file: str, include_all: bool = True) -> None:

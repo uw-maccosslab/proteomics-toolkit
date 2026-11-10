@@ -97,3 +97,86 @@ def test_permanova_rejects_invalid_metric():
     df, samples, meta = _strong_effect_dataset()
     with pytest.raises(ValueError, match="metric"):
         permanova(df, samples, meta, factor="Method", metric="nonsense", n_permutations=10)
+
+
+def _stratified_dataset(seed=5, stratum_shift=4.0, group_effect=0.0, n_proteins=40):
+    """Two strata with a large offset and groups spread unevenly over them.
+
+    Stratum S1 has 1 A and 7 B samples, S2 has 7 A and 1 B, and every protein in S2 is shifted
+    by ``stratum_shift``. Without strata the offset looks like a group difference.
+    """
+    rng = np.random.default_rng(seed)
+    samples, metadata = [], {}
+    layout = [("S1", "A", 1), ("S1", "B", 7), ("S2", "A", 7), ("S2", "B", 1)]
+    for stratum, group, n in layout:
+        for i in range(n):
+            name = f"{stratum}_{group}_{i}"
+            samples.append(name)
+            metadata[name] = {"Group": group, "Day": stratum}
+    values = rng.normal(10.0, 0.3, size=(n_proteins, len(samples)))
+    for j, name in enumerate(samples):
+        if metadata[name]["Day"] == "S2":
+            values[:, j] += stratum_shift
+        if metadata[name]["Group"] == "B":
+            values[:10, j] += group_effect
+    df = pd.DataFrame(np.power(2.0, values), columns=samples)
+    df.insert(0, "Protein", [f"P{i:02d}" for i in range(n_proteins)])
+    return df, samples, metadata
+
+
+def test_permanova_strata_removes_stratum_offset():
+    df, samples, metadata = _stratified_dataset()
+    plain = permanova(df, samples, metadata, factor="Group", n_permutations=199)
+    stratified = permanova(df, samples, metadata, factor="Group", strata="Day", n_permutations=199)
+    assert plain["p_value"] < 0.05  # the stratum offset masquerades as a group effect
+    assert stratified["p_value"] > 0.05
+    assert stratified["R2"] < 0.2
+    assert stratified["strata"] == "Day"
+    assert stratified["n_strata"] == 2
+    assert plain["n_strata"] == 1
+
+
+def test_permanova_strata_still_finds_a_real_effect():
+    df, samples, metadata = _stratified_dataset(group_effect=2.0)
+    res = permanova(df, samples, metadata, factor="Group", strata="Day", n_permutations=199)
+    assert res["p_value"] < 0.05
+
+
+def test_permanova_strata_permutes_only_within_strata():
+    # One sample of each group per stratum: only 2^4 = 16 labelings exist within strata, so the
+    # smallest attainable p is about 1/16, never the 1/1000 an unrestricted shuffle allows.
+    rng = np.random.default_rng(0)
+    samples, metadata = [], {}
+    for s in range(4):
+        for g in ("A", "B"):
+            name = f"S{s}_{g}"
+            samples.append(name)
+            metadata[name] = {"Group": g, "Day": f"S{s}"}
+    values = rng.normal(10, 0.2, size=(20, len(samples)))
+    values[:, 1::2] += 3.0  # a huge group effect
+    df = pd.DataFrame(np.power(2.0, values), columns=samples)
+    res = permanova(df, samples, metadata, factor="Group", strata="Day", n_permutations=999)
+    assert res["p_value"] > 0.03
+
+
+def test_permanova_strata_drops_samples_without_a_stratum():
+    df, samples, metadata = _stratified_dataset()
+    metadata[samples[0]] = {"Group": "A"}  # no Day
+    res = permanova(df, samples, metadata, factor="Group", strata="Day", n_permutations=9)
+    assert res["n_samples"] == len(samples) - 1
+
+
+def test_permanova_strata_rejects_braycurtis():
+    df, samples, metadata = _stratified_dataset()
+    with pytest.raises(ValueError):
+        permanova(df, samples, metadata, factor="Group", strata="Day", metric="braycurtis")
+
+
+def test_permanova_rejects_singleton_strata():
+    # Every sample in a stratum of its own: centering zeroes the data and nothing is compared.
+    rng = np.random.default_rng(1)
+    samples = [f"S{i}" for i in range(8)]
+    metadata = {s: {"Group": "A" if i % 2 else "B", "Day": f"D{i}"} for i, s in enumerate(samples)}
+    df = pd.DataFrame(np.power(2.0, rng.normal(10, 0.5, size=(20, 8))), columns=samples)
+    with pytest.raises(ValueError, match="undefined"):
+        permanova(df, samples, metadata, factor="Group", strata="Day", n_permutations=99)
