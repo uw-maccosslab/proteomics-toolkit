@@ -1100,6 +1100,37 @@ Unlike the mixed-effects `interaction` route, this path does not use
 `group_column`/`group_labels` and `paired_column`/`paired_label1`/`paired_label2`.
 Residual df is `n - 4` without a subject block or covariates.
 
+## Equivalence test: showing that nothing changed
+
+A differential test that finds nothing has not shown that nothing changed; the study may be
+too small. `equivalence_test` asks the opposite question of each feature: is its true log fold
+change inside +/- a margin? It runs two one-sided tests (TOST; Schuirmann 1987) on the
+moderated model's estimate, standard error (`SE`) and degrees of freedom (`total_df`), so the
+empirical-Bayes shrinkage carries over. A feature is `Equivalent` when its TOST p-value,
+Benjamini-Hochberg adjusted over the features, is below `alpha`; that is the same as its
+`1 - 2 * alpha` (90%) confidence interval lying inside the margin.
+
+```python
+results = ptk.run_comprehensive_statistical_analysis(data, metadata, config)  # moderated model
+eq = ptk.equivalence_test(results, margin=np.log2(1.2))  # within 1.2-fold either way
+eq['Equivalent'].mean()           # share of proteins shown to change by less than 1.2-fold
+2 ** eq['max_abs_logFC'].median()  # typical largest fold change the data still allow
+```
+
+| Column | Meaning |
+|---|---|
+| `equiv_CI.L`, `equiv_CI.R` | the `1 - 2 * alpha` confidence interval of logFC |
+| `max_abs_logFC` | the interval bound furthest from zero: the largest change the data are compatible with |
+| `P.Value.equiv`, `adj.P.Val.equiv` | TOST p-value and its adjusted value |
+| `Equivalent` | `adj.P.Val.equiv < alpha` |
+
+Choose the margin before looking at the results, from what change would matter biologically,
+or report several margins. A feature with a real but small change can be both
+"not different" and "not equivalent"; it is equivalent only when it is measured precisely
+enough. For a whole-proteome question (is anything changing, even thinly spread over many
+proteins?), add `ptk.permanova(..., strata=...)`, which tests the group within batches or
+days.
+
 ## Mixed-effects model (repeated measures)
 
 **Use case:** Comparing groups at multiple timepoints while accounting

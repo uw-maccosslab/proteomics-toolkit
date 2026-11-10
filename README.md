@@ -299,6 +299,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `StatisticalConfig` — Configuration class (zero-arg constructor, set attributes individually)
 - `run_comprehensive_statistical_analysis()` — Main analysis entry point (dispatches by `statistical_test_method`)
 - `run_moderated_linear_model()` — Per-feature linear model with empirical-Bayes variance moderation (`moderation` unset - chosen by level - or `'limma-trend-intensity-n-peptides'` (protein level only) / `'limma-trend'` / `'global'` / `'peptide-count'`, or the deprecated `'intensity-peptide-trend'` / `'intensity-trend'`; Skyline-PRISM's names); supports covariate adjustment for `analysis_type='unpaired'`
+- `equivalence_test()` — Per-feature equivalence test (two one-sided tests, TOST) on moderated results: shows that a change is smaller than a margin (for example 1.2-fold), with the 90% interval, the largest compatible change and FDR-adjusted equivalence p-values. The moderated model's results now carry the standard error (`SE`)
 - `get_intensity_trend_points()` — Recover the per-(feature, group) diagnostic points DataFrame from a moderated `intensity-trend` results object
 - `compute_paired_fold_changes()` — Build a per-subject fold-change matrix for paired designs (used as input to the classification module)
 - `display_analysis_summary()` — Print/return summary of results
@@ -379,7 +380,7 @@ Enrichment results use these column names (not the Enrichr web-UI names):
 - `cluster_proteins_kmeans()` — K-means clustering of proteins over samples with silhouette-driven k selection; supports per-protein z-score for shape-based clustering
 
 ### multivariate.py
-- `permanova()` — Anderson 2001 PERMANOVA on a sample-by-sample distance matrix with label permutation for significance; supports euclidean, braycurtis, cosine, correlation, and cityblock metrics
+- `permanova()` — Anderson 2001 PERMANOVA on a sample-by-sample distance matrix with label permutation for significance; supports euclidean, braycurtis, cosine, correlation, and cityblock metrics, and `strata=` to test within batches or days (each protein centred within stratum, labels permuted within stratum)
 
 ### validation.py
 - `validate_metadata_data_consistency()` — Check metadata matches data columns

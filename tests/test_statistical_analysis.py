@@ -22,6 +22,7 @@ from proteomics_toolkit.statistical_analysis import (
     _sanitize_formula_term,
     _trigamma_inverse,
     apply_multiple_testing_correction,
+    equivalence_test,
     get_intensity_trend_points,
     run_comprehensive_statistical_analysis,
     run_mann_whitney_test,
@@ -2681,3 +2682,91 @@ class TestMixedEffectsProteinNameLookup:
         results = run_mixed_effects_analysis(protein_data, metadata_df, config, annotations)
 
         assert set(results["Protein"]) == set(proteins)
+
+
+class TestEquivalenceTest:
+    """Per-feature TOST equivalence test (26.11.0)."""
+
+    @staticmethod
+    def _results(lfc, se, df=np.inf):
+        n = len(lfc)
+        return pd.DataFrame(
+            {
+                "Protein": [f"P{i}" for i in range(n)],
+                "logFC": np.asarray(lfc, dtype=float),
+                "SE": np.asarray(se, dtype=float),
+                "t": np.asarray(lfc, dtype=float) / np.asarray(se, dtype=float),
+                "total_df": np.broadcast_to(df, n).astype(float),
+            }
+        )
+
+    def test_matches_hand_computed_tost(self):
+        from scipy.stats import t as student_t
+
+        res = self._results([0.05], [0.1], df=20.0)
+        margin = np.log2(1.2)
+        out = equivalence_test(res, margin=margin, correction_method="none")
+        p_lower = student_t.sf((0.05 + margin) / 0.1, 20)
+        p_upper = student_t.sf((margin - 0.05) / 0.1, 20)
+        assert np.isclose(out["P.Value.equiv"].iloc[0], max(p_lower, p_upper))
+        q = student_t.isf(0.05, 20)
+        assert np.isclose(out["equiv_CI.L"].iloc[0], 0.05 - q * 0.1)
+        assert np.isclose(out["equiv_CI.R"].iloc[0], 0.05 + q * 0.1)
+
+    def test_normal_when_df_is_infinite_or_missing(self):
+        from scipy.stats import norm
+
+        res = self._results([0.0], [0.1]).drop(columns="total_df")
+        out = equivalence_test(res, margin=0.3, correction_method="none")
+        assert np.isclose(out["P.Value.equiv"].iloc[0], norm.sf(3.0))
+
+    def test_ci_inside_margin_iff_unadjusted_tost_passes(self):
+        rng = np.random.default_rng(3)
+        res = self._results(rng.normal(0, 0.2, 500), rng.uniform(0.02, 0.3, 500), df=30.0)
+        out = equivalence_test(res, margin=0.25, correction_method="none")
+        inside = out["max_abs_logFC"] < 0.25
+        assert ((out["P.Value.equiv"] < 0.05) == inside).all()
+
+    def test_small_change_precise_is_equivalent_large_or_noisy_is_not(self):
+        res = self._results([0.0, 1.0, 0.0], [0.02, 0.02, 0.5], df=50.0)
+        out = equivalence_test(res, margin=np.log2(1.2))
+        assert out["Equivalent"].tolist() == [True, False, False]
+
+    def test_adjustment_is_over_tested_features(self):
+        from statsmodels.stats.multitest import multipletests
+
+        res = self._results([0.0, 0.05, 0.1, np.nan], [0.05, 0.05, 0.05, 0.05], df=40.0)
+        out = equivalence_test(res, margin=0.2)
+        tested = out["P.Value.equiv"].notna()
+        assert tested.tolist() == [True, True, True, False]
+        expected = multipletests(out.loc[tested, "P.Value.equiv"], method="fdr_bh")[1]
+        assert np.allclose(out.loc[tested, "adj.P.Val.equiv"], expected)
+        assert not out["Equivalent"].iloc[3]
+
+    def test_falls_back_to_logfc_over_t_without_se(self):
+        res = self._results([0.1, -0.2], [0.05, 0.1], df=30.0)
+        with_se = equivalence_test(res, margin=0.3)
+        without_se = equivalence_test(res.drop(columns="SE"), margin=0.3)
+        assert np.allclose(with_se["P.Value.equiv"], without_se["P.Value.equiv"])
+
+    def test_does_not_modify_input(self):
+        res = self._results([0.1], [0.05])
+        cols = list(res.columns)
+        equivalence_test(res, margin=0.3)
+        assert list(res.columns) == cols
+
+    @pytest.mark.parametrize("margin, alpha", [(0.0, 0.05), (-0.1, 0.05), (0.2, 0.0), (0.2, 0.5)])
+    def test_rejects_bad_margin_or_alpha(self, margin, alpha):
+        with pytest.raises(ValueError):
+            equivalence_test(self._results([0.0], [0.1]), margin=margin, alpha=alpha)
+
+    def test_moderated_model_reports_se(self):
+        feature_data, metadata_df, config = _make_limma_fixture()
+        config.moderation = "global"
+        result = run_moderated_linear_model(feature_data, metadata_df, config)
+        assert "SE" in result.columns
+        assert np.allclose(result["logFC"] / result["SE"], result["t"])
+        out = equivalence_test(result, margin=0.5)
+        # The spiked +1.5 features can never be shown to change by less than 0.5.
+        spiked = out["Protein"].isin([f"P{i:04d}" for i in range(10)])
+        assert not out.loc[spiked, "Equivalent"].any()

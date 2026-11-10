@@ -204,6 +204,7 @@ from .statistical_analysis import (
     StatisticalConfig,  # Configuration class for analysis parameters
     compute_paired_fold_changes,  # Per-subject fold-change matrix for paired designs
     display_analysis_summary,  # Display analysis results summary
+    equivalence_test,  # Per-feature TOST: is each change inside +/- a margin?
     get_intensity_trend_points,  # Long-form (feature, group) points from intensity_trend fit
     run_comprehensive_statistical_analysis,  # Main function: Complete statistical analysis
     run_moderated_linear_model,  # Per-feature linear model + empirical Bayes moderation
@@ -305,6 +306,7 @@ __all__ = [
     "analyze_negative_values",  # Analyze negative value patterns
     # STATISTICAL ANALYSIS - The core of differential analysis
     "run_comprehensive_statistical_analysis",  # MAIN FUNCTION: Complete analysis
+    "equivalence_test",  # Per-feature TOST equivalence test on moderated results
     "display_analysis_summary",  # Show results summary
     "StatisticalConfig",  # Configuration for statistical analysis
     "run_statistical_analysis",  # Lower-level analysis function

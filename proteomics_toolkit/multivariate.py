@@ -35,11 +35,14 @@ def _build_distance_matrix(
     sample_columns: list[str],
     metric: str,
     log_transform: bool,
+    strata_labels: np.ndarray | None = None,
 ) -> np.ndarray:
     """Build a sample-by-sample condensed distance matrix.
 
     Drops proteins with any NaN across the requested samples (PERMANOVA
-    requires complete cases for the distance computation).
+    requires complete cases for the distance computation). With
+    ``strata_labels``, each protein is centred on its mean within each
+    stratum before the distances are taken.
     """
     if metric not in SUPPORTED_METRICS:
         raise ValueError(f"metric must be one of {SUPPORTED_METRICS}; got {metric!r}")
@@ -57,7 +60,11 @@ def _build_distance_matrix(
         )
     logger.info("permanova distance matrix uses %d proteins x %d samples.", sub.shape[0], sub.shape[1])
     # rows = proteins, cols = samples; pdist needs samples as rows.
-    sample_matrix = sub.to_numpy(dtype=float).T
+    sample_matrix = sub.to_numpy(dtype=float).T.copy()
+    if strata_labels is not None:
+        for stratum in np.unique(strata_labels):
+            rows = strata_labels == stratum
+            sample_matrix[rows] -= sample_matrix[rows].mean(axis=0)
     return squareform(pdist(sample_matrix, metric=metric))
 
 
@@ -105,6 +112,7 @@ def permanova(
     log_transform: bool = True,
     n_permutations: int = 999,
     random_state: int | None = 0,
+    strata: str | None = None,
 ) -> dict:
     """Permutational MANOVA (Anderson 2001) on a metadata factor.
 
@@ -131,6 +139,16 @@ def permanova(
             ``(1 + number of perm F >= observed F) / (1 + n_permutations)``,
             following the standard add-one convention so p > 0.
         random_state: Seed for the permutation RNG.
+        strata: Optional metadata field (batch, sack day, cohort) that
+            ``factor`` should be tested within. Each protein is centred
+            on its mean within each stratum before the distances are
+            taken, so differences between strata do not count as
+            variance, and labels are permuted only within strata. This
+            is the PERMANOVA counterpart of a ``~ factor + strata``
+            model, and keeps the test exact when ``factor`` is unevenly
+            spread over the strata. Centring makes values negative, so
+            ``metric="braycurtis"`` is not allowed with ``strata``.
+            Samples with no ``strata`` value are dropped.
 
     Returns:
         Dict with keys:
@@ -143,20 +161,33 @@ def permanova(
             ``groups``: list of group labels used.
             ``group_sizes``: dict of label -> sample count.
             ``metric``: echo of the distance metric.
+            ``strata``: echo of ``strata``.
+            ``n_strata``: number of strata (1 without ``strata``).
     """
     if n_permutations < 1:
         raise ValueError("n_permutations must be >= 1.")
+    if strata is not None and metric == "braycurtis":
+        raise ValueError("metric='braycurtis' needs non-negative values; it cannot be used with strata.")
+
+    def _missing(value):
+        return value is None or (isinstance(value, float) and np.isnan(value)) or value == ""
 
     # Resolve labels for each requested sample
     labels_raw = []
+    strata_raw = []
     keep_cols = []
     for col in sample_columns:
         meta = sample_metadata.get(col)
         if meta is None:
             continue
         val = meta.get(factor)
-        if val is None or (isinstance(val, float) and np.isnan(val)) or val == "":
+        if _missing(val):
             continue
+        if strata is not None:
+            stratum = meta.get(strata)
+            if _missing(stratum):
+                continue
+            strata_raw.append(str(stratum))
         labels_raw.append(str(val))
         keep_cols.append(col)
     if len(keep_cols) < 4:
@@ -167,7 +198,10 @@ def permanova(
     if len(group_names) < 2:
         raise ValueError(f"Need >=2 distinct groups for {factor!r}; got 1.")
 
-    distance = _build_distance_matrix(data, keep_cols, metric=metric, log_transform=log_transform)
+    strata_arr = pd.factorize(pd.Series(strata_raw), sort=True)[0] if strata is not None else None
+    distance = _build_distance_matrix(
+        data, keep_cols, metric=metric, log_transform=log_transform, strata_labels=strata_arr
+    )
     distance_sq = distance**2
 
     f_obs = _permanova_pseudo_f(distance_sq, labels_arr)
@@ -190,9 +224,14 @@ def permanova(
     # Permutation null
     rng = np.random.default_rng(random_state)
     permuted_labels = labels_arr.copy()
+    strata_rows = [np.where(strata_arr == s)[0] for s in np.unique(strata_arr)] if strata is not None else None
     n_at_or_above = 0
     for _ in range(n_permutations):
-        rng.shuffle(permuted_labels)
+        if strata_rows is None:
+            rng.shuffle(permuted_labels)
+        else:
+            for rows in strata_rows:
+                permuted_labels[rows] = rng.permutation(permuted_labels[rows])
         f_perm = _permanova_pseudo_f(distance_sq, permuted_labels)
         if np.isfinite(f_perm) and f_perm >= f_obs:
             n_at_or_above += 1
@@ -219,4 +258,6 @@ def permanova(
         "groups": list(group_names),
         "group_sizes": group_sizes,
         "metric": metric,
+        "strata": strata,
+        "n_strata": len(strata_rows) if strata_rows is not None else 1,
     }
